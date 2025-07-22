@@ -1,18 +1,19 @@
 package main
 
 import (
-	"automation/common/userconfig"
-	"automation/common/ylog"
-	"automation/common/zabbix"
 	"flag"
 	"fmt"
-	"github.com/spf13/viper"
-	"github.com/xuri/excelize/v2"
 	"os"
 	"strings"
+
+	"github.com/charlesren/userconfig"
+	"github.com/charlesren/ylog"
+	"github.com/charlesren/zapix"
+	"github.com/spf13/viper"
+	"github.com/xuri/excelize/v2"
 )
 
-var zc = zabbix.NewZabbixClient()
+var zc = zapix.NewZabbixClient()
 var UserConfig *viper.Viper
 var ConfPath string
 
@@ -440,8 +441,8 @@ func main() {
 		if row[0] == "系统名称" {
 			continue
 		}
-		for len(row) < 5{
-			row = append(row,"")
+		for len(row) < 5 {
+			row = append(row, "")
 		}
 		appname := row[0]
 		appcode := row[1]
