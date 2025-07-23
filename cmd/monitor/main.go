@@ -74,6 +74,11 @@ func initZabbix() {
 	ylog.Infof("Zabbix", "login success")
 }
 func main() {
+	// 通过config解析 proxy ip
+	var proxy_ip := UserConfig.GetString("zabbix.proxyip")
+	// 根据proxy ip,通过zabbix api  获取proxy  id
+	//
+	//
 	// 初始化组件
 	taskReg := task.NewRegistry()
 	taskReg.Register("ping", &task.PingTask{})

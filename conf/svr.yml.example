@@ -1,0 +1,111 @@
+############################# Server Settings #############################
+server:
+  log:
+    applog:
+      path: ./log/svr.log
+      loglevel:
+  ip: xx.xx.xx.xx
+############################# Nats Settings #############################
+nats:
+  server:
+    - nats://xx.xx.xx.01:6222
+    - nats://xx.xx.xx.02:6222
+    - nats://xx.xx.xx.03:6222
+  connname: aotomation
+############################# CMDB Settings #############################
+cmdb:
+  user: xxx
+  passwor: DDC595F3652BABFAA39E6F5
+  clientID : 6eba56-xxxx-xxxx-xxxx-eedfsf5523acb10
+  clientSecret : wmsUXXXXXXXXXXXXXXXXXXXXXXXXXXXXXRlVGLWA7hyM6xg1b
+  authURL : http://xx.xxx.xx.xx:6083/oauth/authorize
+  tokenURL : http://xx.xxx.xx.xx:6083/oauth/token
+  scope : vie.app.ox
+  readTimeout : 10
+  writeTimeout : 20
+  oxSigma: ENhwBDakR6yrIQbOoOPq
+  serverIP: xx.xxx.xx.xx
+  serverPort: 6083
+  nats:
+    stream:
+      name: CMDB
+      subject:
+        -  cmdb.>
+    baIdentifier: ci.application.ba
+    baSubject: cmdb.application.ba
+    omaIdentifier: ci.application.oma
+    omaSubject: cmdb.application.oma
+    pcsIdentifier: ci.server.pcs
+    pcsSubject: cmdb.server.pcs
+    minIdentifier: ci.server.min
+    minSubject: cmdb.server.min
+    vmwareIdentifier: ci.virtual.vmware
+    vmwareSubject: cmdb.virtual.vmware
+    casIdentifier: ci.virtual.cas
+    casSubject: cmdb.virtual.cas
+    cloudIdentifier: ci.virtual.cloud
+    cloudSubject: cmdb.virtual.cloud
+    kvmIdentifier: ci.virtual.kvm
+    kvmSubject: cmdb.virtual.kvm
+    hvIdentifier: ci.virtual.hv
+    hvSubject: cmdb.virtual.hv
+    pvmIdentifier: ci.virtual.pvm
+    pvmSubject: cmdb.virtual.pvm
+    damonIdentifier: ci.database.damon
+    damonSubject: cmdb.database.damon
+    greenplumIdentifier: ci.database.greenplum
+    greenplumSubject: cmdb.database.greenplum
+    mysqlIdentifier: ci.database.mysql
+    mysqlSubject: cmdb.database.mysql
+    oracleIdentifier: ci.database.oracle
+    oracleSubject: cmdb.database.oracle
+    apacheIdentifier: ci.middleware.apache
+    apacheSubject: cmdb.middleware.apache
+    bolandIdentifier: ci.middleware.boland
+    bolandSubject: cmdb.middleware.boland
+    mqIdentifier: ci.middleware.mq
+    mqSubject: cmdb.middleware.mq
+    nginxIdentifier: ci.middleware.nginx
+    nginxSubject: cmdb.middleware.nginx
+    redisIdentifier: ci.middleware.redis
+    redisSubject: cmdb.middleware.redis
+    tomcatIdentifier: ci.middleware.tomcat
+    tomcatSubject: cmdb.middleware.tomcat
+    tongtechIdentifier: ci.middleware.tongtech
+    tongtechSubject: cmdb.middleware.tongtech
+    tuxedoIdentifier: ci.middleware.tuxedo
+    tuxedoSubject: cmdb.middleware.tuxedo
+    websphereIdentifier: ci.middleware.websphere
+    websphereSubject: cmdb.middleware.websphere
+    weblogicIdentifier: ci.middleware.weblogic
+    weblogicSubject: cmdb.middleware.weblogic
+    zookeeperIdentifier: ci.middleware.zookeeper
+    zookeeperSubject: cmdb.middleware.zookeeper
+    addrIdentifier: ci.ip.addr
+    addrSubject: cmdb.ip.add
+    ipcSubject: cmdb.server.ipc
+    ipcIdentifier: ci.server.ipc
+############################# AOMS Settings #############################
+aoms:
+  db:
+    database: enxxr
+    host: xx.xxx.xx.xxx
+    port: 1521
+    username: enxxx
+    password: enxxx
+    logpath: ./log/aoms.log
+  nats:
+    # consumer
+    durable: AOMS
+############################# BlueCat Settings #############################
+bluecat:
+  username: xx
+  password: xxxxxxm%26*9
+  serverip: xx.xxx.xx.xxx
+############################# Zabbix Settings #############################
+zabbix:
+  username: xxxx
+  password: xxxxxxxxx
+  serverip: xx.xx.xx.xx
+  serverport: 80
+  proxyip: xx.xx.xx.xx
