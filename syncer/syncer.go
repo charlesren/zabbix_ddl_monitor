@@ -5,29 +5,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zabbix/zabbix-api-go"
+	"github.com/charlesren/zapix"
 )
-
-// Line 专线配置
-type Line struct {
-	ID       string
-	IP       string
-	Interval time.Duration
-	Router   Router
-}
-
-// Router 路由器连接信息
-type Router struct {
-	ID       string //预留，暂不使用
-	IP       string //通过ID识别Router
-	Username string
-	Password string
-	Platform string // 平台类型：cisco_iosxe/huawei_vrp 等
-}
 
 // ConfigSyncer 配置同步器 (原ConfigManager重构)
 type ConfigSyncer struct {
-	client      *zabbix.Client
+	client      *zapix.Client
 	lines       map[string]Line
 	version     int64
 	subscribers []chan struct{} // 改用回调函数更灵活
@@ -36,7 +19,7 @@ type ConfigSyncer struct {
 
 // NewConfigSyncer 创建配置同步器
 func NewConfigSyncer(zabbixURL, username, password string) (*ConfigSyncer, error) {
-	client, err := zabbix.NewClient(zabbixURL, username, password)
+	client, err := zapix.NewClient(zabbixURL, username, password)
 	if err != nil {
 		return nil, err
 	}

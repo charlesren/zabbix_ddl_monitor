@@ -12,11 +12,7 @@ import (
 	"github.com/charlesren/ylog"
 	"github.com/charlesren/zapix"
 	"github.com/spf13/viper"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/aggregator"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/batch"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/config"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/router"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/task"
+
 )
 
 var zc = zapix.NewZabbixClient()
