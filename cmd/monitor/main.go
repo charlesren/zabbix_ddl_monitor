@@ -1,18 +1,22 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/charlesren/zabbix_ddl_monitor/task"
-	"github.com/charlesren/zabbix_ddl_monitor/connection"
+	"github.com/charlesren/userconfig"
+	"github.com/charlesren/ylog"
+	"github.com/charlesren/zapix"
+	"github.com/spf13/viper"
+
 	"github.com/charlesren/zabbix_ddl_monitor/aggregator"
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 	"github.com/charlesren/zabbix_ddl_monitor/manager"
+	"github.com/charlesren/zabbix_ddl_monitor/task"
 )
 
 var zc = zapix.NewZabbixClient()
@@ -78,7 +82,7 @@ func main() {
 	// todo
 	//  获取绑定到proxy ip 的主机
 	// todo
-	
+
 	// 初始化组件
 	taskReg := task.NewRegistry()
 	taskReg.Register("ping", &task.PingTask{})
@@ -87,8 +91,8 @@ func main() {
 	aggregator := aggregator.New()
 	// Note: 创建manager实例来管理任务，而不是直接使用scheduler
 	mgr, err := manager.NewManager(
-		UserConfig.GetString("zabbix.serverip"), 
-		UserConfig.GetString("zabbix.username"), 
+		UserConfig.GetString("zabbix.serverip"),
+		UserConfig.GetString("zabbix.username"),
 		UserConfig.GetString("zabbix.password"))
 	if err != nil {
 		log.Fatalf("Failed to create manager: %v", err)
