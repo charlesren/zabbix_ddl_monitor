@@ -1,11 +1,11 @@
 package task
 
 import (
+	"context"
 	"fmt"
-	"strings"
+	"time"
 
-	"github.com/scrapli/scrapligo/channel"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/router"
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 )
 
 type ChangePasswordTask struct{}
@@ -97,7 +97,7 @@ func (t *ChangePasswordTask) GenerateCommands(platform string, params map[string
 	}
 }
 
-func (t *ChangePasswordTask) Execute(platform string, conn *router.Connection, params map[string]interface{}) (Result, error) {
+func (t *ChangePasswordTask) Execute(platform string, conn *connection.Connection, params map[string]interface{}) (Result, error) {
 	// 1. Generate interactive events
 	events, err := t.GenerateCommands(platform, params)
 	if err != nil {

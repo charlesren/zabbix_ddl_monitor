@@ -1,4 +1,4 @@
-module github.com/yourusername/zabbix_ddl_monitor
+module github.com/charlesren/zabbix_ddl_monitor
 
 go 1.21
 

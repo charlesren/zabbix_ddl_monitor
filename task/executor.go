@@ -1,22 +1,22 @@
-package scheduler
+package task
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"github.com/yourusername/zabbix_ddl_monitor/internal/router"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/task"
+	"github.com/charlesren/zabbix_ddl_monitor/internal/router"
 )
 
 // TaskExecutor executes platform-specific tasks on network devices
 type TaskExecutor struct {
-	task     task.Task
+	task     Task
 	platform string
 	conn     *router.Connection
 }
 
 // NewTaskExecutor creates a new executor instance
-func NewTaskExecutor(t task.Task, platform string, conn *router.Connection) *TaskExecutor {
+func NewTaskExecutor(t Task, platform string, conn *router.Connection) *TaskExecutor {
 	return &TaskExecutor{
 		task:     t,
 		platform: platform,
@@ -25,17 +25,17 @@ func NewTaskExecutor(t task.Task, platform string, conn *router.Connection) *Tas
 }
 
 // Run executes the task with provided parameters
-func (e *TaskExecutor) Run(params map[string]interface{}) (task.Result, error) {
+func (e *TaskExecutor) Run(params map[string]interface{}) (Result, error) {
 	// 1. Generate platform-specific commands
 	commands, err := e.task.Commands(e.platform, params)
 	if err != nil {
-		return task.Result{}, fmt.Errorf("command generation failed: %v", err)
+		return Result{}, fmt.Errorf("command generation failed: %v", err)
 	}
 
 	// 2. Get device connection
 	driver, err := e.conn.Get()
 	if err != nil {
-		return task.Result{}, fmt.Errorf("connection failed: %v", err)
+		return Result{}, fmt.Errorf("connection failed: %v", err)
 	}
 
 	// 3. Execute command sequence
@@ -43,7 +43,7 @@ func (e *TaskExecutor) Run(params map[string]interface{}) (task.Result, error) {
 	for _, cmd := range commands {
 		resp, err := driver.SendCommand(cmd)
 		if err != nil {
-			return task.Result{}, fmt.Errorf("command execution failed: %s (err: %v)", cmd, err)
+			return Result{}, fmt.Errorf("command execution failed: %s (err: %v)", cmd, err)
 		}
 		lastOutput = resp.Result
 	}
@@ -67,7 +67,7 @@ type TimedExecutor struct {
 }
 
 // Run executes with timeout control
-func (t *TimedExecutor) Run(params map[string]interface{}) (task.Result, error) {
+func (t *TimedExecutor) Run(params map[string]interface{}) (Result, error) {
 	// Implementation would use context.WithTimeout
 	// Omitted for brevity
 	return t.executor.Run(params)

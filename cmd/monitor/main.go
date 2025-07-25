@@ -1,18 +1,18 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	"github.com/charlesren/userconfig"
-	"github.com/charlesren/ylog"
-	"github.com/charlesren/zapix"
-	"github.com/spf13/viper"
-
+	"github.com/charlesren/zabbix_ddl_monitor/task"
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
+	"github.com/charlesren/zabbix_ddl_monitor/aggregator"
+	"github.com/charlesren/zabbix_ddl_monitor/manager"
 )
 
 var zc = zapix.NewZabbixClient()
@@ -36,6 +36,7 @@ func initConfig() {
 	initLog()
 	initZabbix()
 }
+
 func initLog() {
 	logLevel := UserConfig.GetInt("server.log.applog.loglevel")
 	logPath := "../logs/setupAppProcessPortMonitor.log"
@@ -69,32 +70,35 @@ func initZabbix() {
 	}
 	ylog.Infof("Zabbix", "login success")
 }
+
 func main() {
 	// 通过config解析 proxy ip
-	var proxy_ip := UserConfig.GetString("server.ip")
+	proxyIP := UserConfig.GetString("server.ip")
 	// 根据proxy ip,通过zabbix api  获取proxy  id
 	// todo
 	//  获取绑定到proxy ip 的主机
 	// todo
+	
 	// 初始化组件
 	taskReg := task.NewRegistry()
 	taskReg.Register("ping", &task.PingTask{})
 
-	connPool := router.NewConnectionPool()
+	connPool := connection.NewConnectionPool()
 	aggregator := aggregator.New()
-	scheduler := batch.NewRouterGroupScheduler(taskReg, connPool, aggregator)
-
-	// 模拟添加专线
-	cfgMgr := config.NewConfigManager()
-	for _, line := range cfgMgr.GetLines() {
-		scheduler.AddLine(line)
+	// Note: 创建manager实例来管理任务，而不是直接使用scheduler
+	mgr, err := manager.NewManager(
+		UserConfig.GetString("zabbix.serverip"), 
+		UserConfig.GetString("zabbix.username"), 
+		UserConfig.GetString("zabbix.password"))
+	if err != nil {
+		log.Fatalf("Failed to create manager: %v", err)
 	}
+	mgr.Start()
 
 	// 优雅退出
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
-	scheduler.Stop()
+	mgr.Stop()
 	log.Println("服务已停止")
-
 }

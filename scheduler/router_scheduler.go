@@ -1,34 +1,34 @@
 package scheduler
 
 import (
-	"log"
+	"context"
 	"sync"
 	"time"
 
-	"github.com/yourusername/zabbix_ddl_monitor/internal/config"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/router"
+	"github.com/charlesren/zabbix_ddl_monitor/syncer"
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 )
 
 type RouterScheduler struct {
-	router     *router.Router
-	connection *router.Connection
+	router     *connection.Router
+	connection *connection.Connection
 	queues     map[time.Duration]*IntervalQueue
 	closeChan  chan struct{}
 	wg         sync.WaitGroup
 	mu         sync.Mutex
 }
 
-func NewRouterScheduler(router *router.Router) *RouterScheduler {
+func NewRouterScheduler(router *connection.Router) *RouterScheduler {
 	return &RouterScheduler{
 		router:     router,
-		connection: router.NewConnection(router),
+		connection: connection.NewConnection(*router),
 		queues:     make(map[time.Duration]*IntervalQueue),
 		closeChan:  make(chan struct{}),
 	}
 }
 
 // 添加专线到对应间隔队列
-func (s *RouterScheduler) AddLine(line config.Line) {
+func (s *RouterScheduler) AddLine(line syncer.Line) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

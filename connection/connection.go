@@ -1,4 +1,4 @@
-package router
+package connection
 
 import (
 	"sync"

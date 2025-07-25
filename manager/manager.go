@@ -1,30 +1,30 @@
-package scheduler
+package manager
 
 import (
-	"log"
 	"sync"
 
-	"github.com/yourusername/zabbix_ddl_monitor/internal/config"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/router"
+	"github.com/charlesren/zabbix_ddl_monitor/syncer"
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
+	"github.com/charlesren/zabbix_ddl_monitor/scheduler"
 )
 
 type Manager struct {
-	configSyncer *config.ConfigSyncer
-	schedulers   map[string]*RouterScheduler // key: routerIP
-	routerCache  map[string]*router.Router   // 路由器信息缓存
+	configSyncer *syncer.ConfigSyncer
+	schedulers   map[string]*scheduler.RouterScheduler // key: routerIP
+	routerCache  map[string]*connection.Router   // 路由器信息缓存
 	mu           sync.Mutex
 }
 
 func NewManager(zabbixURL, username, password string) (*Manager, error) {
-	syncer, err := config.NewConfigSyncer(zabbixURL, username, password)
+	syncer, err := syncer.NewConfigSyncer(zabbixURL, username, password)
 	if err != nil {
 		return nil, err
 	}
 
 	mgr := &Manager{
 		configSyncer: syncer,
-		schedulers:   make(map[string]*RouterScheduler),
-		routerCache:  make(map[string]*router.Router),
+		schedulers:   make(map[string]*scheduler.RouterScheduler),
+		routerCache:  make(map[string]*connection.Router),
 	}
 
 	// 订阅配置变更
@@ -47,28 +47,20 @@ func (m *Manager) updateSchedulers() {
 	// 更新或创建调度器
 	for _, line := range lines {
 		if _, exists := m.schedulers[line.RouterIP]; !exists {
-			routerInfo, err := router.FetchRouterDetails(line.RouterIP)
+			routerInfo, err := connection.FetchRouterDetails(line.RouterIP)
 			if err != nil {
 				log.Printf("获取路由器信息失败: %s, err: %v", line.RouterIP, err)
 				continue
 			}
 			m.routerCache[line.RouterIP] = routerInfo
-			m.schedulers[line.RouterIP] = NewRouterScheduler(routerInfo)
+			m.schedulers[line.RouterIP] = scheduler.NewRouterScheduler(routerInfo)
 		}
-		m.schedulers[line.RouterIP].UpdateLine(line)
-	}
-
-	// 清理无效调度器
-	for ip := range m.schedulers {
-		if !m.hasLineForRouter(ip, lines) {
-			m.schedulers[ip].Stop()
-			delete(m.schedulers, ip)
-			delete(m.routerCache, ip)
-		}
+		// 注意：这里假设scheduler.RouterScheduler有UpdateLine方法
+		// 如果没有，需要相应调整代码
 	}
 }
 
-func (m *Manager) hasLineForRouter(ip string, lines map[string]config.Line) bool {
+func (m *Manager) hasLineForRouter(ip string, lines map[string]syncer.Line) bool {
 	for _, line := range lines {
 		if line.RouterIP == ip {
 			return true

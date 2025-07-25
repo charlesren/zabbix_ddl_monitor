@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/scrapli/scrapligo/channel"
-	"github.com/yourusername/zabbix_ddl_monitor/internal/router"
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 )
 
 // Result represents the structured output of a task execution
@@ -20,7 +20,7 @@ type Task interface {
 	GenerateCommands(platform string, params map[string]interface{}) ([]*channel.SendInteractiveEvent, error)
 
 	// Execute runs the task and returns a structured result
-	Execute(platform string, conn *router.Connection, params map[string]interface{}) (Result, error)
+	Execute(platform string, conn *connection.Connection, params map[string]interface{}) (Result, error)
 
 	// ParamsSpec describes required parameters
 	ParamsSpec() map[string]string
