@@ -1,53 +1,72 @@
-# Design: Line Monitoring
+# 专线监控系统设计文档
 
-## Overview
-通过动态管理专线配置和路由器连接，实现多平台任务执行与批量结果上报的核心流程如下：
-1. **配置同步**：从 Zabbix API 拉取专线配置，更新本地任务队列。
-2. **任务调度**：按专线间隔调度任务，支持任务合并与批量执行。
-3. **结果上报**：批量压缩检测结果并上报至 Zabbix。
+## 1. 概述
+本系统通过Zabbix实现网络专线通断监控，通过动态管理专线配置和路由器连接，实现多平台任务执行与批量结果上报的核心流程：
+1. **配置同步**：从 Zabbix API 拉取专线配置，更新本地任务队列
+2. **任务调度**：按专线间隔执行路由器Ping检测，支持立即执行任务，复用路由器连接。
+3. **结果上报**：批量汇总检测结果回传Zabbix
 
-## Architecture
+## 2. 系统架构
 ```mermaid
 graph TD
-    A[ConfigSyncer] -->|同步配置| B[SchedulerManager]
+    A[ConfigSyncer] -->|专线配置| B[SchedulerManager]
     B --> C[RouterScheduler1]
     B --> D[RouterScheduler2]
     C --> E[IntervalQueue-30s]
-    C --> F[ImmediateQueue]
-    D --> G[IntervalQueue-60s]
-    D --> H[ImmediateQueue]
-    E --> I[ExecutorPool]
-    F --> I
-    G --> I
-    H --> I
-    I --> J[Aggregator]
-    J -->|上报| K[Zabbix]
+     D --> F[IntervalQueue-60s]
+    E --> G[ExecutorPool]
+    F --> G
+    G -->|任务参数| H[TaskRegistry]
+    H -->|平台实现| I[PingTask:cisco_iosxe]
+    H -->|平台实现| J[PingTask:huawei_vrp]
+    G -->|上报| K[Zabbix]
+
+
+
+
 ```
 
-## Components
+## 3. 核心模块
 
-### RouterScheduler (核心调度器)
-- **职责**：
-  - 管理单个路由器的所有任务队列。
-  - 协调周期任务和立即任务的执行。
-  - 支持按间隔合并任务，减少连接开销。
-  - 确保每个路由器独立调度。
-- **队列类型**：
-  - `IntervalTaskQueue`：按固定间隔触发任务，支持任务合并。
-  - `ImmediateQueue`：立即执行的高优先级任务。
+### 3.1 配置同步模块 （ConfigSyncer）
+- 从Zabbix API获取专线配置（IP/间隔/路由器信息）
+- 维护动态专线列表
+- 配置变更时触发调度更新
+- 输出：`[]Line`（专线列表）
 
-### 任务调度规则
-1. **任务生成与合并**：
-   - 每条专线生成一个独立任务（如 `Ping` 任务）。
-   - 专线任务和路由器关联
-   - 同一路由器的任务按间隔分组（如 `30s`、`60s`）。
-   - 相同间隔的任务合并为一个批量任务，共享执行资源。
+### 3.2 调度中心 （SchedulerManager）
+- 管理所有路由器的任务队列
 
-2. **执行优先级**：
-   - 立即任务可抢占周期任务的执行资源。
-   - 周期任务严格按间隔触发，避免资源竞争。
+### 3.3  RouterScheduler
+- 维护路由器级别的任务队列（`IntervalQueue`/`ImmediateQueue`）
+- 合并相同间隔的任务
+- 支持两种调度模式：
+  - **定时任务**：按配置间隔（30s/60s等）执行
+  - **即时任务**：高优先级立即执行
 
-## Data Models
+### 3.4 Task
+- 多平台命令适配（Cisco/华为/H3C）
+
+
+### 3.5 任务仓库
+- 任务实现注册中心
+- 提供任务发现接口
+- 提供平台适配器查询接口
+- 参数规范校验
+
+### 3.6 执行引擎
+- 执行任务命令（连接复用）
+- 管理超时和重试
+
+
+
+
+
+
+
+## 4. 核心数据结构
+```markdown
+### 数据模型
 ```go
 // 专线配置
 type Line struct {
@@ -66,30 +85,144 @@ type Router struct {
 }
 
 // 任务结果
-type TaskResult struct {
+type Result struct {
     Success bool
-    Error   string
+    Data    map[string]interface{}  // 指标数据（如延迟、丢包率）
+    Error   *TaskError              // 错误详情（可选）
+}
+
+type Registry struct {
+    tasks map[string]Task           // 任务名称 -> 任务实现
+      mu    sync.RWMutex
+}
+
+任务接口规范
+```go
+type Task interface {
+    // 生成设备可执行命令
+    GenerateCommand(platform string, params map[string]interface{}) (string, error)
+
+    // 解析设备返回结果
+    ParseOutput(platform string, output string) (Result, error)
+
+    // 定义任务参数规范
+    ParamsSpec() []ParamSpec
 }
 ```
 
-## 动态调整与错误处理
-- **动态调整**：
-  - 新增专线：自动创建或更新对应的 `IntervalTaskQueue`。
-  - 移除专线：清理无效任务，释放资源。
-- **错误处理**：
-  - 间隔冲突：拒绝非整数倍间隔的任务。
-  - 队列满：立即任务过多时拒绝新任务。
-  - 执行超时：终止长时间运行的任务。
+平台适配实现
+```go
+// 平台处理器接口
+type PlatformHandler interface {
+    GenerateCommand(params map[string]interface{}) (string, error)
+    ParseOutput(output string) (Result, error)
+}
 
-## 测试策略
-1. **单元测试**：
-   - 验证间隔队列的正确调度
-   - 测试立即任务的抢占逻辑
+// 全局注册表（示例）
+var platformHandlers = map[string]PlatformHandler{
+    "cisco_iosxe": &CiscoPingHandler{},
+    "huawei_vrp":  &HuaweiPingHandler{},
+}
 
-2. **集成测试**：
-   - 模拟完整任务生命周期（从配置同步到结果上报）
-   - 验证多队列并发执行
+// 华为VRP平台示例
+type HuaweiVRPHandler struct{}
 
-3. **压力测试**：
-   - 高负载下的队列稳定性
-   - 混合任务类型的执行效率
+func (h *HuaweiVRPHandler) GenerateCommand(params PingParams) string {
+    return fmt.Sprintf("ping -c %d %s", params.Repeat, params.TargetIP)
+}
+```
+
+参数规范
+```go
+type ParamSpec struct {
+    Name     string                 // 参数名（如 "target_ip"）
+    Type     string                 // 类型（"string"/"int"/"duration"）
+    Required bool                   // 是否必填
+    Default  interface{}            // 默认值
+    Validate func(interface{}) error // 校验函数
+}
+
+// 示例：PingTask 参数校验
+func (t *PingTask) ParamsSpec() []ParamSpec {
+    return []ParamSpec{
+        {
+            Name:     "target_ip",
+            Type:     "string",
+            Required: true,
+            Validate: func(v interface{}) error {
+                if net.ParseIP(v.(string)) == nil {
+                    return errors.New("invalid IP format")
+                }
+                return nil
+            },
+        },
+    }
+}
+```
+
+
+## 5. 执行流程
+
+### 任务生命周期
+1. **参数校验**
+   - 调用 `ParamsSpec()` 校验输入参数。
+2. **命令生成**
+   - 根据平台选择处理器，生成原始命令。
+3. **结果解析**
+   - 调用处理器的 `ParseOutput` 方法。
+4. **错误处理**
+   - 统一包装为 `TaskError`。
+
+
+## 6. 错误处理
+
+
+
+### 错误类型
+```go
+type TaskError struct {
+    Code    string                 // 错误码（如 "INVALID_PARAMS"）
+    Message string                 // 用户友好描述
+    Details map[string]interface{} // 上下文信息
+}
+
+// 常见错误码
+const (
+    ErrInvalidParams    = "INVALID_PARAMS"
+    ErrUnsupportedPlatform = "UNSUPPORTED_PLATFORM"
+    ErrExecutionTimeout = "EXECUTION_TIMEOUT"
+)
+```
+
+
+错误分类
+| 错误类型         | 处理方式                 |
+|------------------|--------------------------|
+| 参数校验失败     | 拒绝任务并记录日志       |
+| 平台不支持       | 标记失败并触发告警       |
+| 执行超时         | 终止任务并释放连接       |
+
+## 7. 测试方案
+
+### 7.1 单元测试
+- 参数校验逻辑
+- 命令生成器测试
+- 结果解析器测试
+
+### 7.2 集成测试
+- 完整流程测试：
+  1. 模拟Zabbix配置下发
+  2. 验证任务调度
+  3. 检查结果上报
+
+## 8. 扩展设计
+
+### 8.1 新增平台支持
+1. 实现平台Handler接口
+2. 注册到任务仓库
+3. 添加平台测试用例
+
+### 8.2 新增检测类型
+1. 实现Task接口
+2. 定义参数规范
+3. 注册任务实现
