@@ -1,68 +1,103 @@
-# Tasks: Line Monitoring
+# Implementation Plan: Line Monitoring
 
-## Implementation Plan
+## Core Components Implementation
 
-### 1. **ConfigSyncer Implementation**
-- [ ] **Objective**: Implement Zabbix API integration to fetch line configurations.
-  - [ ] Fetch line details (IP, interval, router info) from Zabbix API.
-  - [ ] Implement periodic sync mechanism.
-  - [ ] Handle API failures with retries and caching.
+### 1. ConfigSyncer Implementation
+- [ ] 1.1 Implement Zabbix API client
+  - Add authentication and request handling
+  - Support periodic configuration sync
+  - Requirements: 1.1, 1.2
 
-### 2. **Router Connection Management**
-- [ ] **Objective**: Implement connection pooling and lifecycle management.
-  - [ ] Use `scrapligo` for router connections.
-  - [ ] Implement connection reuse and keep-alive.
-  - [ ] Handle connection errors and retries.
+- [ ] 1.2 Design configuration data model
+  - Define Line and Router structs
+  - Add validation logic
+  - Requirements: 2.1, 2.2
 
-### 3. **Task Execution System**
-- [ ] **Objective**: Implement platform-specific task execution.
-  - [ ] Register tasks (e.g., Ping) for supported platforms.
-  - [ ] Implement command batching using `scrapligo` channels.
-  - [ ] Parse and validate task results.
+### 2. Router Connection Management
+- [ ] 2.1 Implement connection pooling
+  - Use scrapligo for multi-platform support
+  - Add keep-alive mechanism
+  - Requirements: 3, 4
 
-### 4. **Scheduler Implementation**
-- [ ] **Objective**: Implement interval-based task scheduling.
-  - [ ] Create `IntervalTaskQueue` for each line interval.
-  - [ ] Handle concurrent task execution safely.
-  - [ ] Implement task cancellation and timeout handling.
+- [ ] 2.2 Create RouterScheduler factory
+  - Initialize per-router schedulers
+  - Manage lifecycle of connections
+  - Requirements: 11
 
-### 5. **Result Aggregation & Reporting**
-- [ ] **Objective**: Implement result compression and reporting.
-  - [ ] Batch results for efficient reporting.
-  - [ ] Integrate with Zabbix sender for result submission.
-  - [ ] Handle reporting failures gracefully.
+### 3. Task System Implementation
+- [ ] 3.1 Build TaskRegistry
+  - Support platform-specific task registration
+  - Implement automatic discovery
+  - Requirements: 5, 6
 
-### 6. **Dynamic Configuration Handling**
-- [ ] **Objective**: Handle dynamic changes to line configurations.
-  - [ ] Detect and apply configuration changes.
-  - [ ] Clean up unused router connections and queues.
-  - [ ] Gracefully handle line additions/removals.
+- [ ] 3.2 Develop IntervalTaskQueue
+  - Implement strict interval scheduling
+  - Add task merging logic
+  - Requirements: 8, 9
 
-### 7. **Error Handling & Logging**
-- [ ] **Objective**: Improve error handling and logging.
-  - [ ] Add structured logging for critical events.
-  - [ ] Implement panic recovery.
-  - [ ] Provide contextual error messages.
+### 4. Execution Pipeline
+- [ ] 4.1 Create command batching
+  - Support scrapligo channel integration
+  - Add platform-specific command generation
+  - Requirements: 7
 
-### 8. **Testing Infrastructure**
-- [ ] **Objective**: Set up comprehensive testing.
-  - [ ] Write unit tests for core components.
-  - [ ] Mock Zabbix API and router interactions for integration tests.
-  - [ ] Validate performance under load.
+- [ ] 4.2 Implement result processing
+  - Add platform-specific parsers
+  - Validate and normalize results
+  - Requirements: 6
 
-### 9. **Configuration Management**
-- [ ] **Objective**: Support flexible configuration.
-  - [ ] Add support for config files and environment variables.
-  - [ ] Implement secrets management for credentials.
-  - [ ] Validate configuration on startup.
+### 5. Reporting System
+- [ ] 5.1 Build Aggregator
+  - Implement batch compression
+  - Add result deduplication
+  - Requirements: 10
 
-### 10. **Extensibility**
-- [ ] **Objective**: Ensure the system is extensible.
-  - [ ] Design a plugin system for new platforms.
-  - [ ] Add health checks and metrics endpoints.
-  - [ ] Implement rate limiting for task execution.
+- [ ] 5.2 Create Zabbix reporter
+  - Implement bulk submission
+  - Add error handling
+  - Requirements: 10
 
-## Notes
-- Each task includes references to specific requirements from `requirements.md`.
-- Tasks are ordered to ensure dependencies are resolved early.
-- Testing and error handling are integrated into each phase.
+## Testing Strategy
+
+### 6. Unit Tests
+- [ ] 6.1 Test interval queue logic
+  - Verify task merging
+  - Validate strict scheduling
+  - Requirements: 8, 9
+
+- [ ] 6.2 Test platform adapters
+  - Validate command generation
+  - Verify result parsing
+  - Requirements: 4, 6
+
+### 7. Integration Tests
+- [ ] 7.1 Test full pipeline
+  - From config sync to result reporting
+  - Verify multi-router scenarios
+  - Requirements: All
+
+### 8. Performance Testing
+- [ ] 8.1 Load test scheduler
+  - Measure under high task volume
+  - Verify connection pool scaling
+  - Requirements: 3, 9
+
+## Implementation Notes
+1. Follow test-driven development approach
+2. Each task should reference specific requirements
+3. Prioritize core functionality first (1.1, 2.1, 3.1)
+4. Maintain platform independence in core components
+``` 
+
+This implementation plan:
+1. Covers all requirements from requirements.md
+2. Aligns with design.md architecture
+3. Provides clear actionable tasks
+4. Includes testing strategy
+5. Maintains traceability to requirements
+
+The tasks are organized to:
+- Implement core components first
+- Support incremental development
+- Enable parallel work streams
+- Ensure full requirement coverage
