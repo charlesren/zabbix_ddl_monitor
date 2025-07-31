@@ -6,39 +6,65 @@
 2. **任务调度**：按专线间隔执行路由器Ping检测，支持立即执行任务，复用路由器连接。
 3. **结果上报**：批量汇总检测结果回传Zabbix。
 
-## 2. 系统架构
+## 2. 系统架构与关键流程
 ### 2.1 架构图
 ```mermaid
 graph TD
-    A[ConfigSyncer] -->|专线配置| B[SchedulerManager]
-    B --> C[RouterScheduler1]
-    B --> D[RouterScheduler2]
-    C --> E[IntervalQueue-30s]
-    D --> F[IntervalQueue-60s]
-    E --> G[ExecutorPool]
-    F --> G
-    G -->|任务参数| H[TaskRegistry]
-    H -->|平台实现| I[PingTask:cisco_iosxe]
-    H -->|平台实现| J[PingTask:huawei_vrp]
-    G -->|上报| K[Zabbix]
+    %% 配置同步层
+    A[Zabbix] -->|推送配置| B[ConfigSyncer]
+    B -->|Line列表| C[Manager]
+
+    %% 任务调度层
+    C -->|创建/更新| D[RouterScheduler1]
+    C -->|创建/更新| E[RouterScheduler2]
+    D -->|持有| F[IntervalQueue-30s]
+    D -->|持有| G[ImmediateQueue]
+    E -->|持有| H[IntervalQueue-60s]
+    E -->|持有| I[ImmediateQueue]
+
+    %% 执行层（核心变更点）
+    D --> J[Executor1]
+    E --> K[Executor2]
+    J -->|管理| L[ConnPool:10.0.0.1]
+    K -->|管理| M[ConnPool:10.0.0.2]
+    J -->|调用| N[TaskRegistry]
+    K -->|调用| N
+
+    %% 结果上报层
+    J --> O[Aggregator]
+    K --> O
+    O -->|批量上报| P[Zabbix]
 ```
 
 ### 2.2 核心模块
+
 #### 配置同步模块（ConfigSyncer）
 - 从Zabbix API获取专线配置（IP/间隔/路由器信息）。
-- 维护动态专线列表。
-- 配置变更时触发调度更新。
 - 输出：`[]Line`（专线列表）。
 
-#### 调度中心（SchedulerManager）
-- 管理所有路由器的任务队列。
+#### 调度中心（Manager）
+- 管理ConfigSyncer，定期获取配置
+- 维护动态专线列表。
+- 专线变更通知RouterScheduler更新。
+- 管理所有RouterScheduler创建、删除
+- 管理路由器信息缓存
 
 #### 路由器调度器（RouterScheduler）
+- （`IntervalQueue`/`ImmediateQueue`）生成任务
 - 维护路由器级别的任务队列（`IntervalQueue`/`ImmediateQueue`）。
-- 合并相同间隔的任务。
-- 支持两种调度模式：
-  - **定时任务**：按配置间隔（30s/60s等）执行。
-  - **即时任务**：高优先级立即执行。
+- IntervalQueue里的任务合并。
+- IntervalQueue定时触发任务。
+- 触发任务分发至 `Executor`。
+
+#### 执行器 （Executor）
+- **职责**：
+  - 管理路由器连接池（`ConnPool`），负责连接的申请、释放和健康检查
+  - 调用 `TaskRegistry` 生成和解析命令
+  - 控制任务超时（默认30秒）和重试（最多3次）
+  - 定期清理无效连接（健康检查周期：5分钟）
+- **健康检查**：每5分钟扫描 `ConnPool`，清理无效连接
+- **超时控制**：单任务默认超时30秒，超时后强制释放连接
+
 
 #### 任务仓库（TaskRegistry）
 - 任务实现注册中心。
@@ -46,9 +72,65 @@ graph TD
 - 提供平台适配器查询接口。
 - 参数规范校验。
 
-#### 执行引擎（ExecutorPool）
-- 执行任务命令（连接复用）。
-- 管理超时和重试。
+#### 监控任务实现 （ping_task）
+- 支持多平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)
+- 支持scrapligo和channel
+- 支持命令合并
+
+#### 结果上报 （aggregator）
+- 合并结果并上报
+- 触发上报条件
+  - 缓冲区达到 100 条结果，或
+  - 最近一次上报后超过 5 秒。
+
+
+### 2.3 关键时序流程
+#### 配置同步时序
+```mermaid
+sequenceDiagram
+    participant Zabbix
+    participant ConfigSyncer
+    participant Manager
+    participant RouterScheduler
+    participant IntervalQueue
+
+    Zabbix->>ConfigSyncer: 推送Line配置
+    ConfigSyncer->>Manager: 计算差异（新增/删除Line）
+    alt 新增路由器
+        Manager->>RouterScheduler: 创建实例（含连接池）
+    else 更新现有路由器
+        Manager->>RouterScheduler: 更新Line列表
+    end
+    RouterScheduler->>IntervalQueue: 按Interval分配任务
+    IntervalQueue-->>RouterScheduler: 确认合并结果（如：3个任务合并为1个）
+
+```
+
+#### 任务执行时序
+```mermaid
+sequenceDiagram
+    participant Queue
+    participant RouterScheduler
+    participant Executor
+    participant TaskRegistry
+    participant Aggregator
+
+    %% 任务分发与执行
+    Queue->>RouterScheduler: 提供合并后的任务列表
+    RouterScheduler->>Executor: 提交任务（Task）
+    Executor->>Executor: 申请连接（GetConn）
+    Executor->>TaskRegistry: 生成命令（PingTask）
+    TaskRegistry-->>Executor: 返回命令（"ping 10.0.0.1"）
+    Executor->>scrapligo.Channel: 执行命令
+    scrapligo.Channel-->>Executor: 返回输出
+    Executor->>TaskRegistry: 解析输出
+    TaskRegistry-->>Executor: 返回Result
+    Executor->>Aggregator: 提交结果
+    Executor->>Executor: 释放连接（ReleaseConn）
+```
+
+
+
 
 ## 3. 核心数据结构
 ### 专线配置
@@ -64,6 +146,7 @@ type Line struct {
 ### 路由器信息
 ```go
 type Router struct {
+
     IP       string
     Username string
     Password string  // 加密存储
@@ -71,14 +154,52 @@ type Router struct {
 }
 ```
 
-### 任务结果
+### 管理器（Manager）
 ```go
-type Result struct {
-    Success bool
-    Data    map[string]interface{}  // 指标数据（如延迟、丢包率）
-    Error   *TaskError              // 错误详情（可选）
+type Manager struct {
+	configSyncer *syncer.ConfigSyncer
+	schedulers   map[string]*scheduler.RouterScheduler // key: routerIP
+	routerCache  map[string]*connection.Router   // 路由器信息缓存
+	mu           sync.Mutex
 }
 ```
+
+
+### 路由器调度器（RouterScheduler）
+```go
+type IntervalQueue struct {
+    Tasks     []Task          // 待执行任务列表（按间隔分组）
+   	Interval time.Duration
+	Lines    []*config.Line
+	NextRun  time.Time
+	Mu       sync.Mutex
+	Timer    *time.Ticker    // 调度触发器
+}
+type RouterScheduler struct {
+	Router     *connection.Router
+	Connection *connection.Connection
+	Queues     map[time.Duration]*IntervalQueue
+	CloseChan  chan struct{}
+	WG         sync.WaitGroup
+	Mu         sync.Mutex
+}
+
+
+type Executor struct {
+    ConnPool    map[string]scrapligo.Channel // key: Router.IP
+    Mu          sync.Mutex                   // 连接池并发锁
+    TaskTimeout time.Duration                // 单任务超时时间
+    Scheduler   *RouterScheduler             // 反向引用，用于队列交互
+}
+@@ -Executor的执行逻辑-
+func (e *Executor) RunTask(task Task) {
+    conn := e.GetConn(task.RouterIP)
+    driver, err := conn.Get() // 获取scrapligo驱动
+    response, err := driver.SendInteractive(task.Events) // 执行交互式命令
+}
+
+```
+
 
 ### 任务接口规范
 ```go
@@ -107,16 +228,63 @@ var platformHandlers = map[string]PlatformHandler{
     "cisco_iosxe": &CiscoPingHandler{},
     "huawei_vrp":  &HuaweiPingHandler{},
 }
+type CiscoIOSXEHandler struct {
+   DefaultEvents []*scrapligo.Event // 预定义交互事件
+}
+
+func (h *CiscoIOSXEHandler) GenerateCommand(params map[string]interface{}) ([]*scrapligo.Event, error) {
+  return h.DefaultEvents, nil // 返回scrapligo事件序列
+}
+
+
+
+```
+### 注册任务
+- 通过 `init()` 函数在模块加载时注册任务：
+```go
+type Registry struct {
+	mu    sync.RWMutex
+	tasks map[string]Task
+}
+// Register adds a new task implementation to the registry
+func (r *Registry) Register(name string, t Task) error {
+  r.tasks[name] = t
+}
+init(){
+	//todo
+}
+
 ```
 
-## 4. 任务生命周期
-1. **参数校验**：调用 `ParamsSpec()` 校验输入参数。
-2. **命令生成**：根据平台选择处理器，生成原始命令。
-3. **结果解析**：调用处理器的 `ParseOutput` 方法。
-4. **错误处理**：统一包装为 `TaskError`。
+### 任务结果
+```go
+type Result struct {
+    Success bool
+    Data    map[string]interface{}  // 指标数据（如延迟、丢包率）
+    Error   *TaskError              // 错误详情（可选）
+}
+type BatchResult struct {
+    Timestamp  time.Time         // 批次时间戳
+    Results    []Result          // 合并后的检测结果
+    RouterID   string            // 路由器标识（用于溯源）
+}
+```
 
-## 5. 错误处理
-### 错误类型
+
+## 4.数据流与错误处理
+
+
+### 4.1 正常流程
+1. **连接申请**：
+   - `Executor` 从 `ConnPool` 获取连接，若不存在则新建并缓存。
+2. **命令生成**：
+   - 调用 `TaskRegistry.GenerateCommand()`，传入平台类型和参数（如 `{IP: "10.0.0.1"}`）。
+3. **结果解析**：
+   - 原始输出通过 `TaskRegistry.ParseOutput()` 转换为统一 `Result` 格式。
+
+
+
+### 错误处理
 ```go
 type TaskError struct {
     Code    string                 // 错误码（如 "INVALID_PARAMS"）
@@ -124,15 +292,16 @@ type TaskError struct {
     Details map[string]interface{} // 上下文信息
 }
 ```
-
-### 错误分类
 | 错误类型         | 处理方式                 |
 |------------------|--------------------------|
+| 连接申请失败     | 标记任务失败，触发告警并重试（最多3次）。 |
 | 参数校验失败     | 拒绝任务并记录日志       |
 | 平台不支持       | 标记失败并触发告警       |
 | 执行超时         | 终止任务并释放连接       |
+| 上报失败         | 本地缓存结果，下次批次重试（最多3次） |
 
-## 6. 测试方案
+
+## 5. 测试方案
 ### 单元测试
 - 参数校验逻辑。
 - 命令生成器测试。
@@ -144,7 +313,7 @@ type TaskError struct {
   2. 验证任务调度。
   3. 检查结果上报。
 
-## 7. 扩展设计
+## 6. 扩展设计
 ### 新增平台支持
 1. 实现平台Handler接口。
 2. 注册到任务仓库。
