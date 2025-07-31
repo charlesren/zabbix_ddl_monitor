@@ -1,103 +1,86 @@
-# Implementation Plan: Line Monitoring
+# 实施计划：专线监控系统
 
-## Core Components Implementation
+## 1. 配置同步模块实现
+- [ ] 1.1 实现 Zabbix API 客户端
+  - 支持认证和请求处理
+  - 实现周期性配置同步
+  - _需求: 1.1, 1.2_
 
-### 1. ConfigSyncer Implementation
-- [ ] 1.1 Implement Zabbix API client
-  - Add authentication and request handling
-  - Support periodic configuration sync
-  - Requirements: 1.1, 1.2
+- [ ] 1.2 设计专线配置数据模型
+  - 定义 `Line` 和 `Router` 结构体
+  - 实现配置验证逻辑
+  - _需求: 2.1, 2.2_
 
-- [ ] 1.2 Design configuration data model
-  - Define Line and Router structs
-  - Add validation logic
-  - Requirements: 2.1, 2.2
+## 2. 路由器连接管理
+- [ ] 2.1 实现连接池
+  - 使用 `scrapligo` 支持多平台连接
+  - 实现连接健康检查和复用机制
+  - _需求: 3, 4_
 
-### 2. Router Connection Management
-- [ ] 2.1 Implement connection pooling
-  - Use scrapligo for multi-platform support
-  - Add keep-alive mechanism
-  - Requirements: 3, 4
+- [ ] 2.2 创建路由器调度器工厂
+  - 初始化每个路由器的独立调度器
+  - 管理连接的生命周期
+  - _需求: 11_
 
-- [ ] 2.2 Create RouterScheduler factory
-  - Initialize per-router schedulers
-  - Manage lifecycle of connections
-  - Requirements: 11
+## 3. 任务系统实现
+- [ ] 3.1 构建任务注册中心 (`TaskRegistry`)
+  - 支持平台特定任务的注册和发现
+  - 实现任务参数规范校验
+  - _需求: 5, 6_
 
-### 3. Task System Implementation
-- [ ] 3.1 Build TaskRegistry
-  - Support platform-specific task registration
-  - Implement automatic discovery
-  - Requirements: 5, 6
+- [ ] 3.2 开发间隔任务队列 (`IntervalQueue`)
+  - 实现严格按间隔调度的任务队列
+  - 支持相同路由器和间隔的任务合并
+  - _需求: 8, 9_
 
-- [ ] 3.2 Develop IntervalTaskQueue
-  - Implement strict interval scheduling
-  - Add task merging logic
-  - Requirements: 8, 9
+## 4. 执行与结果处理
+- [ ] 4.1 实现命令批处理
+  - 集成 `scrapligo.Channel` 执行平台特定命令
+  - 支持命令的动态生成
+  - _需求: 7_
 
-### 4. Execution Pipeline
-- [ ] 4.1 Create command batching
-  - Support scrapligo channel integration
-  - Add platform-specific command generation
-  - Requirements: 7
+- [ ] 4.2 开发结果解析器
+  - 实现平台特定的输出解析逻辑
+  - 结果归一化为统一格式 (`Result`)
+  - _需求: 6_
 
-- [ ] 4.2 Implement result processing
-  - Add platform-specific parsers
-  - Validate and normalize results
-  - Requirements: 6
+## 5. 结果上报系统
+- [ ] 5.1 构建结果聚合器 (`Aggregator`)
+  - 实现结果压缩和批量处理
+  - 支持动态调整上报频率
+  - _需求: 10_
 
-### 5. Reporting System
-- [ ] 5.1 Build Aggregator
-  - Implement batch compression
-  - Add result deduplication
-  - Requirements: 10
+- [ ] 5.2 实现 Zabbix 上报客户端
+  - 支持批量结果提交
+  - 处理上报失败的重试逻辑
+  - _需求: 10_
 
-- [ ] 5.2 Create Zabbix reporter
-  - Implement bulk submission
-  - Add error handling
-  - Requirements: 10
+## 6. 测试策略
+### 单元测试
+- [ ] 6.1 测试间隔任务队列逻辑
+  - 验证任务合并功能
+  - 测试严格调度准确性
+  - _需求: 8, 9_
 
-## Testing Strategy
+- [ ] 6.2 测试平台适配器
+  - 验证命令生成和解析逻辑
+  - 覆盖所有支持平台
+  - _需求: 4, 6_
 
-### 6. Unit Tests
-- [ ] 6.1 Test interval queue logic
-  - Verify task merging
-  - Validate strict scheduling
-  - Requirements: 8, 9
+### 集成测试
+- [ ] 6.3 测试完整流程
+  - 从配置同步到结果上报的端到端测试
+  - 模拟多路由器和专线场景
+  - _需求: All_
 
-- [ ] 6.2 Test platform adapters
-  - Validate command generation
-  - Verify result parsing
-  - Requirements: 4, 6
+## 7. 扩展性支持
+- [ ] 7.1 实现任务注册机制
+  - 支持未来扩展新的任务类型
+  - 提供任务自动发现接口
+  - _需求: 12_
 
-### 7. Integration Tests
-- [ ] 7.1 Test full pipeline
-  - From config sync to result reporting
-  - Verify multi-router scenarios
-  - Requirements: All
-
-### 8. Performance Testing
-- [ ] 8.1 Load test scheduler
-  - Measure under high task volume
-  - Verify connection pool scaling
-  - Requirements: 3, 9
-
-## Implementation Notes
-1. Follow test-driven development approach
-2. Each task should reference specific requirements
-3. Prioritize core functionality first (1.1, 2.1, 3.1)
-4. Maintain platform independence in core components
-``` 
-
-This implementation plan:
-1. Covers all requirements from requirements.md
-2. Aligns with design.md architecture
-3. Provides clear actionable tasks
-4. Includes testing strategy
-5. Maintains traceability to requirements
-
-The tasks are organized to:
-- Implement core components first
-- Support incremental development
-- Enable parallel work streams
-- Ensure full requirement coverage
+## 实施说明
+1. **优先级**：优先实现核心模块（配置同步、连接池、任务队列）。
+2. **测试驱动**：每个功能模块需附带单元测试。
+3. **平台兼容性**：确保核心逻辑与平台无关，适配器可插拔。
+4. **性能优化**：连接池和任务队列需支持高并发场景。
