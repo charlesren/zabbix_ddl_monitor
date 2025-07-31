@@ -73,6 +73,58 @@
   - 模拟多路由器和专线场景
   - _需求: All_
 
+### 矩阵测试
+#### 目标
+系统性验证多平台、多参数组合下的任务执行正确性，覆盖以下维度：
+- **平台类型**：`cisco_iosxe`、`huawei_vrp` 等
+- **任务类型**：`ping`、`traceroute`（未来扩展）
+- **参数组合**：合法值、边界值、非法值
+
+#### 测试设计
+1. **组合策略**：
+   - 优先覆盖不同平台的相同任务（如 `ping` 在 Cisco 和 Huawei 的差异实现）。
+   - 参数组合包括：
+     - 合法值（如 `{ip: "10.0.0.1", timeout: "30s"}`）
+     - 边界值（如 `timeout: "0s"`）
+     - 非法值（如 `ip: "invalid"`）
+
+2. **实现示例**（Go 测试框架）：
+```go
+   func TestPingTaskAcrossPlatforms(t *testing.T) {
+       tests := []struct {
+           name     string
+           platform string
+           params   map[string]interface{}
+           wantErr  bool
+       }{
+           {
+               name:     "Cisco valid ping",
+               platform: "cisco_iosxe",
+               params:   map[string]interface{}{"ip": "10.0.0.1"},
+               wantErr:  false,
+           },
+           {
+               name:     "Huawei invalid IP",
+               platform: "huawei_vrp",
+               params:   map[string]interface{}{"ip": "invalid"},
+               wantErr:  true,
+           },
+       }
+
+       for _, tt := range tests {
+           t.Run(tt.name, func(t *testing.T) {
+               handler := platformHandlers[tt.platform]
+               _, err := handler.GenerateCommand(tt.params)
+               if (err != nil) != tt.wantErr {
+                   t.Errorf("unexpected error: %v", err)
+               }
+           })
+       }
+   }
+```
+3. **Mock 测试**（可选补充）
+- 用 `scrapligo` 的模拟器（Mock Channel）替代真实设备连接，确保测试可重复性
+
 ## 7. 扩展性支持
 - [ ] 7.1 实现任务注册机制
   - 支持未来扩展新的任务类型
