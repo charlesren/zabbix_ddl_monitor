@@ -8,12 +8,12 @@ import (
 	"github.com/charlesren/zapix"
 )
 
-// ConfigSyncer 配置同步器 (原ConfigManager重构)
+// ConfigSyncer 配置同步器
 type ConfigSyncer struct {
 	client      *zapix.Client
 	lines       map[string]Line
 	version     int64
-	subscribers []chan struct{} // 改用回调函数更灵活
+	subscribers []chan []Line
 	mu          sync.Mutex
 }
 
@@ -136,6 +136,10 @@ func (cs *ConfigSyncer) isChanged(newLines map[string]Line) bool {
 			return true
 		}
 	}
+	//     oldHash := hashLines(cs.lines)
+	//    newHash := hashLines(newLines)
+	//   return oldHash != newHash
+
 	return false
 }
 

@@ -2,7 +2,7 @@
 
 ## 1. 概述
 本系统通过Zabbix实现网络专线通断监控，通过动态管理专线配置和路由器连接，实现多平台任务执行与批量结果上报的核心流程：
-1. **配置同步**：从Zabbix API拉取专线配置，更新本地任务队列。
+1. **配置同步**：从Zabbix API拉取专线列表。
 2. **任务调度**：按专线间隔执行路由器Ping检测，支持立即执行任务，复用路由器连接。
 3. **结果上报**：批量汇总检测结果回传Zabbix。
 
@@ -11,7 +11,7 @@
 ```mermaid
 graph TD
     %% 配置同步层
-    A[Zabbix] -->|推送配置| B[ConfigSyncer]
+    A[Zabbix] -->|拉取配置| B[ConfigSyncer]
     B -->|Line列表| C[Manager]
 
     %% 任务调度层
@@ -39,19 +39,23 @@ graph TD
 ### 2.2 核心模块
 
 #### 配置同步模块（ConfigSyncer）
-- 从Zabbix API获取专线配置（IP/间隔/路由器信息）。
-- 输出：`[]Line`（专线列表）。
+- 周期性的从Zabbix API获取专线配置（IP/间隔/路由器信息）。
+- 提供专线列表查询接口，用于查询当前所有专线列表。
+- 提供专线变更通知接口，把专线的增删改通知给订阅者。
 
 #### 调度中心（Manager）
-- 管理ConfigSyncer，定期获取配置
-- 维护动态专线列表。
-- 专线变更通知RouterScheduler更新。
-- 管理所有RouterScheduler创建、删除
-- 管理路由器信息缓存
+- 周期性的从ConfigSyncer获取全量专线列表
+- 订阅ConfigSyncer的专线变更通知
+- 维护动态专线列表（初始化时获取全量、收到通知后更新，周期性的获取全量保底，保底周期为1小时）
+- 根据专线列表管理路由器信息缓存（包含路由器信息及路由器上绑定的专线数量）
+- 管理所有RouterScheduler创建(启动时、收到专线新增时按需创建，根据全量列表周期检查？)
+- 路由器上绑定的专线数量为零时延迟删除RouterScheduler(10分钟),如果在延迟期间有新的专线关联上，则取消延迟删除
+- 专线变更信息通知到相应的RouterScheduler,RouterScheduler收到通知后更新自身信息
 
 #### 路由器调度器（RouterScheduler）
 - （`IntervalQueue`/`ImmediateQueue`）生成任务
 - 维护路由器级别的任务队列（`IntervalQueue`/`ImmediateQueue`）。
+- 更新Line信息
 - IntervalQueue里的任务合并。
 - IntervalQueue定时触发任务。
 - 触发任务分发至 `Executor`。
@@ -94,8 +98,10 @@ sequenceDiagram
     participant RouterScheduler
     participant IntervalQueue
 
-    Zabbix->>ConfigSyncer: 推送Line配置
-    ConfigSyncer->>Manager: 计算差异（新增/删除Line）
+    ConfigSyncer->>Zabbix: 定期拉取Line配置
+    Manager->>ConfigSyncer: 订阅专线变更通知
+    ConfigSyncer->>Manager: 专线变更时广播
+    Manager->>ConfigSyncer: 周期获取全量列表
     alt 新增路由器
         Manager->>RouterScheduler: 创建实例（含连接池）
     else 更新现有路由器
@@ -103,7 +109,6 @@ sequenceDiagram
     end
     RouterScheduler->>IntervalQueue: 按Interval分配任务
     IntervalQueue-->>RouterScheduler: 确认合并结果（如：3个任务合并为1个）
-
 ```
 
 #### 任务执行时序
@@ -163,7 +168,17 @@ type Manager struct {
 	mu           sync.Mutex
 }
 ```
-
+### 配置同步器 (ConfigSyncer)
+// 引用github.com/charlesren/zapix
+```go
+type ConfigSyncer struct {
+	client      *zapix.Client
+	lines       map[string]Line
+	version     int64
+	subscribers []chan []Line
+	mu          sync.Mutex
+}
+```
 
 ### 路由器调度器（RouterScheduler）
 ```go

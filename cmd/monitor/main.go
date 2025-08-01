@@ -13,15 +13,14 @@ import (
 	"github.com/charlesren/zapix"
 	"github.com/spf13/viper"
 
-	"github.com/charlesren/zabbix_ddl_monitor/aggregator"
-	"github.com/charlesren/zabbix_ddl_monitor/connection"
-	"github.com/charlesren/zabbix_ddl_monitor/manager"
-	"github.com/charlesren/zabbix_ddl_monitor/task"
-)
 
-var zc = zapix.NewZabbixClient()
-var UserConfig *viper.Viper
-var ConfPath string
+
+)
+	var (
+	zc      *zapix.NewZabbixClient()
+	UserConfig *viper.Viper
+	ConfPath string
+)
 
 func init() {
 	confPath := flag.String("c", "../conf/svr.yml", "ConfigPath")
@@ -43,7 +42,7 @@ func initConfig() {
 
 func initLog() {
 	logLevel := UserConfig.GetInt("server.log.applog.loglevel")
-	logPath := "../logs/setupAppProcessPortMonitor.log"
+	logPath := "../logs/ddl_monitor.log"
 	logger := ylog.NewYLog(
 		ylog.WithLogFile(logPath),
 		ylog.WithMaxAge(3),
@@ -59,6 +58,10 @@ func initZabbix() {
 	password := UserConfig.GetString("zabbix.password")
 	serverip := UserConfig.GetString("zabbix.serverip")
 	serverport := UserConfig.GetString("zabbix.serverport")
+
+	// 创建Zabbix客户端
+	zc = zapix.NewZabbixClient()
+
 	if os.Getenv("DEBUG") == "on" {
 		zc.SetDebug(true)
 	}
@@ -76,6 +79,8 @@ func initZabbix() {
 }
 
 func main() {
+
+ylog.Infof("Main","Service started with config:%s"，ConfPath)
 	// 通过config解析 proxy ip
 	proxyIP := UserConfig.GetString("server.ip")
 	// 根据proxy ip,通过zabbix api  获取proxy  id
@@ -83,26 +88,5 @@ func main() {
 	//  获取绑定到proxy ip 的主机
 	// todo
 
-	// 初始化组件
-	taskReg := task.NewRegistry()
-	taskReg.Register("ping", &task.PingTask{})
 
-	connPool := connection.NewConnectionPool()
-	aggregator := aggregator.New()
-	// Note: 创建manager实例来管理任务，而不是直接使用scheduler
-	mgr, err := manager.NewManager(
-		UserConfig.GetString("zabbix.serverip"),
-		UserConfig.GetString("zabbix.username"),
-		UserConfig.GetString("zabbix.password"))
-	if err != nil {
-		log.Fatalf("Failed to create manager: %v", err)
-	}
-	mgr.Start()
-
-	// 优雅退出
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-	mgr.Stop()
-	log.Println("服务已停止")
 }
