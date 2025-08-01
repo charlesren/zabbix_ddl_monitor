@@ -40,6 +40,7 @@ graph TD
 
 #### 配置同步模块（ConfigSyncer）
 - 周期性的从Zabbix API获取专线配置（IP/间隔/路由器信息）。
+- 周期可自定义，默认5m
 - 提供专线列表查询接口，用于查询当前所有专线列表。
 - 提供专线变更通知接口，把专线的增删改通知给订阅者。
 
@@ -172,11 +173,21 @@ type Manager struct {
 // 引用github.com/charlesren/zapix
 ```go
 type ConfigSyncer struct {
-	client      *zapix.Client
-	lines       map[string]Line
-	version     int64
-	subscribers []chan []Line
-	mu          sync.Mutex
+    client      *zapix.Client
+    lines       map[string]Line  // 当前全量配置
+    version     int64           // 单调递增版本号
+    subscribers []Subscriber    // 订阅者列表
+    mu          sync.RWMutex    // 读写锁替代互斥锁
+}
+type Subscriber chan<- LineChangeEvent  // 强类型的只写通道
+const (
+    LineCreate ChangeType = iota + 1
+    LineUpdate
+    LineDelete
+)
+type LineChangeEvent struct {
+    Type    ChangeType
+    Line   Line
 }
 ```
 
