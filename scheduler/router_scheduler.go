@@ -1,11 +1,10 @@
 package scheduler
 
 import (
-	"context"
+	"log"
 	"sync"
 	"time"
 
-	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
 )
 

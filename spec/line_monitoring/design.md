@@ -11,8 +11,8 @@
 ```mermaid
 graph TD
     %% 配置同步层
-    A[Zabbix] -->|拉取配置| B[ConfigSyncer]
-    B -->|Line列表| C[Manager]
+    A[ConfigSyncer] -->|拉取配置| B[Zabbix]
+     C[Manager] -->|Line列表| A
 
     %% 任务调度层
     C -->|创建/更新| D[RouterScheduler1]
@@ -34,6 +34,8 @@ graph TD
     J --> O[Aggregator]
     K --> O
     O -->|批量上报| P[Zabbix]
+    K --> O
+    O -->|批量上报| P[Zabbix]
 ```
 
 ### 2.2 核心模块
@@ -47,7 +49,7 @@ graph TD
 #### 调度中心（Manager）
 - 周期性的从ConfigSyncer获取全量专线列表
 - 订阅ConfigSyncer的专线变更通知
-- 维护动态专线列表（初始化时获取全量、收到通知后更新，周期性的获取全量保底，保底周期为1小时）
+- 维护动态专线列表（初始化时从ConfigSyncer获取全量、收到ConfigSyncer通知后更新，周期性的获取从ConfigSyncer获取全量纠正，放在异常，周期为1小时）
 - 根据专线列表管理路由器信息缓存（包含路由器信息及路由器上绑定的专线数量）
 - 管理所有RouterScheduler创建(启动时、收到专线新增时按需创建，根据全量列表周期检查？)
 - 路由器上绑定的专线数量为零时延迟删除RouterScheduler(10分钟),如果在延迟期间有新的专线关联上，则取消延迟删除
@@ -146,13 +148,14 @@ type Line struct {
     IP       string
     Interval time.Duration
     Router   Router
+    	Hash     uint64 // Line信息的hash，用于比对是否有变化
 }
 ```
 
 ### 路由器信息
 ```go
 type Router struct {
-
+	ID       string
     IP       string
     Username string
     Password string  // 加密存储
@@ -173,11 +176,17 @@ type Manager struct {
 // 引用github.com/charlesren/zapix
 ```go
 type ConfigSyncer struct {
-    client      *zapix.Client
+    client       *zapix.ZabbixClient
     lines       map[string]Line  // 当前全量配置
     version     int64           // 单调递增版本号
     subscribers []Subscriber    // 订阅者列表
     mu          sync.RWMutex    // 读写锁替代互斥锁
+	syncInterval time.Duration
+    lastSyncTime time.Time // 记录最后一次同步时间
+    ctx context.Context
+   	cancel       context.CancelFunc
+	stopOnce     sync.Once
+	stopped      bool
 }
 type Subscriber chan<- LineChangeEvent  // 强类型的只写通道
 const (

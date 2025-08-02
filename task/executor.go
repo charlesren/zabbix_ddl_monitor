@@ -1,11 +1,8 @@
 package task
 
 import (
-	"context"
 	"fmt"
 	"time"
-
-	"github.com/charlesren/zabbix_ddl_monitor/internal/router"
 )
 
 // TaskExecutor executes platform-specific tasks on network devices

@@ -1,48 +1,43 @@
 package syncer
 
 import (
+	"context"
 	"log"
-	"reflect"
 	"time"
 
 	"github.com/charlesren/zapix"
 )
 
-func (cs *ConfigSyncer) notifyAll(events []LineChangeEvent) {
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-
-	for _, event := range events {
-		for _, sub := range cs.subscribers {
-			select {
-			case sub <- event:
-			default:
-				log.Printf("warn: subscriber channel full, dropped event %v", event)
-			}
-		}
-	}
-}
-
-// NewConfigSyncer 创建配置同步器
-func NewConfigSyncer(zabbixURL, username, password string) (*ConfigSyncer, error) {
-	client, err := zapix.NewClient(zabbixURL, username, password)
-	if err != nil {
-		return nil, err
-	}
+func NewConfigSyncer(zc *zapix.ZabbixClient, interval time.Duration) (*ConfigSyncer, error) {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &ConfigSyncer{
-		client: client,
-		lines:  make(map[string]Line),
+		client:       zc,
+		lines:        make(map[string]Line),
+		syncInterval: interval,
+		ctx:          ctx,
+		cancel:       cancel,
 	}, nil
 }
-
-// Start 启动配置同步循环
 func (cs *ConfigSyncer) Start() {
-	ticker := time.NewTicker(5 * time.Minute)
+	if cs.stopped {
+		log.Println("warning: cannot start already stopped syncer")
+		return
+	}
+
+	ticker := time.NewTicker(cs.syncInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-cs.ctx.Done():
+			log.Println("syncer stopped by context")
+			return
 		case <-ticker.C:
+			cs.lastSyncTime = time.Now()
+			if err := cs.checkHealth(); err != nil {
+				log.Printf("health check failed: %v", err)
+				continue
+			}
 			if err := cs.sync(); err != nil {
 				log.Printf("sync failed: %v (retrying...)", err)
 				time.Sleep(30 * time.Second)
@@ -51,24 +46,25 @@ func (cs *ConfigSyncer) Start() {
 	}
 }
 
-// Subscribe 订阅配置变更 (返回取消函数)
-func (cs *ConfigSyncer) Subscribe() (ch <-chan struct{}, cancel func()) {
-	eventCh := make(chan struct{}, 1)
-	cs.mu.Lock()
-	cs.subscribers = append(cs.subscribers, eventCh)
-	cs.mu.Unlock()
+func (cs *ConfigSyncer) Stop() {
+	cs.stopOnce.Do(func() {
+		cs.cancel()
 
-	return eventCh, func() {
 		cs.mu.Lock()
 		defer cs.mu.Unlock()
-		for i, sub := range cs.subscribers {
-			if sub == eventCh {
-				cs.subscribers = append(cs.subscribers[:i], cs.subscribers[i+1:]...)
-				close(eventCh)
-				break
+
+		// 仅关闭未被取消的通道
+		for _, sub := range cs.subscribers {
+			select {
+			case <-sub:
+				// 通道已关闭（被unsubscribe关闭）
+			default:
+				close(sub)
 			}
 		}
-	}
+		cs.subscribers = nil
+		cs.stopped = true
+	})
 }
 
 // sync 执行同步逻辑
@@ -78,13 +74,12 @@ func (cs *ConfigSyncer) sync() error {
 		return err
 	}
 
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-
 	events := cs.detectChanges(newLines)
 	if len(events) == 0 {
 		return nil
 	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 
 	cs.lines = newLines
 	cs.version++
@@ -128,27 +123,19 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 	return lines, nil
 }
 
-// parseRouters 生成路由器映射表
-func (cs *ConfigSyncer) parseRouters(lines map[string]Line) map[string]*Router {
-	routers := make(map[string]*Router)
-	for _, line := range lines {
-		if _, exists := routers[line.Router.IP]; !exists {
-			routers[line.Router.IP] = &line.Router
-		}
-	}
-	return routers
-}
-
-// 获取当前配置快照
-func (cs *ConfigSyncer) Snapshot() map[string]Line {
+func (cs *ConfigSyncer) notifyAll(events []LineChangeEvent) {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 
-	snapshot := make(map[string]Line, len(cs.lines))
-	for k, v := range cs.lines {
-		snapshot[k] = v
+	for _, event := range events {
+		for _, sub := range cs.subscribers {
+			select {
+			case sub <- event:
+			default:
+				log.Printf("warn: subscriber channel full, dropped event %v", event)
+			}
+		}
 	}
-	return snapshot
 }
 
 // 获取当前版本号
@@ -158,72 +145,74 @@ func (cs *ConfigSyncer) Version() int64 {
 	return cs.version
 }
 
-// isChanged 检查配置变更
-func (cs *ConfigSyncer) isChanged(newLines map[string]Line) bool {
-	if len(cs.lines) != len(newLines) {
-		return true
-	}
-	for id, newLine := range newLines {
-		if oldLine, ok := cs.lines[id]; !ok || oldLine != newLine {
-			return true
-		}
-	}
-	//     oldHash := hashLines(cs.lines)
-	//    newHash := hashLines(newLines)
-	//   return oldHash != newHash
-
-	return false
-}
-
 // GetLines 获取当前专线配置 (线程安全)
 func (cs *ConfigSyncer) GetLines() map[string]Line {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	return cs.lines
 }
-func (cs *ConfigSyncer) detectChanges(newLines map[string]Line) []LineChangeEvent {
-	var events []LineChangeEvent
 
-	// 检测删除和更新
+func (cs *ConfigSyncer) detectChanges(newLines map[string]Line) []LineChangeEvent {
+	events := make([]LineChangeEvent, 0, len(cs.lines)+len(newLines))
+
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
 	for oldID, oldLine := range cs.lines {
 		if newLine, exists := newLines[oldID]; !exists {
-			events = append(events, LineChangeEvent{
-				Type: LineDelete,
-				Line: oldLine,
-			})
-		} else if !reflect.DeepEqual(oldLine, newLine) {
-			events = append(events, LineChangeEvent{
-				Type: LineUpdate,
-				Line: newLine,
-			})
+			events = append(events, LineChangeEvent{Type: LineDelete, Line: oldLine})
+		} else if oldLine.Hash != newLine.Hash {
+			events = append(events, LineChangeEvent{Type: LineUpdate, Line: newLine})
 		}
 	}
 
-	// 检测新增
 	for newID, newLine := range newLines {
 		if _, exists := cs.lines[newID]; !exists {
-			events = append(events, LineChangeEvent{
-				Type: LineCreate,
-				Line: newLine,
-			})
+			events = append(events, LineChangeEvent{Type: LineCreate, Line: newLine})
 		}
 	}
-
 	return events
 }
+
 func (cs *ConfigSyncer) Subscribe() (<-chan LineChangeEvent, func()) {
-	ch := make(chan LineChangeEvent, 100)
 	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	// 已停止时返回关闭的通道
+	if cs.stopped {
+		ch := make(chan LineChangeEvent)
+		close(ch)
+		return ch, func() {} // 空取消函数
+	}
+
+	ch := make(chan LineChangeEvent, 100)
 	cs.subscribers = append(cs.subscribers, Subscriber(ch))
-	cs.mu.Unlock()
 
 	return ch, func() {
-		cs.unsubscribe(ch)
+		cs.Unsubscribe(ch)
 	}
 }
 
-func (cs *ConfigSyncer) unsubscribe(ch <-chan LineChangeEvent) {
+func (cs *ConfigSyncer) Unsubscribe(ch <-chan LineChangeEvent) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	// ...取消订阅逻辑...
+
+	// 查找并移除订阅者
+	for i, sub := range cs.subscribers {
+		if sub == Subscriber(ch) {
+			// 从切片中移除
+			cs.subscribers = append(cs.subscribers[:i], cs.subscribers[i+1:]...)
+			// 关闭通道
+			close(sub)
+			return
+		}
+	}
+}
+
+// ConfigSyncer连接健康检查
+func (cs *ConfigSyncer) checkHealth() error {
+	//todo
+	//_, err := cs.client.DoRequest("apiinfo.version", nil)
+	//return err
+	return nil
 }

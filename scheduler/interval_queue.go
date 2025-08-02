@@ -1,11 +1,8 @@
 package scheduler
 
 import (
-	"container/heap"
 	"sync"
 	"time"
-
-	"github.com/charlesren/zabbix_ddl_monitor/internal/config"
 )
 
 type IntervalTaskQueue struct {

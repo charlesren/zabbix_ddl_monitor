@@ -3,23 +3,20 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
-	"os/signal"
-	"syscall"
+	"time"
 
 	"github.com/charlesren/userconfig"
 	"github.com/charlesren/ylog"
+	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 	"github.com/charlesren/zapix"
 	"github.com/spf13/viper"
-
-
-
 )
-	var (
-	zc      *zapix.NewZabbixClient()
+
+var (
+	zc         *zapix.ZabbixClient
 	UserConfig *viper.Viper
-	ConfPath string
+	ConfPath   string
 )
 
 func init() {
@@ -80,13 +77,10 @@ func initZabbix() {
 
 func main() {
 
-ylog.Infof("Main","Service started with config:%s"，ConfPath)
+	ylog.Infof("Main", "Service started with config:%s", ConfPath)
 	// 通过config解析 proxy ip
-	proxyIP := UserConfig.GetString("server.ip")
-	// 根据proxy ip,通过zabbix api  获取proxy  id
-	// todo
-	//  获取绑定到proxy ip 的主机
-	// todo
-
-
+	//	proxyIP := UserConfig.GetString("server.ip")
+	syncer, _ := syncer.NewConfigSyncer(zc, 5*time.Minute)
+	go syncer.Start()
+	syncer.Stop()
 }
