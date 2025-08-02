@@ -77,3 +77,7 @@ func FetchRouterDetails(ip string) (*Router, error) {
 		Platform: "cisco_iosxe",
 	}, nil
 }
+
+var ProxyIP string = "1.1.1.1"
+var SelectTag string = "TempType"
+var SelectValue string = "ddl"

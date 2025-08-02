@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -94,31 +95,53 @@ func (cs *ConfigSyncer) sync() error {
 }
 
 // fetchLines 从Zabbix获取数据
+// 1.通过给定的proxy ip 查询proxy id
+// 2.通过proxy id 和给定的tag，筛选出专线
 func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
-	response, err := cs.client.DoRequest("ddl.get", map[string]interface{}{
-		"output":      []string{"lineid", "ip", "interval", "routerid"},
-		"selectHosts": []string{"hostid", "ip", "username", "password", "platform"},
-	})
+	ProxyIP := "1.1.1.1" // TODO: 替换为配置或参数传入的实际 proxy host
+	proxies, err := cs.client.GetProxyFormHost(ProxyIP)
 	if err != nil {
-		return nil, err
+		ylog.Errorf("syncer", "failed to fetch proxy info: %v", err)
+	}
+	if len(proxies) = 0 {
+		ylog.Infof("syncer", "proxy %v not found ", ProxyIP)
+		continue
+	}
+	proxyid = proxies[0].ProxyHostid
+
+	params := zapix.HostGetParams{
+		SelectTags:          zapix.SelectQuery("extend"),
+		SelectInheritedTags: zapix.SelectQuery("extend"),
+		ProxyIDs:            []int{proxyid},
+		Tags: []zapix.HostTagObject{
+			{
+				Tag:   SelectTag,
+				Value: SelectValue,
+			},
+		},
 	}
 
-	lines := make(map[string]Line)
-	for _, item := range response.Result.([]interface{}) {
-		data := item.(map[string]interface{})
-		host := data["hosts"].([]interface{})[0].(map[string]interface{})
+	hosts, err := cs.client.HostGet(params)
+	if err != nil {
+		ylog.Errorf("syncer", "failed to fetch proxy info: %v", err)
+	}
 
-		lines[data["lineid"].(string)] = Line{
-			ID:       data["lineid"].(string),
-			IP:       data["ip"].(string),
-			Interval: time.Duration(data["interval"].(float64)) * time.Second,
+	// 解析专线信息
+	lines := make(map[string]Line)
+	for _, host := range hosts {
+		line := Line{
+			ID:       host.HostID,
+			IP:       "",               // 需要从 host.Interfaces 获取 IP
+			Interval: 30 * time.Second, // 默认间隔，可根据需求调整
 			Router: Router{
-				IP:       host["ip"].(string),
-				Username: host["username"].(string),
-				Password: host["password"].(string),
-				Platform: host["platform"].(string),
+				IP:       "", // 需要从 host.Interfaces 获取
+				Username: "", // 需要从其他字段或配置获取
+				Password: "", // 需要从其他字段或配置获取
+				Platform: "", // 需要从 host.Tags 或其他字段获取
 			},
 		}
+		line.ComputeHash()
+		lines[line.ID] = line
 	}
 	return lines, nil
 }
