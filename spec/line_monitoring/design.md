@@ -150,6 +150,7 @@ type Line struct {
     Router   Router
     	Hash     uint64 // Line信息的hash，用于比对是否有变化
 }
+var DefaultInterval time.Duration = 3 * time.Minute
 ```
 
 ### 路由器信息

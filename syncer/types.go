@@ -41,12 +41,14 @@ type ConfigSyncer struct {
 }
 
 type Line struct {
-	ID       string
-	IP       string
-	Interval time.Duration
+	ID       string        //预留，为CMDB相应编号,需要从host的macros里获取，为{$LINE_ID}的值
+	IP       string        //专线IP, 对应zabbix主机host.Host
+	Interval time.Duration //检查间隔，需要从host的macros里获取，为{$LINE_CHECK_INTERVAL}的值
 	Router   Router
 	Hash     uint64 // Line信息的hash，用于比对是否有变化
 }
+
+var DefaultInterval time.Duration = 3 * time.Minute
 
 func (l *Line) ComputeHash() {
 	h := fnv.New64a()
@@ -61,10 +63,10 @@ func (l *Line) ComputeHash() {
 }
 
 type Router struct {
-	IP       string
-	Username string
-	Password string
-	Platform string
+	IP       string //eage router,需要从host的macros里获取，为{$LINE_ROUTER_IP}的值
+	Username string //路由器用户名，需要从host的macros里获取，为{$LINE_ROUTER_USERNAME}的值
+	Password string //路由器密码，需要从host的macros里获取，为{$LINE_ROUTER_PASSWORD}的值
+	Platform string //路由器操作系统平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)，需要从host的macros里获取，为{$LINE_ROUTER_PLATFORM}的值
 }
 
 // 从Zabbix API获取路由器详细信息
@@ -79,5 +81,5 @@ func FetchRouterDetails(ip string) (*Router, error) {
 }
 
 var ProxyIP string = "1.1.1.1"
-var SelectTag string = "TempType"
-var SelectValue string = "ddl"
+var LineSelectTag string = "TempType"
+var LineSelectValue string = "ddl"
