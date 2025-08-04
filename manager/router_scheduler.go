@@ -1,4 +1,4 @@
-package scheduler
+package manager
 
 import (
 	"log"
@@ -6,23 +6,26 @@ import (
 	"time"
 
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
+	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 )
 
 type RouterScheduler struct {
-	router     *connection.Router
+	router     *syncer.Router
+	lines      []syncer.Line
 	connection *connection.Connection
-	queues     map[time.Duration]*IntervalQueue
-	closeChan  chan struct{}
+	queues     map[time.Duration]*IntervalTaskQueue
+	stopChan   chan struct{}
 	wg         sync.WaitGroup
 	mu         sync.Mutex
 }
 
-func NewRouterScheduler(router *connection.Router) *RouterScheduler {
+func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line) *RouterScheduler {
 	return &RouterScheduler{
 		router:     router,
-		connection: connection.NewConnection(*router),
-		queues:     make(map[time.Duration]*IntervalQueue),
-		closeChan:  make(chan struct{}),
+		lines:      initialLines,
+		connection: connection.NewConnection(router),
+		queues:     make(map[time.Duration]*IntervalTaskQueue),
+		stopChan:   make(chan struct{}),
 	}
 }
 
@@ -32,7 +35,7 @@ func (s *RouterScheduler) AddLine(line syncer.Line) {
 	defer s.mu.Unlock()
 
 	if _, exists := s.queues[line.Interval]; !exists {
-		s.queues[line.Interval] = NewIntervalQueue(line.Interval)
+		s.queues[line.Interval] = NewIntervalTaskQueue(line.Interval)
 	}
 	s.queues[line.Interval].Add(line)
 }
@@ -46,7 +49,7 @@ func (s *RouterScheduler) Start() {
 		select {
 		case <-ticker.C:
 			s.runPendingTasks()
-		case <-s.closeChan:
+		case <-s.stopChan:
 			return
 		}
 	}
@@ -70,7 +73,7 @@ func (s *RouterScheduler) runPendingTasks() {
 		}
 
 		s.wg.Add(1)
-		go func(q *IntervalQueue) {
+		go func(q *IntervalTaskQueue) {
 			defer s.wg.Done()
 			q.Execute(conn, s.router.Platform)
 		}(queue)
@@ -79,7 +82,31 @@ func (s *RouterScheduler) runPendingTasks() {
 
 // 停止调度器（阻塞等待所有任务完成）
 func (s *RouterScheduler) Stop() {
-	close(s.closeChan)
+	close(s.stopChan)
 	s.wg.Wait()
 	_ = s.connection.Close()
+}
+
+func (s *RouterScheduler) OnLineChange(event syncer.LineChangeEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch event.Type {
+	case syncer.LineCreate:
+		s.lines = append(s.lines, event.Line)
+	case syncer.LineUpdate:
+		for i, line := range s.lines {
+			if line.ID == event.Line.ID {
+				s.lines[i] = event.Line
+				break
+			}
+		}
+	case syncer.LineDelete:
+		for i, line := range s.lines {
+			if line.ID == event.Line.ID {
+				s.lines = append(s.lines[:i], s.lines[i+1:]...)
+				break
+			}
+		}
+	}
 }

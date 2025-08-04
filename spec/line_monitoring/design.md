@@ -50,7 +50,7 @@ graph TD
 - 订阅ConfigSyncer的专线变更通知
 - 维护动态专线列表（初始化时从ConfigSyncer获取全量、收到ConfigSyncer通知后更新，周期性的获取从ConfigSyncer获取全量纠正，放在异常，周期为1小时）
 - 根据专线列表管理路由器信息缓存（包含路由器信息及路由器上绑定的专线数量）
-- 管理所有RouterScheduler创建(启动时、收到专线新增时按需创建，根据全量列表周期检查？)
+- 管理所有RouterScheduler创建(启动时、收到专线新增时按需创建，根据全量列表周期校准)
 - 路由器上绑定的专线数量为零时延迟删除RouterScheduler(10分钟),如果在延迟期间有新的专线关联上，则取消延迟删除
 - 专线变更信息通知到相应的RouterScheduler,RouterScheduler收到通知后更新自身信息
 
@@ -168,7 +168,7 @@ type Router struct {
 type Manager struct {
 	configSyncer *syncer.ConfigSyncer
 	schedulers   map[string]*scheduler.RouterScheduler // key: routerIP
-	routerCache  map[string]*connection.Router   // 路由器信息缓存
+	routerCache  map[string]*syncer.Router   // 路由器信息缓存
 	mu           sync.Mutex
 }
 ```
