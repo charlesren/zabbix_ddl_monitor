@@ -24,12 +24,12 @@ type MockZabbixClient struct {
 
 func (m *MockZabbixClient) GetProxyFormHost(ip string) ([]zapix.ProxyObject, error) {
 	args := m.Called(ip)
-	return args.Get(0).([]zapix.ProxyObject), args.Error(1)
+	return args.Get(0).([]zapix.ProxyObject), args.Error(1) // 返回值类型与接口一致
 }
 
-func (m *MockZabbixClient) HostGet(params zapix.HostGetParams) ([]zapix.Host, error) {
+func (m *MockZabbixClient) HostGet(params zapix.HostGetParams) ([]zapix.HostObject, error) {
 	args := m.Called(params)
-	return args.Get(0).([]zapix.Host), args.Error(1)
+	return args.Get(0).([]zapix.HostObject), args.Error(1) //
 }
 
 // 1. 事件分发完整性测试
@@ -114,8 +114,12 @@ func TestFetchLinesWithMock(t *testing.T) {
 	mockClient := new(MockZabbixClient)
 	syncer := &ConfigSyncer{client: mockClient}
 
-	mockClient.On("GetProxyFormHost", mock.Anything).Return([]zapix.Proxy{{Proxyid: "123"}}, nil)
-	mockClient.On("HostGet", mock.Anything).Return([]zapix.Host{{Host: "1.1.1.1"}}, nil)
+	// 使用值类型的模拟数据
+	proxy := zapix.ProxyObject{Proxyid: "123"}
+	host := zapix.HostObject{Host: "1.1.1.1"}
+
+	mockClient.On("GetProxyFormHost", mock.Anything).Return([]zapix.ProxyObject{proxy}, nil)
+	mockClient.On("HostGet", mock.Anything).Return([]zapix.HostObject{host}, nil)
 
 	lines, err := syncer.fetchLines()
 	assert.NoError(t, err)

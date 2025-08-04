@@ -26,7 +26,7 @@ type LineChangeEvent struct {
 
 // syncer/syncer.go
 type ConfigSyncer struct {
-	client        client Client  // 使用接口
+	client       Client                   // 使用接口
 	lines        map[string]Line          // 当前全量配置
 	version      int64                    // 单调递增版本号
 	subscribers  []chan<- LineChangeEvent // 订阅者列表
@@ -39,11 +39,10 @@ type ConfigSyncer struct {
 	stopped      bool
 }
 type Client interface {
-	GetProxyFormHost(ip string) ([]*zapix.ProxyObject, error)
-      HostGet(params zapix.HostGetParams) ([]*zapix.HostObject, error)
-    // 其他必要方法...
+	GetProxyFormHost(ip string) ([]zapix.ProxyObject, error)
+	HostGet(params zapix.HostGetParams) ([]zapix.HostObject, error)
+	// 其他必要方法...
 }
-
 
 type Line struct {
 	ID       string        //预留，为CMDB相应编号,需要从host的macros里获取，为{$LINE_ID}的值
