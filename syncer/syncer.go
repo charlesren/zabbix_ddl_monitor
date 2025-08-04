@@ -52,18 +52,10 @@ func (cs *ConfigSyncer) Start() {
 func (cs *ConfigSyncer) Stop() {
 	cs.stopOnce.Do(func() {
 		cs.cancel()
-
 		cs.mu.Lock()
 		defer cs.mu.Unlock()
-
-		// 仅关闭未被取消的通道
 		for _, sub := range cs.subscribers {
-			select {
-			case <-sub:
-				// 通道已关闭（被unsubscribe关闭）
-			default:
-				close(sub)
-			}
+			close(sub)
 		}
 		cs.subscribers = nil
 		cs.stopped = true
@@ -423,39 +415,51 @@ func (cs *ConfigSyncer) detectChanges(newLines map[string]Line) []LineChangeEven
 	return events
 }
 
-func (cs *ConfigSyncer) Subscribe() (<-chan LineChangeEvent, func()) {
+func (cs *ConfigSyncer) Subscribe(ctx context.Context) *Subscription {
+	ch := make(chan LineChangeEvent, 100)
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	cs.subscribers = append(cs.subscribers, ch)
 
-	// 已停止时返回关闭的通道
-	if cs.stopped {
-		ch := make(chan LineChangeEvent)
-		close(ch)
-		return ch, func() {} // 空取消函数
+	subCtx, cancel := context.WithCancel(ctx)
+	sub := &Subscription{
+		events: ch,
+		cs:     cs,
+		cancel: cancel,
 	}
 
-	ch := make(chan LineChangeEvent, 100)
-	cs.subscribers = append(cs.subscribers, Subscriber(ch))
-
-	return ch, func() {
-		cs.Unsubscribe(ch)
+	if ctx != context.Background() {
+		// 仅当ctx非默认时启动监听
+		go func() {
+			<-subCtx.Done()
+			sub.Close()
+		}()
 	}
+
+	return sub
 }
 
-func (cs *ConfigSyncer) Unsubscribe(ch <-chan LineChangeEvent) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
+// Events 返回只读通道供用户使用
+func (s *Subscription) Events() <-chan LineChangeEvent {
+	return s.events
+}
 
-	// 查找并移除订阅者
-	for i, sub := range cs.subscribers {
-		if sub == Subscriber(ch) {
-			// 从切片中移除
-			cs.subscribers = append(cs.subscribers[:i], cs.subscribers[i+1:]...)
-			// 关闭通道
-			close(sub)
-			return
+// Close 取消订阅并释放资源（幂等）
+func (s *Subscription) Close() {
+	s.once.Do(func() {
+		s.cs.mu.Lock()
+		defer s.cs.mu.Unlock()
+
+		// 从订阅者列表中移除
+		for i, sub := range s.cs.subscribers {
+			if sub == s.events {
+				s.cs.subscribers = append(s.cs.subscribers[:i], s.cs.subscribers[i+1:]...)
+				close(sub)
+				break
+			}
 		}
-	}
+		s.cancel() // 取消关联的context
+	})
 }
 
 // ConfigSyncer连接健康检查

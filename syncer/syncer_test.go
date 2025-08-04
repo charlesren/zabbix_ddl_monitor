@@ -1,6 +1,8 @@
 package syncer
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,115 +11,114 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// MockZabbixClient 模拟 zapix.Client
+func NewTestSyncer() *ConfigSyncer {
+	return &ConfigSyncer{
+		subscribers: make([]chan<- LineChangeEvent, 0),
+		mu:          sync.RWMutex{},
+	}
+}
+
 type MockZabbixClient struct {
 	mock.Mock
 }
 
-func (m *MockZabbixClient) DoRequest(method string, params interface{}) (*zapix.Response, error) {
-	args := m.Called(method, params)
-	return args.Get(0).(*zapix.Response), args.Error(1)
+func (m *MockZabbixClient) GetProxyFormHost(ip string) ([]zapix.ProxyObject, error) {
+	args := m.Called(ip)
+	return args.Get(0).([]zapix.ProxyObject), args.Error(1)
 }
 
-func TestConfigSyncer_Sync(t *testing.T) {
-	// 1. 初始化模拟客户端
-	mockClient := new(MockZabbixClient)
-
-	// 2. 模拟Zabbix API返回数据
-	mockResponse := &zapix.Response{
-		Result: []interface{}{
-			map[string]interface{}{
-				"lineid":   "line1",
-				"ip":       "10.0.0.1",
-				"interval": float64(30),
-				"hosts": []interface{}{
-					map[string]interface{}{
-						"hostid":   "router1",
-						"ip":       "192.168.1.1",
-						"username": "admin",
-						"password": "pass123",
-						"platform": "cisco_iosxe",
-					},
-				},
-			},
-		},
-	}
-	mockClient.On("DoRequest", "ddl.get", mock.Anything).Return(mockResponse, nil)
-
-	// 3. 创建ConfigSyncer实例
-	syncer := &ConfigSyncer{
-		client: mockClient,
-		lines:  make(map[string]Line),
-	}
-
-	// 4. 执行同步
-	err := syncer.sync()
-	assert.NoError(t, err)
-
-	// 5. 验证结果
-	expectedLines := map[string]Line{
-		"line1": {
-			ID:       "line1",
-			IP:       "10.0.0.1",
-			Interval: 30 * time.Second,
-			Router: Router{
-				IP:       "192.168.1.1",
-				Username: "admin",
-				Password: "pass123",
-				Platform: "cisco_iosxe",
-			},
-		},
-	}
-	assert.Equal(t, expectedLines, syncer.GetLines())
-
-	// 6. 验证API调用
-	mockClient.AssertCalled(t, "DoRequest", "ddl.get", mock.Anything)
+func (m *MockZabbixClient) HostGet(params zapix.HostGetParams) ([]zapix.Host, error) {
+	args := m.Called(params)
+	return args.Get(0).([]zapix.Host), args.Error(1)
 }
 
-func TestConfigSyncer_Subscribe(t *testing.T) {
-	syncer := &ConfigSyncer{
-		lines: make(map[string]Line),
-	}
+// 1. 事件分发完整性测试
+func TestEventBroadcast(t *testing.T) {
+	syncer := NewTestSyncer()
+	sub1 := syncer.Subscribe(context.Background())
+	defer sub1.Close()
+	sub2 := syncer.Subscribe(context.Background())
+	defer sub2.Close()
 
-	// 1. 订阅配置变更
-	ch, cancel := syncer.Subscribe()
-	defer cancel()
-
-	// 2. 模拟配置变更
+	event := LineChangeEvent{Type: LineUpdate}
 	syncer.mu.Lock()
-	syncer.lines["line1"] = Line{ID: "line1"}
-	syncer.notify()
+	for _, sub := range syncer.subscribers {
+		sub <- event
+	}
 	syncer.mu.Unlock()
 
-	// 3. 验证收到通知
-	select {
-	case <-ch:
-		// 正常收到通知
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("未收到配置变更通知")
+	assert.Equal(t, event, <-sub1.Events())
+	assert.Equal(t, event, <-sub2.Events())
+}
+
+// 2. 重复关闭安全性测试
+func TestDoubleClose(t *testing.T) {
+	syncer := NewTestSyncer()
+	sub := syncer.Subscribe(context.Background())
+
+	sub.Close()
+	sub.Close() // 第二次调用不应panic
+
+	_, ok := <-sub.Events()
+	assert.False(t, ok)
+}
+
+// 3. 上下文超时测试
+func TestContextTimeout(t *testing.T) {
+	syncer := NewTestSyncer()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	sub := syncer.Subscribe(ctx)
+	<-ctx.Done()
+
+	_, ok := <-sub.Events()
+	assert.False(t, ok)
+}
+
+// 4. 空事件分发测试
+func TestEmptyEvent(t *testing.T) {
+	syncer := NewTestSyncer()
+	sub := syncer.Subscribe(context.Background())
+	defer sub.Close()
+
+	syncer.mu.Lock()
+	syncer.subscribers[0] <- LineChangeEvent{}
+	syncer.mu.Unlock()
+
+	event := <-sub.Events()
+	assert.Equal(t, LineChangeEvent{}, event)
+}
+
+// 5. 高负载事件测试
+func TestHighLoadEvents(t *testing.T) {
+	syncer := NewTestSyncer()
+	sub := syncer.Subscribe(context.Background())
+	defer sub.Close()
+
+	go func() {
+		syncer.mu.Lock()
+		defer syncer.mu.Unlock()
+		for i := 0; i < 1e4; i++ {
+			syncer.subscribers[0] <- LineChangeEvent{Type: LineUpdate}
+		}
+	}()
+
+	for i := 0; i < 1e4; i++ {
+		<-sub.Events()
 	}
 }
 
-func TestConfigSyncer_IsChanged(t *testing.T) {
-	syncer := &ConfigSyncer{
-		lines: map[string]Line{
-			"line1": {ID: "line1", IP: "10.0.0.1"},
-		},
-	}
+// 6. Mock ZabbixClient 测试
+func TestFetchLinesWithMock(t *testing.T) {
+	mockClient := new(MockZabbixClient)
+	syncer := &ConfigSyncer{client: mockClient}
 
-	// 1. 测试无变化
-	newLines := map[string]Line{
-		"line1": {ID: "line1", IP: "10.0.0.1"},
-	}
-	assert.False(t, syncer.isChanged(newLines))
+	mockClient.On("GetProxyFormHost", mock.Anything).Return([]zapix.Proxy{{Proxyid: "123"}}, nil)
+	mockClient.On("HostGet", mock.Anything).Return([]zapix.Host{{Host: "1.1.1.1"}}, nil)
 
-	// 2. 测试新增专线
-	newLines["line2"] = Line{ID: "line2"}
-	assert.True(t, syncer.isChanged(newLines))
-
-	// 3. 测试专线更新
-	newLines = map[string]Line{
-		"line1": {ID: "line1", IP: "10.0.0.2"}, // IP变更
-	}
-	assert.True(t, syncer.isChanged(newLines))
+	lines, err := syncer.fetchLines()
+	assert.NoError(t, err)
+	assert.Equal(t, "1.1.1.1", lines[""].IP)
+	mockClient.AssertExpectations(t)
 }

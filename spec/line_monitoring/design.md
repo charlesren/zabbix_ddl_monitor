@@ -179,7 +179,7 @@ type ConfigSyncer struct {
     client       *zapix.ZabbixClient
     lines       map[string]Line  // 当前全量配置
     version     int64           // 单调递增版本号
-    subscribers []Subscriber    // 订阅者列表
+    subscribers []chan<- LineChangeEvent    // 订阅者列表
     mu          sync.RWMutex    // 读写锁替代互斥锁
 	syncInterval time.Duration
     lastSyncTime time.Time // 记录最后一次同步时间
@@ -188,7 +188,6 @@ type ConfigSyncer struct {
 	stopOnce     sync.Once
 	stopped      bool
 }
-type Subscriber chan<- LineChangeEvent  // 强类型的只写通道
 const (
     LineCreate ChangeType = iota + 1
     LineUpdate
@@ -197,6 +196,16 @@ const (
 type LineChangeEvent struct {
     Type    ChangeType
     Line   Line
+}
+// Events 返回只读通道供用户使用
+func (s *Subscription) Events() <-chan LineChangeEvent {
+	return s.events
+}
+type Subscription struct {
+	events chan LineChangeEvent // 内部使用双向通道
+	cs     *ConfigSyncer
+	cancel context.CancelFunc
+	once   sync.Once
 }
 ```
 
