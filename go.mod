@@ -1,16 +1,14 @@
 module github.com/charlesren/zabbix_ddl_monitor
 
-go 1.24
-
-toolchain go1.24.5
+go 1.24.5
 
 replace (
-	github.com/charlesren/userconfig => /Users/rencc/scm/userconfig
-	github.com/charlesren/ylog => /Users/rencc/scm/ylog
+	github.com/charlesren/userconfig => ../userconfig
+	github.com/charlesren/ylog => ../ylog
 	github.com/charlesren/zabbix_ddl_monitor => ./
 	github.com/charlesren/zabbix_ddl_monitor/internal/config => ./internal/config
 	github.com/charlesren/zabbix_ddl_monitor/internal/router => ./internal/router
-	github.com/charlesren/zapix => /Users/rencc/scm/zapix
+	github.com/charlesren/zapix => ../zapix
 )
 
 require (
