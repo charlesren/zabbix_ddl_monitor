@@ -13,6 +13,7 @@ graph TD
     %% 配置同步层
     A[ConfigSyncer] -->|拉取配置| B[Zabbix]
      C[Manager] -->|Line列表| A
+    A -->|推送变更通知| C
 
     %% 任务调度层
     C -->|创建/更新| D[RouterScheduler1]
@@ -32,8 +33,6 @@ graph TD
 
     %% 结果上报层
     J --> O[Aggregator]
-    K --> O
-    O -->|批量上报| P[Zabbix]
     K --> O
     O -->|批量上报| P[Zabbix]
 ```
