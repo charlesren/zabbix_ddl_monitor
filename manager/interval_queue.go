@@ -3,11 +3,13 @@ package manager
 import (
 	"sync"
 	"time"
+
+	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 )
 
 type IntervalTaskQueue struct {
 	interval time.Duration
-	tasks    []*config.Line
+	tasks    []*syncer.Line
 	nextRun  time.Time
 	mu       sync.Mutex
 }
@@ -19,7 +21,7 @@ func NewIntervalTaskQueue(interval time.Duration) *IntervalTaskQueue {
 	}
 }
 
-func (q *IntervalTaskQueue) Add(line *config.Line) {
+func (q *IntervalTaskQueue) Add(line *syncer.Line) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.tasks = append(q.tasks, line)

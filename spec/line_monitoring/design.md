@@ -10,30 +10,16 @@
 ### 2.1 架构图
 ```mermaid
 graph TD
-    %% 配置同步层
     A[ConfigSyncer] -->|拉取配置| B[Zabbix]
-     C[Manager] -->|Line列表| A
+    C[Manager] -->|Line列表| A
     A -->|推送变更通知| C
-
-    %% 任务调度层
     C -->|创建/更新| D[RouterScheduler1]
-    C -->|创建/更新| E[RouterScheduler2]
     D -->|持有| F[IntervalQueue-30s]
-    D -->|持有| G[ImmediateQueue]
-    E -->|持有| H[IntervalQueue-60s]
-    E -->|持有| I[ImmediateQueue]
-
-    %% 执行层（核心变更点）
-    D --> J[Executor1]
-    E --> K[Executor2]
+    D --> J[Executor]
     J -->|管理| L[ConnPool:10.0.0.1]
-    K -->|管理| M[ConnPool:10.0.0.2]
-    J -->|调用| N[TaskRegistry]
-    K -->|调用| N
-
-    %% 结果上报层
+    F -->|生成task| N[TaskRegistry]
+    F -->|提交task| J
     J --> O[Aggregator]
-    K --> O
     O -->|批量上报| P[Zabbix]
 ```
 
@@ -54,9 +40,9 @@ graph TD
 - 专线变更信息通知到相应的RouterScheduler,RouterScheduler收到通知后更新自身信息
 
 #### 路由器调度器（RouterScheduler）
-- （`IntervalQueue`/`ImmediateQueue`）生成任务
-- 维护路由器级别的任务队列（`IntervalQueue`/`ImmediateQueue`）。
 - 更新Line信息
+- 维护路由器级别的任务队列（`IntervalQueue`/`ImmediateQueue`）。
+- （`IntervalQueue`/`ImmediateQueue`）生成任务
 - IntervalQueue里的任务合并。
 - IntervalQueue定时触发任务。
 - 触发任务分发至 `Executor`。
@@ -67,6 +53,8 @@ graph TD
   - 调用 `TaskRegistry` 生成和解析命令
   - 控制任务超时（默认30秒）和重试（最多3次）
   - 定期清理无效连接（健康检查周期：5分钟）
+  - 执行任务
+  - 提交任务结果到aggregator
 - **健康检查**：每5分钟扫描 `ConnPool`，清理无效连接
 - **超时控制**：单任务默认超时30秒，超时后强制释放连接
 
@@ -76,6 +64,8 @@ graph TD
 - 提供任务发现接口。
 - 提供平台适配器查询接口。
 - 参数规范校验。
+- 任务命令构造生成
+- 任务结果解析
 
 #### 监控任务实现 （ping_task）
 - 支持多平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)
@@ -101,15 +91,15 @@ sequenceDiagram
 
     ConfigSyncer->>Zabbix: 定期拉取Line配置
     Manager->>ConfigSyncer: 订阅专线变更通知
-    ConfigSyncer->>Manager: 专线变更时广播
-    Manager->>ConfigSyncer: 周期获取全量列表
-    alt 新增路由器
-        Manager->>RouterScheduler: 创建实例（含连接池）
-    else 更新现有路由器
-        Manager->>RouterScheduler: 更新Line列表
-    end
-    RouterScheduler->>IntervalQueue: 按Interval分配任务
-    IntervalQueue-->>RouterScheduler: 确认合并结果（如：3个任务合并为1个）
+    Manager->>ConfigSyncer: 拉取全量专线列表
+    Manager->>Manager: 初始化、维护路由器专线关系表
+    Manager->>RouterScheduler: 创建实例，绑定相关Line
+    RouterScheduler->>RouterScheduler: 按Interval给专线分类
+    RouterScheduler->>IntervalQueue: 按Interval创建不同的Queue
+    ConfigSyncer-->>Manager: 专线变更时广播
+    Manager->>ConfigSyncer: 周期获取全量专线列表
+    Manager->>RouterScheduler: 更新绑定的Line
+    RouterScheduler->>IntervalQueue: 变更关联的Line
 ```
 
 #### 任务执行时序
@@ -122,11 +112,12 @@ sequenceDiagram
     participant Aggregator
 
     %% 任务分发与执行
-    Queue->>RouterScheduler: 提供合并后的任务列表
-    RouterScheduler->>Executor: 提交任务（Task）
+    Queue->>TaskRegistry: 生成任务命令（PingTask）
+    TaskRegistry->>Queue: 返回命令（"ping 10.0.0.1"）
+    Queue->>Executor: 提交任务（Task）
+    Queue-->>Executor: 提供合并后的任务列表
     Executor->>Executor: 申请连接（GetConn）
-    Executor->>TaskRegistry: 生成命令（PingTask）
-    TaskRegistry-->>Executor: 返回命令（"ping 10.0.0.1"）
+
     Executor->>scrapligo.Channel: 执行命令
     scrapligo.Channel-->>Executor: 返回输出
     Executor->>TaskRegistry: 解析输出
