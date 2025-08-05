@@ -9,6 +9,14 @@ import (
 	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 )
 
+type Scheduler interface {
+	OnLineCreated(line syncer.Line)     // 专线创建
+	OnLineUpdated(old, new syncer.Line) // 专线更新（提供新旧值）
+	OnLineDeleted(line syncer.Line)     // 专线删除
+	OnLineReset(lines []syncer.Line)    // 专线重置
+	Stop()
+	Start()
+}
 type RouterScheduler struct {
 	router     *syncer.Router
 	lines      []syncer.Line
@@ -87,7 +95,10 @@ func (s *RouterScheduler) Stop() {
 	_ = s.connection.Close()
 }
 
-func (s *RouterScheduler) OnLineChange(event syncer.LineChangeEvent) {
+func (s *RouterScheduler) OnLineCreated(line syncer.Line)     {}
+func (s *RouterScheduler) OnLineUpdated(old, new syncer.Line) {}
+func (s *RouterScheduler) OnLineDeleted(line syncer.Line)     {}
+func (s *RouterScheduler) OnLineReset(lines []syncer.Line) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

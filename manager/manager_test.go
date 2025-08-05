@@ -1,3 +1,11 @@
+package manager
+
+import (
+	"testing"
+
+	"github.com/charlesren/zabbix_ddl_monitor/syncer"
+)
+
 func TestLineDeleteWithDelay(t *testing.T) {
 	mockSyncer := NewMockSyncer()
 	mgr := NewManager(mockSyncer)

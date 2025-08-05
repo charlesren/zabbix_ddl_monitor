@@ -5,13 +5,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charlesren/ylog"
 	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 )
 
 type Manager struct {
 	configSyncer *syncer.ConfigSyncer
-	schedulers   map[string]*RouterScheduler // key: routerIP
-	routerLines  map[string][]syncer.Line    // key: routerIP
+	schedulers   map[string]Scheduler     // key: routerIP
+	routerLines  map[string][]syncer.Line // key: routerIP
 	mu           sync.Mutex
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
@@ -20,7 +21,7 @@ type Manager struct {
 func NewManager(cs *syncer.ConfigSyncer) *Manager {
 	return &Manager{
 		configSyncer: cs,
-		schedulers:   make(map[string]*RouterScheduler),
+		schedulers:   make(map[string]Scheduler),
 		routerLines:  make(map[string][]syncer.Line),
 		stopChan:     make(chan struct{}),
 	}
@@ -50,8 +51,6 @@ func (m *Manager) Stop() {
 
 // 全量同步专线配置
 func (m *Manager) fullSync() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	lines := m.configSyncer.GetLines()
 	newRouterLines := make(map[string][]syncer.Line)
@@ -62,6 +61,8 @@ func (m *Manager) fullSync() {
 	}
 
 	// 更新专线列表
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.routerLines = newRouterLines
 
 	// 更新调度器
@@ -116,16 +117,42 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 	routerIP := event.Line.Router.IP
 
 	switch event.Type {
-	case syncer.LineCreate, syncer.LineUpdate:
-		// 更新专线列表
-		m.updateLineList(routerIP, event.Line)
+	case syncer.LineCreate:
+		// 路由器加第一条专线时
+		if _, exists := m.routerLines[routerIP]; !exists {
+			m.routerLines[routerIP] = make([]syncer.Line, 0)
+		}
 
-		// 确保调度器存在并传递事件
-		m.ensureScheduler(routerIP, m.routerLines[routerIP])
-		m.schedulers[routerIP].OnLineChange(event)
+		// 防御性检查
+		for _, l := range m.routerLines[routerIP] {
+			if l.IP == event.Line.IP {
+				ylog.Warnf("manager", "duplicate line create,ip: %v", event.Line.IP)
+				return
+			}
+		}
 
+		// 添加新专线
+		m.routerLines[routerIP] = append(m.routerLines[routerIP], event.Line)
+		//路由器加第一条专线时,需考虑两种情况
+		// 1.此前无调度器，第一次添加专线需创建调度器
+		// 2.此前有调度器，在延迟删除期间（已添加新专线，到期后不会删除）
+		if _, exists := m.schedulers[routerIP]; !exists {
+			m.ensureScheduler(routerIP, m.routerLines[routerIP])
+		}
+		m.schedulers[routerIP].OnLineCreated(event.Line)
+
+	case syncer.LineUpdate:
+		// 查找并更新专线并通知调度器
+		for i, l := range m.routerLines[routerIP] {
+			if l.IP == event.Line.IP {
+				oldLine := m.routerLines[routerIP][i]
+				m.routerLines[routerIP][i] = event.Line
+				m.schedulers[routerIP].OnLineUpdated(oldLine, event.Line)
+				break
+			}
+		}
 	case syncer.LineDelete:
-		// 更新专线列表
+		// 从路由器对应的专线列表中移除专线
 		if lines, exists := m.routerLines[routerIP]; exists {
 			for i, line := range lines {
 				if line.IP == event.Line.IP {
@@ -135,9 +162,9 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 			}
 		}
 
-		// 传递删除事件给调度器
+		// 传递删除事件给调度
 		if s, exists := m.schedulers[routerIP]; exists {
-			s.OnLineChange(event)
+			s.OnLineDeleted(event.Line)
 
 			// 延迟删除空调度器
 			if len(m.routerLines[routerIP]) == 0 {
@@ -145,7 +172,7 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 					m.mu.Lock()
 					defer m.mu.Unlock()
 					if len(m.routerLines[routerIP]) == 0 {
-						m.schedulers[routerIP].Stop()
+						s.Stop()
 						delete(m.schedulers, routerIP)
 						delete(m.routerLines, routerIP)
 					}
@@ -153,18 +180,6 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 			}
 		}
 	}
-}
-
-// 更新专线列表
-func (m *Manager) updateLineList(routerIP string, line syncer.Line) {
-	lines := m.routerLines[routerIP]
-	for i, l := range lines {
-		if l.IP == line.IP {
-			lines[i] = line // 更新现有专线
-			return
-		}
-	}
-	m.routerLines[routerIP] = append(lines, line) // 新增专线
 }
 
 // 确保调度器存在

@@ -48,8 +48,7 @@ graph TD
 #### 调度中心（Manager）
 - 周期性的从ConfigSyncer获取全量专线列表
 - 订阅ConfigSyncer的专线变更通知
-- 维护动态专线列表（初始化时从ConfigSyncer获取全量、收到ConfigSyncer通知后更新，周期性的获取从ConfigSyncer获取全量纠正，放在异常，周期为1小时）
-- 根据专线列表管理路由器信息缓存（包含路由器信息及路由器上绑定的专线数量）
+- 维护动态路由器专线关系表,描述路由器上绑定的专线,可计算出路由器上绑定的专线数量，同时隐含的知道了路由器信息，因为每条专线上都有（初始化时从ConfigSyncer获取全量、收到ConfigSyncer通知后更新，周期性的获取从ConfigSyncer获取全量纠正，放在异常，周期为1小时）
 - 管理所有RouterScheduler创建(启动时、收到专线新增时按需创建，根据全量列表周期校准)
 - 路由器上绑定的专线数量为零时延迟删除RouterScheduler(10分钟),如果在延迟期间有新的专线关联上，则取消延迟删除
 - 专线变更信息通知到相应的RouterScheduler,RouterScheduler收到通知后更新自身信息
@@ -167,9 +166,11 @@ type Router struct {
 ```go
 type Manager struct {
 	configSyncer *syncer.ConfigSyncer
-	schedulers   map[string]*scheduler.RouterScheduler // key: routerIP
-	routerCache  map[string]*syncer.Router   // 路由器信息缓存
+	schedulers   map[string]Scheduler     // key: routerIP
+	routerLines  map[string][]syncer.Line // key: routerIP
 	mu           sync.Mutex
+	stopChan     chan struct{}
+	wg           sync.WaitGroup
 }
 ```
 ### 配置同步器 (ConfigSyncer)
@@ -228,6 +229,14 @@ type RouterScheduler struct {
 	Mu         sync.Mutex
 }
 
+type Scheduler interface {
+	OnLineCreated(line syncer.Line)     // 专线创建
+	OnLineUpdated(old, new syncer.Line) // 专线更新（提供新旧值）
+	OnLineDeleted(line syncer.Line)     // 专线删除
+	OnLineReset(lines []syncer.Line)    // 专线重置
+	Stop()
+	Start()
+}
 
 type Executor struct {
     ConnPool    map[string]scrapligo.Channel // key: Router.IP
