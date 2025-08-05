@@ -322,6 +322,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 				Username: "", // 需要从其他字段或配置获取
 				Password: "", // 需要从其他字段或配置获取
 				Platform: "", // 需要从 host.Tags 或其他字段获取
+				Protocol: "",
 			},
 		}
 		line.ComputeHash()
@@ -344,6 +345,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 				Username: macros["{$LINE_ROUTER_USERNAME}"],
 				Password: macros["{$LINE_ROUTER_PASSWORD}"],
 				Platform: macros["{$LINE_ROUTER_PLATFORM}"],
+				Protocol: macros["{$LINE_ROUTER_PROTOCOL}"],
 			},
 		}
 		line.ComputeHash()

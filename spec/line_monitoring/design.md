@@ -42,30 +42,45 @@ graph TD
 #### 路由器调度器（RouterScheduler）
 - 更新Line信息
 - 维护路由器级别的任务队列（`IntervalQueue`/`ImmediateQueue`）。
-- （`IntervalQueue`/`ImmediateQueue`）生成任务
-- IntervalQueue里的任务合并。
+- 收到任务信号分发至 `Executor`。
+  - 管理路由器连接池（`ConnPool`），负责连接的申请、释放和健康检查
+  - 连接处支持多协议ssh/netconf/scrapli
+  - 定期清理无效连接（健康检查周期：5分钟）
+
+  #### 路由器任务队列（IntervalQueue)
 - IntervalQueue定时触发任务。
-- 触发任务分发至 `Executor`。
+- 维护相同interval的line列表
 
 #### 执行器 （Executor）
 - **职责**：
-  - 管理路由器连接池（`ConnPool`），负责连接的申请、释放和健康检查
-  - 调用 `TaskRegistry` 生成和解析命令
   - 控制任务超时（默认30秒）和重试（最多3次）
-  - 定期清理无效连接（健康检查周期：5分钟）
+- 生成任务
+- IntervalQueue里的任务合并。
   - 执行任务
   - 提交任务结果到aggregator
 - **健康检查**：每5分钟扫描 `ConnPool`，清理无效连接
 - **超时控制**：单任务默认超时30秒，超时后强制释放连接
 
 
+#### 异步执行器
+- **职责**：非阻塞执行任务，通过通道提交和返回结果。
+- **组合设计**：
+  - 内部复用同步`TaskExecutor`逻辑。
+  - 通过`workers`控制并发度。
+  - 默认 `workers`: 10
+  - 任务队列容量: 100
+  - 单路由器最大并发连接数: 3（防止单个路由器过载）
+
 #### 任务仓库（TaskRegistry）
 - 任务实现注册中心。
 - 提供任务发现接口。
 - 提供平台适配器查询接口。
 - 参数规范校验。
-- 任务命令构造生成
+- 任务接口分为基础接口和可选批量接口用来支持常规命令，和批量合并的命令
+- 当任务不支持批量时，自动降级为单任务执行
+- 任务注册时需声明是否支持批量合并（如通过`Registry.RegisterBatch`）。
 - 任务结果解析
+
 
 #### 监控任务实现 （ping_task）
 - 支持多平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)
@@ -127,6 +142,48 @@ sequenceDiagram
 ```
 
 
+#### 异步执行流程
+```mermaid
+sequenceDiagram
+    participant Scheduler as RouterScheduler
+    participant AsyncExec
+    participant Pool as ConnectionPool
+    participant Aggregator
+
+    Scheduler->>AsyncExec: Submit(TaskRequest)
+    AsyncExec->>Pool: GetConnection(router.IP)
+    Pool-->>AsyncExec: ProtocolDriver
+    AsyncExec->>ProtocolDriver: SendCommands(batch)
+    ProtocolDriver-->>AsyncExec: Raw Output
+    AsyncExec->>Aggregator: Report(Result)
+
+
+sequenceDiagram
+    participant Queue as IntervalTaskQueue
+    participant Scheduler as RouterScheduler
+    participant Executor
+    participant Pool as ConnectionPool
+
+    Note over Queue: 定时触发（如30秒）
+    Queue->>Scheduler: 发送execNotify信号
+    Scheduler->>Pool: 获取连接（GetWithRetry）
+    Pool-->>Scheduler: 返回Connection
+    Scheduler->>Executor: ExecuteWithConn(conn, tasks)
+    Executor->>Pool: 使用连接执行命令
+    Executor-->>Scheduler: 返回Result[]
+    Scheduler->>Aggregator: 上报结果
+    Scheduler->>Pool: 释放连接
+
+
+###  任务合并规则
+1. **可合并条件**：
+   - 相同路由器平台（如 `cisco_iosxe`）。
+   - 相同任务类型（如均为 `PingTask`）。
+   - 参数兼容（如 `repeat` 和 `timeout` 值相同）。
+2. **合并策略**：
+   - 批量生成命令（如 `ping ip1 ip2 ip3`）。
+   - 解析输出时按顺序拆分结果。
+3. **Fallback**：若任务未实现 `BatchTask`，自动降级为单任务模式。
 
 
 ## 3. 核心数据结构
@@ -150,6 +207,7 @@ type Router struct {
     Username string
     Password string  // 加密存储
     Platform string  // 平台类型
+    Protocol string  // "scrapli channel" "ssh" 或 "netconf"
 }
 ```
 
@@ -228,7 +286,9 @@ type Scheduler interface {
 	Stop()
 	Start()
 }
-
+```
+### 执行器
+```go
 type Executor struct {
     ConnPool    map[string]scrapligo.Channel // key: Router.IP
     Mu          sync.Mutex                   // 连接池并发锁
@@ -241,17 +301,53 @@ func (e *Executor) RunTask(task Task) {
     driver, err := conn.Get() // 获取scrapligo驱动
     response, err := driver.SendInteractive(task.Events) // 执行交互式命令
 }
+```
+### 异步执行器
+```go
+ **任务队列满时的拒绝策略**（阻塞等待或直接丢弃)
+```
+### 连接池
+```go
+type ConnectionPool interface {
+    Get(routerIP string, protocol string) (ProtocolDriver, error)
+    Release(driver ProtocolDriver)
+}
+type ProtocolDriver interface {
+    SendCommands(commands []string) (string, error)
+    Close() error
+}
 
+// SSH实现（包装scrapligo）
+type SSHDriver struct {
+    channel *scrapligo.Channel
+}
+
+// NETCONF实现（示例）
+type NETCONFDriver struct {
+    session netconf.Session
+}
+
+// 连接池获取示例（自动选择协议）
+driver, err := pool.Get(ctx, router.IP, router.Protocol)
 ```
 
 
 ### 任务接口规范
 ```go
 type Task interface {
-    GenerateCommand(platform string, params map[string]interface{}) (string, error)
+    GenerateCommands(platform string, params map[string]interface{}) ([]*channel.SendInteractiveEvent, error)
+    Execute(platform string, conn *connection.Connection, params map[string]interface{}) (Result, error)
     ParseOutput(platform string, output string) (Result, error)
     ParamsSpec() []ParamSpec
 }
+
+// 可选批量任务接口
+type BatchTask interface {
+    Task
+    GenerateBatchCommands(platform string, params []map[string]interface{}) ([]*channel.SendInteractiveEvent, error)
+}
+
+//ParamSpec用于参数校验，与 `Registry` 交互
 type ParamSpec struct {
     Name     string                 // 参数名（如 "target_ip"）
     Type     string                 // 类型（"string"/"int"/"duration"）
@@ -259,6 +355,7 @@ type ParamSpec struct {
     Default  interface{}            // 默认值
     Validate func(interface{}) error // 校验函数
 }
+
 ```
 
 ### 平台适配实现
@@ -294,9 +391,15 @@ type Registry struct {
 func (r *Registry) Register(name string, t Task) error {
   r.tasks[name] = t
 }
+func (r *Registry) RegisterBatch(name string, t Task) error {
+  r.tasks[name] = t
+}
 init(){
 	//todo
 }
+
+//registry.RegisterBatch("ping", &PingTask{})  // 明确支持批量
+//registry.Register("config", &ConfigTask{})   // 仅单任务
 
 ```
 

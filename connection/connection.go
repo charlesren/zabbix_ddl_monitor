@@ -1,11 +1,37 @@
 package connection
 
 import (
+	"context"
 	"sync"
 	"time"
 
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
+	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 	"github.com/scrapli/scrapligo/driver/network"
 )
+
+type ConnectionPool interface {
+	Get(routerIP string, protocol string) (ProtocolDriver, error)
+	Release(driver ProtocolDriver)
+}
+type ProtocolDriver interface {
+	SendCommands(commands []string) (string, error)
+	Close() error
+}
+
+type ScrapliDriver struct {
+	channel *scrapligo.Channel
+}
+
+/*
+type SSHDriver struct {
+	session *ssh.Session
+}
+*/
+// NETCONF实现（示例）
+type NETCONFDriver struct {
+	session netconf.Session
+}
 
 type Connection struct {
 	driver   *network.Driver
@@ -14,8 +40,19 @@ type Connection struct {
 	lastUsed time.Time // 用于空闲检测
 }
 
-func NewConnection(config Router) *Connection {
-	return &Connection{config: config}
+func NewConnection(router *syncer.Router) *Connection {
+	var driver connection.ProtocolDriver
+	switch router.Protocol {
+	case "scrapli":
+		driver = &ScrapliDriver{router: router}
+	case "ssh":
+		driver = &SSHDriver{router: router}
+	case "netconf":
+		driver = &NETCONFDriver{router: router}
+	default:
+		panic("unsupported protocol: " + router.Protocol)
+	}
+	return &Connection{driver: driver}
 }
 
 // 获取连接（带懒加载和心跳检测）
@@ -57,4 +94,12 @@ func (c *Connection) Close() error {
 	err := c.driver.Close()
 	c.driver = nil
 	return err
+}
+
+// 支持带上下文的连接获取
+func (p *ConnectionPool) GetWithRetry(
+	ctx context.Context,
+	maxRetries int,
+	interval time.Duration,
+) (*Connection, error) {
 }
