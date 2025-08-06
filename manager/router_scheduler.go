@@ -62,17 +62,6 @@ func (s *RouterScheduler) initializeQueues() {
 		s.router.IP, len(s.queues), len(s.lines))
 }
 
-// 添加专线到对应间隔队列
-func (s *RouterScheduler) AddLine(line syncer.Line) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.queues[line.Interval]; !exists {
-		s.queues[line.Interval] = NewIntervalTaskQueue(line.Interval)
-	}
-	s.queues[line.Interval].Add(line)
-}
-
 // 启动调度循环
 func (s *RouterScheduler) Start() {
 	for _, q := range s.queues {

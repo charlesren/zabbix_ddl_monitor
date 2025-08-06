@@ -9,6 +9,8 @@ import (
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
 )
 
+var GlobalRegistry = NewRegistry()
+
 type SyncExecutor struct {
 	// 无连接池等状态字段
 	taskTimeout time.Duration // 单任务超时时间
@@ -35,13 +37,15 @@ func (e *SyncExecutor) Execute(
 	}
 
 	// 2. 检查是否支持批量（即使单任务也走批量接口）
-	if batchTask, ok := t.(BatchTask); ok {
-		results := batchTask.ExecuteBatch(conn, platform, []map[string]interface{}{params})
-		if len(results) > 0 {
-			return results[0], nil
+	/*
+		if batchTask, ok := t.(BatchTask); ok {
+			results := batchTask.ExecuteBatch(conn, platform, []map[string]interface{}{params})
+			if len(results) > 0 {
+				return results[0], nil
+			}
+			return Result{}, fmt.Errorf("empty batch results")
 		}
-		return Result{}, fmt.Errorf("empty batch results")
-	}
+	*/
 
 	// 3. 普通任务执行
 	start := time.Now()
@@ -54,8 +58,10 @@ func (e *SyncExecutor) Execute(
 	if err != nil {
 		return Result{}, fmt.Errorf("send commands failed: %w", err)
 	}
-
-	result := t.ParseOutput(platform, output)
+	result, err := t.ParseOutput(platform, output)
+	if err != nil {
+		return Result{}, fmt.Errorf("parse output failed: %w", err)
+	}
 	ylog.Debugf("executor", "sync task completed in %v (type=%s)",
 		time.Since(start), taskType)
 	return result, nil

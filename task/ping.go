@@ -1,13 +1,13 @@
 package task
 
 import (
-	"context"
 	"fmt"
 	"regexp"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
+	"github.com/scrapli/scrapligo/channel"
 )
 
 type PingTask struct{}
@@ -25,8 +25,13 @@ func (t *PingTask) ParamsSpec() map[string]string {
 		"timeout":   "duration (optional, default=2s) - Per-packet timeout",
 	}
 }
-
-func (t *PingTask) GenerateCommands(platform string, params map[string]interface{}) ([]*channel.SendInteractiveEvent, error) {
+func (t *PingTask) SupportsProtocol(protocol string) bool {
+	return protocol == "ssh" || protocol == "scrapli"
+}
+func (t *PingTask) GenerateCommands(platform string, params map[string]interface{}) ([]string, error) {
+	return []string{fmt.Sprintf("ping %s", params["target_ip"])}, nil
+}
+func (t *PingTask) GenerateInteractiveEvents(platform string, params map[string]interface{}) ([]*channel.SendInteractiveEvent, error) {
 	var p PingParams
 	if err := mapToStruct(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid ping params: %v", err)
@@ -76,7 +81,7 @@ func (t *PingTask) GenerateCommands(platform string, params map[string]interface
 
 func (t *PingTask) Execute(platform string, conn *connection.Connection, params map[string]interface{}) (Result, error) {
 	// 1. Generate interactive events
-	events, err := t.GenerateCommands(platform, params)
+	events, err := t.GenerateInteractiveEvents(platform, params)
 	if err != nil {
 		return Result{Error: err.Error()}, nil
 	}

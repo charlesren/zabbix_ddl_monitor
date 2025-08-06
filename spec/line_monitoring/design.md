@@ -51,41 +51,52 @@ graph TD
 - IntervalQueue定时触发任务。
 - 维护相同interval的line列表
 
-#### 执行器 （Executor）
-- **职责**：
-  - 控制任务超时（默认30秒）和重试（最多3次）
-- 生成任务
-- IntervalQueue里的任务合并。
-  - 执行任务
-  - 提交任务结果到aggregator
-- **健康检查**：每5分钟扫描 `ConnPool`，清理无效连接
-- **超时控制**：单任务默认超时30秒，超时后强制释放连接
+#### 连接池 （ConnectionPool）
+- 提供协议驱动的实例化和缓存，返回增强驱动
 
 
-#### 异步执行器
+#### 任务生成器 （TaskGenerator）
+- 根据协议类型调用任务的对应生成方法，确保task命令类型与驱动匹配
+
+
+#### 协议驱动（ProtocolDriver）
+- 实现协议原生操作（如ssh 命令发送，scrapli交互）
+
+#### 任务实现
+- 声明支持的协议类型（如ssh/netconf/scrapli）
+- 实现任务逻辑，与协议驱动匹配
+- 任务接口分为基础接口和可选批量接口用来支持常规命令，和批量合并的命令
+#### 监控任务实现 （ping_task）
+- 支持多平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)
+- 支持scrapligo和channel
+- 支持命令合并
+
+
+#### 任务（Task）
+- 任务实现注册中心。
+- 提供任务发现接口。
+- 提供平台适配器查询接口。
+- 参数规范校验。
+- 任务结果解析
+
+
+#### 执行器 （syncExecutor）
+ - 控制任务超时（默认30秒）和重试（最多3次）
+ - 执行任务
+ - 提交任务结果到aggregator
+
+
+#### 异步执行器 （asyncExecutor）
 - **职责**：非阻塞执行任务，通过通道提交和返回结果。
 - **组合设计**：
-  - 内部复用同步`TaskExecutor`逻辑。
+  - 内部复用同步`syncExecutor`逻辑。
   - 通过`workers`控制并发度。
   - 默认 `workers`: 10
   - 任务队列容量: 100
   - 单路由器最大并发连接数: 3（防止单个路由器过载）
 
-#### 任务仓库（TaskRegistry）
-- 任务实现注册中心。
-- 提供任务发现接口。
-- 提供平台适配器查询接口。
-- 参数规范校验。
-- 任务接口分为基础接口和可选批量接口用来支持常规命令，和批量合并的命令
-- 当任务不支持批量时，自动降级为单任务执行
-- 任务注册时需声明是否支持批量合并（如通过`Registry.RegisterBatch`）。
-- 任务结果解析
 
 
-#### 监控任务实现 （ping_task）
-- 支持多平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)
-- 支持scrapligo和channel
-- 支持命令合并
 
 #### 结果上报 （aggregator）
 - 合并结果并上报
@@ -145,20 +156,6 @@ sequenceDiagram
 #### 异步执行流程
 ```mermaid
 sequenceDiagram
-    participant Scheduler as RouterScheduler
-    participant AsyncExec
-    participant Pool as ConnectionPool
-    participant Aggregator
-
-    Scheduler->>AsyncExec: Submit(TaskRequest)
-    AsyncExec->>Pool: GetConnection(router.IP)
-    Pool-->>AsyncExec: ProtocolDriver
-    AsyncExec->>ProtocolDriver: SendCommands(batch)
-    ProtocolDriver-->>AsyncExec: Raw Output
-    AsyncExec->>Aggregator: Report(Result)
-
-
-sequenceDiagram
     participant Queue as IntervalTaskQueue
     participant Scheduler as RouterScheduler
     participant Executor
@@ -173,6 +170,46 @@ sequenceDiagram
     Executor-->>Scheduler: 返回Result[]
     Scheduler->>Aggregator: 上报结果
     Scheduler->>Pool: 释放连接
+
+#### Ping执行流程
+```mermaid
+sequenceDiagram
+    participant T as TestCase
+    participant G as TaskGenerator
+    participant P as ConnectionPool
+    participant D as ScrapliDriver
+    participant TK as PingTask
+
+    T->>G: Build("ping", params, "scrapli")
+    G->>P: GetDriver("10.0.0.1", "scrapli")
+    P-->>G: EnhancedDriver(protocol="scrapli")
+    G->>TK: SupportsProtocol("scrapli")?
+    TK-->>G: true
+    G->>TK: GenerateInteractiveEvents(params)
+    TK-->>G: events
+    G->>D: Execute(events)
+    D-->>G: result
+    G-->>T: result
+
+#### 典型工作流
+sequenceDiagram
+    participant User
+    participant Generator as TaskGenerator
+    participant Pool as ConnectionPool
+    participant Driver as EnhancedDriver
+    participant Task as PingTask
+
+    User->>Generator: Build("ping", params)
+    Generator->>Pool: GetDriver("10.0.0.1", "scrapli")
+    Pool-->>Generator: EnhancedDriver(Scrapli)
+    Generator->>Task: SupportsProtocol("scrapli")?
+    Task-->>Generator: true
+    Generator->>Task: GenerateInteractiveEvents(params)
+    Task-->>Generator: events
+    Generator->>Driver: Execute(events)
+    Driver->>ScrapliDriver: SendInteractive(events)
+    ScrapliDriver-->>Driver: result
+    Driver-->>User: Result
 
 
 ###  任务合并规则
@@ -261,23 +298,25 @@ type Subscription struct {
 
 ### 路由器调度器（RouterScheduler）
 ```go
-type IntervalQueue struct {
-    Tasks     []Task          // 待执行任务列表（按间隔分组）
-   	Interval time.Duration
-	Lines    []*config.Line
-	NextRun  time.Time
-	Mu       sync.Mutex
-	Timer    *time.Ticker    // 调度触发器
-}
-type RouterScheduler struct {
-	Router     *connection.Router
-	Connection *connection.Connection
-	Queues     map[time.Duration]*IntervalQueue
-	CloseChan  chan struct{}
-	WG         sync.WaitGroup
-	Mu         sync.Mutex
+type IntervalTaskQueue struct {
+	interval   time.Duration
+	lines      []syncer.Line // 改为值存储
+	mu         sync.Mutex
+	execNotify chan struct{} // 执行信号通道
+	stopChan   chan struct{} // 新增停止通道
+	ticker     *time.Ticker  // 内置调度器
 }
 
+type RouterScheduler struct {
+	router     *syncer.Router
+	lines      []syncer.Line
+	connection *connection.ConnectionPool
+	queues     map[time.Duration]*IntervalTaskQueue
+	executor   *task.Executor
+	stopChan   chan struct{}
+	wg         sync.WaitGroup
+	mu         sync.Mutex
+}
 type Scheduler interface {
 	OnLineCreated(line syncer.Line)     // 专线创建
 	OnLineUpdated(old, new syncer.Line) // 专线更新（提供新旧值）
@@ -289,22 +328,38 @@ type Scheduler interface {
 ```
 ### 执行器
 ```go
-type Executor struct {
-    ConnPool    map[string]scrapligo.Channel // key: Router.IP
-    Mu          sync.Mutex                   // 连接池并发锁
-    TaskTimeout time.Duration                // 单任务超时时间
-    Scheduler   *RouterScheduler             // 反向引用，用于队列交互
+type SyncExecutor struct {
+	// 无连接池等状态字段
+	taskTimeout time.Duration // 单任务超时时间
 }
-@@ -Executor的执行逻辑-
-func (e *Executor) RunTask(task Task) {
-    conn := e.GetConn(task.RouterIP)
-    driver, err := conn.Get() // 获取scrapligo驱动
-    response, err := driver.SendInteractive(task.Events) // 执行交互式命令
+func (e *SyncExecutor) Execute(
+	ctx context.Context,
+	conn connection.ProtocolDriver,
+	platform string,
+	taskType string,
+	params map[string]interface{},
+) (Result, error) {
+	return Result{}, nil
 }
 ```
 ### 异步执行器
 ```go
- **任务队列满时的拒绝策略**（阻塞等待或直接丢弃)
+type AsyncExecutor struct {
+	taskChan chan asyncTask // 任务通道
+	workers  int            // 并发worker数量
+	wg       sync.WaitGroup // 任务组同步
+	stopChan chan struct{}  // 停止信号
+}
+//work执行任务复用SyncExecutor执行逻辑
+func (e *AsyncExecutor) worker() {
+			result, err := NewSyncExecutor().Execute(
+				task.ctx,
+				task.conn,
+				task.platform,
+				task.taskType,
+				task.params,
+			)
+}
 ```
 ### 连接池
 ```go
@@ -316,16 +371,10 @@ type ProtocolDriver interface {
     SendCommands(commands []string) (string, error)
     Close() error
 }
-
-// SSH实现（包装scrapligo）
-type SSHDriver struct {
-    channel *scrapligo.Channel
+type ScrapliDriver struct {
+	channel *scrapligo.Channel
 }
 
-// NETCONF实现（示例）
-type NETCONFDriver struct {
-    session netconf.Session
-}
 
 // 连接池获取示例（自动选择协议）
 driver, err := pool.Get(ctx, router.IP, router.Protocol)
