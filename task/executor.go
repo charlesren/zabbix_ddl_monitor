@@ -1,39 +1,66 @@
 package task
 
 import (
-	"errors"
+	"context"
+	"fmt"
+	"time"
 
-	"github.com/scrapli/scrapligo/channel"
+	"github.com/charlesren/ylog"
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 )
 
-var (
-	ErrInputMismatch = errors.New("input type does not match driver capability")
-)
-
-type TaskExecutor struct {
-	task  Task
-	input interface{}
+type Executor struct {
+	// 无连接池等状态字段
+	taskTimeout time.Duration // 单任务超时时间
 }
 
-func (e *TaskExecutor) Run(driver interface {
-	SendCommands([]string) (string, error)
-	SendInteractive([]*channel.SendInteractiveEvent) (string, error)
-}) (Result, error) {
-	switch v := e.input.(type) {
-	case []string:
-		out, err := driver.SendCommands(v)
-		return Result{Success: err == nil, Data: map[string]interface{}{"output": out}}, err
-	case []*channel.SendInteractiveEvent:
-		out, err := driver.SendInteractive(v)
-		return Result{Success: err == nil, Data: map[string]interface{}{"output": out}}, err
-	default:
-		return Result{}, ErrInputMismatch
+func NewExecutor() *Executor {
+	return &Executor{
+		taskTimeout: 30 * time.Second,
 	}
 }
 
-func (e *TaskExecutor) Close() error {
-	if c, ok := e.task.(interface{ Close() error }); ok {
-		return c.Close()
+// Execute 同步执行单个任务（需外部管理连接）
+func (e *Executor) Execute(
+	ctx context.Context,
+	conn connection.ProtocolDriver,
+	platform string,
+	taskType string,
+	params map[string]interface{},
+) (Result, error) {
+	// 1. 获取任务实现
+	t, err := GlobalRegistry.Get(taskType)
+	if err != nil {
+		return Result{}, fmt.Errorf("unknown task type: %s", taskType)
 	}
-	return nil
+
+	// 2. 检查是否支持批量（即使单任务也走批量接口）
+	/*
+		if batchTask, ok := t.(BatchTask); ok {
+			results := batchTask.ExecuteBatch(conn, platform, []map[string]interface{}{params})
+			if len(results) > 0 {
+				return results[0], nil
+			}
+			return Result{}, fmt.Errorf("empty batch results")
+		}
+	*/
+
+	// 3. 普通任务执行
+	start := time.Now()
+	commands, err := t.GenerateCommands(platform, params)
+	if err != nil {
+		return Result{}, fmt.Errorf("generate commands failed: %w", err)
+	}
+
+	output, err := conn.SendCommands(commands)
+	if err != nil {
+		return Result{}, fmt.Errorf("send commands failed: %w", err)
+	}
+	result, err := t.ParseOutput(platform, output)
+	if err != nil {
+		return Result{}, fmt.Errorf("parse output failed: %w", err)
+	}
+	ylog.Debugf("executor", "sync task completed in %v (type=%s)",
+		time.Since(start), taskType)
+	return result, nil
 }

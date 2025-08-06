@@ -3,7 +3,7 @@
 ## 1. 概述
 本系统通过Zabbix实现网络专线通断监控，通过动态管理专线配置和路由器连接，实现多平台任务执行与批量结果上报的核心流程：
 1. **配置同步**：从Zabbix API拉取专线列表。
-2. **任务调度**：按专线间隔执行路由器Ping检测，支持立即执行任务，复用路由器连接。
+2. **任务调度**：按专线间隔执行路由器Ping检测，复用路由器连接。
 3. **结果上报**：批量汇总检测结果回传Zabbix。
 
 ## 2. 系统架构与关键流程
@@ -40,62 +40,76 @@ graph TD
 - 专线变更信息通知到相应的RouterScheduler,RouterScheduler收到通知后更新自身信息
 
 #### 路由器调度器（RouterScheduler）
-- 更新Line信息
+- 更新绑定到自身Line信息
 - 维护路由器级别的任务队列（`IntervalQueue`/`ImmediateQueue`）。
 - 收到任务信号分发至 `Executor`。
-  - 管理路由器连接池（`ConnPool`），负责连接的申请、释放和健康检查
-  - 连接处支持多协议ssh/netconf/scrapli
-  - 定期清理无效连接（健康检查周期：5分钟）
+- 拥有connectPool
+- 调度PingTask类型的任务，任务的触发时机由IntervalQueue决定
 
-  #### 路由器任务队列（IntervalQueue)
-- IntervalQueue定时触发任务。
+#### 路由器任务队列（IntervalQueue)
+  周期性的提供line列表，便于生成task(作为task的一个参数)
+- IntervalQueue根据检查间隔定时触发任务。
 - 维护相同interval的line列表
 
+
 #### 连接池 （ConnectionPool）
-- 提供协议驱动的实例化和缓存，返回增强驱动
-
-
-#### 任务生成器 （TaskGenerator）
-- 根据协议类型调用任务的对应生成方法，确保task命令类型与驱动匹配
-
+- 保存协议的类型：源头是Router,由用户指定，在创建RouterScheduler时传到ConnectionPool作为自身的一个参数
+- 根据协议类型维护管理相应的连接
+- 需支持多协议类型ssh/netconf/scrapli连接
+- 负责连接的创建、关闭、健康检查
+- 提供protocoldriver的实例化和缓存，返回增强驱动
 
 #### 协议驱动（ProtocolDriver）
-- 实现协议原生操作（如ssh 命令发送，scrapli交互）
+- 实现协议原生操作（如ssh命令发送，scrapli交互）
+- 包括同样的基本方法，如Close,返回driver的协议类型的方法
 
-#### 任务实现
+
+
+
+#### 任务（Task）
+- 任务的实现可能支持多平台，如cisco_iosxe、huawei_vrp
+- 任务的实现能返回支持的协议类型如ssh/scrapli,以及协议下命令的类型如interactive_event/commands，此外还有支持的平台如cisco_iosxe、huawei_vrp
+- 提供命令生成接口，利用传入的协议类型、平台类型、命令类型及参数生成命令
+- 参数规范性校验。
+- 提供注册接口注册实现的任务类型
+- 有一个注册中心，存储所有实现的各任务类型。
+- 提供任务发现接口。
+- 提供平台适配器查询接口。
+- 任务结果解析
+
+
+##### 任务实例生成器 （TaskGenerator）
+- 根据协议类型、平台类型、任务参数调用任务的对应生成方法，确保task命令类型与驱动匹配
+- 应该有一个input选择的策略或优先级。
+
+##### 任务实现
 - 声明支持的协议类型（如ssh/netconf/scrapli）
 - 实现任务逻辑，与协议驱动匹配
-- 任务接口分为基础接口和可选批量接口用来支持常规命令，和批量合并的命令
-#### 监控任务实现 （ping_task）
+
+##### 监控任务实现 （ping_task）
 - 支持多平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)
 - 支持scrapligo和channel
 - 支持命令合并
 
 
-#### 任务（Task）
-- 任务实现注册中心。
-- 提供任务发现接口。
-- 提供平台适配器查询接口。
-- 参数规范校验。
-- 任务结果解析
 
-
-#### 执行器 （syncExecutor）
- - 控制任务超时（默认30秒）和重试（最多3次）
- - 执行任务
- - 提交任务结果到aggregator
-
+#### 执行器 （Executor）
+- 从ConnectionPool申请连接、用完释放
+- 根据Router里Protocol信息，申请相应的协议的连接
+- 保障driver的类型与task的实现匹配
+- 保障task的实现支持当前的platform
+- 提交任务到ProtocolDriver，执行任务
+- 控制任务超时（默认30秒）和重试（最多3次）
+- 提交任务结果到aggregator
 
 #### 异步执行器 （asyncExecutor）
 - **职责**：非阻塞执行任务，通过通道提交和返回结果。
 - **组合设计**：
-  - 内部复用同步`syncExecutor`逻辑。
+  - 内部复用同步`Executor`逻辑。
   - 通过`workers`控制并发度。
   - 默认 `workers`: 10
   - 任务队列容量: 100
   - 单路由器最大并发连接数: 3（防止单个路由器过载）
-
-
 
 
 #### 结果上报 （aggregator）

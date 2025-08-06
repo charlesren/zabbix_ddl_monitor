@@ -1,74 +1,44 @@
 package task
 
 import (
-	"fmt"
 	"sync"
 )
 
-// Registry manages task implementations and their metadata
 type Registry struct {
-	mu    sync.RWMutex
-	tasks map[string]Task
-	specs map[string]map[string]string // Task name -> parameter specifications
+	tasks sync.Map // map[string]Task
 }
 
-// NewRegistry creates a new task registry
-func NewRegistry() *Registry {
-	return &Registry{
-		tasks: make(map[string]Task),
-		specs: make(map[string]map[string]string),
-	}
+var globalRegistry = &Registry{}
+
+func GlobalRegistry() *Registry {
+	return globalRegistry
 }
 
-// Register adds a new task implementation to the registry
-func (r *Registry) Register(name string, t Task) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, exists := r.tasks[name]; exists {
-		return fmt.Errorf("task already registered: %s", name)
+// 注册任务（需实现Task接口）
+func (r *Registry) Register(task Task) error {
+	meta := task.Meta()
+	if _, loaded := r.tasks.LoadOrStore(meta.Name, task); loaded {
+		return ErrTaskExists
 	}
-
-	r.tasks[name] = t
-	r.specs[name] = t.ParamsSpec()
 	return nil
 }
 
-// Get retrieves a task implementation by name
-func (r *Registry) Get(name string) (Task, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	task, exists := r.tasks[name]
-	if !exists {
-		return nil, fmt.Errorf("task not found: %s", name)
+// 发现任务支持的能力
+func (r *Registry) GetTaskCapabilities(name string) (TaskMeta, error) {
+	if task, ok := r.tasks.Load(name); ok {
+		return task.(Task).Meta(), nil
 	}
-	return task, nil
+	return TaskMeta{}, ErrTaskNotFound
 }
 
-// GetParamsSpec returns parameter specifications for a task
-func (r *Registry) GetParamsSpec(name string) (map[string]string, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	spec, exists := r.specs[name]
-	if !exists {
-		return nil, fmt.Errorf("task not found: %s", name)
-	}
-	return spec, nil
-}
-
-// ValidateParams checks if provided parameters match task requirements
-func (r *Registry) ValidateParams(name string, params map[string]interface{}) error {
-	spec, err := r.GetParamsSpec(name)
-	if err != nil {
-		return err
-	}
-
-	for param := range params {
-		if _, ok := spec[param]; !ok {
-			return fmt.Errorf("unexpected parameter: %s", param)
+// 根据条件筛选任务
+func (r *Registry) FindTasks(filter func(TaskMeta) bool) []string {
+	var matches []string
+	r.tasks.Range(func(key, value interface{}) bool {
+		if filter(value.(Task).Meta()) {
+			matches = append(matches, key.(string))
 		}
-	}
-	return nil
+		return true
+	})
+	return matches
 }

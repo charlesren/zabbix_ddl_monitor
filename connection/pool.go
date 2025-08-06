@@ -1,9 +1,12 @@
 package connection
 
 import (
+	"errors"
 	"sync"
+	"time"
 
 	"github.com/scrapli/scrapligo/driver/network"
+	"github.com/scrapli/scrapligo/driver/options"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -62,8 +65,6 @@ func (p *ConnectionPool) GetDriver(host, protocol string, opts ...DriverOption) 
 	}
 }
 
-
-
 // Get 获取驱动（返回EnhancedDriver包装实例）
 func (p *ConnectionPool) Get(ip, protocol string) *EnhancedDriver {
 	p.mu.Lock()
@@ -83,6 +84,7 @@ func (p *ConnectionPool) Get(ip, protocol string) *EnhancedDriver {
 
 	return &EnhancedDriver{ProtocolDriver: baseDriver}
 }
+
 // DriverOption 驱动配置函数
 type DriverOption func(interface{})
 
@@ -116,28 +118,27 @@ func (p *DriverPool[T]) Get(key string) (T, error) {
 	return conn, nil
 }
 
+var scrapliInit = func() (*network.Driver, error) {
+	return network.NewDriver(
+		"", // 实际使用时替换为host
+		options.WithAuthUsername("admin"),
+		options.WithAuthPassword("password"),
+		options.WithTimeoutOps(30*time.Second),
+	)
+}
 
-scrapliInit := func() (*network.Driver, error) {
-		return network.NewDriver(
-			"", // 实际使用时替换为host
-			options.WithAuthUsername("admin"),
-			options.WithAuthPassword("password"),
-			options.WithTimeoutOps(30*time.Second),
-		)
+var sshInit = func() (*ssh.Session, error) {
+	// 实现SSH连接逻辑
+	config := &ssh.ClientConfig{
+		User: "admin",
+		Auth: []ssh.AuthMethod{
+			ssh.Password("password"),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
-
-	sshInit := func() (*ssh.Session, error) {
-		// 实现SSH连接逻辑
-		config := &ssh.ClientConfig{
-			User: "admin",
-			Auth: []ssh.AuthMethod{
-				ssh.Password("password"),
-			},
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		}
-		client, err := ssh.Dial("tcp", "host:22", config)
-		if err != nil {
-			return nil, err
-		}
-		return client.NewSession()
+	client, err := ssh.Dial("tcp", "host:22", config)
+	if err != nil {
+		return nil, err
 	}
+	return client.NewSession()
+}

@@ -20,9 +20,31 @@ type ParamSpec struct {
 	Validate func(interface{}) error `json:"-"`
 }
 
+type ProtocolCapability struct {
+	Protocol     string   // "ssh"或"scrapli"
+	CommandTypes []string // ["commands", "interactive_event"]
+}
+
+type PlatformSupport struct {
+	Platform string               // "cisco_iosxe"
+	Params   map[string]ParamSpec // 平台特有参数规范
+}
+
+type TaskMeta struct {
+	Name            string
+	ProtocolSupport []ProtocolCapability
+	Platforms       []PlatformSupport
+}
+
 type Task interface {
-	ParamsSpec() []ParamSpec
-	SupportsProtocol(protocol string) bool
+	// 元信息
+	Meta() TaskMeta
+
+	// 命令生成（动态适配协议和平台）
+	Generate(protocolType string, commandType string, platform string, params map[string]interface{}) (interface{}, error)
+
+	// 结果解析
+	ParseOutput(protocolType string, commandType string, platform string, rawOutput interface{}) (Result, error)
 }
 
 type SimpleTask interface {

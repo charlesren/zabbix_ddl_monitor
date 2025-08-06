@@ -101,12 +101,12 @@ func (d *ScrapliDriver) SendInteractive(events []*channel.SendInteractiveEvent) 
 }
 
 // SendCommand 发送普通命令
-func (d *ScrapliDriver) SendCommand(cmd string) (string, error) {
+func (d *ScrapliDriver) SendCommands(commands []string) (string, error) {
 	if err := d.ensureConnected(); err != nil {
 		return "", err
 	}
 
-	response, err := d.driver.SendCommand(cmd)
+	response, err := d.driver.SendCommands(commands)
 	if err != nil {
 		return "", fmt.Errorf("send command failed: %w", err)
 	}
@@ -143,4 +143,12 @@ func (d *ScrapliDriver) ensureConnected() error {
 		}
 	}
 	return nil
+}
+func (d *ScrapliDriver) Execute(input interface{}) (interface{}, error) {
+	switch v := input.(type) {
+	case []*channel.SendInteractiveEvent:
+		return d.driver.SendInteractive(v)
+	default:
+		return nil, ErrUnsupportedInputType
+	}
 }
