@@ -7,27 +7,56 @@ import (
 
 	"github.com/charlesren/ylog"
 	"github.com/charlesren/zabbix_ddl_monitor/syncer"
+	"github.com/charlesren/zabbix_ddl_monitor/task"
 )
 
 type Manager struct {
 	configSyncer *syncer.ConfigSyncer
 	schedulers   map[string]Scheduler     // key: routerIP
 	routerLines  map[string][]syncer.Line // key: routerIP
+	registry     task.Registry
 	mu           sync.Mutex
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
 }
 
-func NewManager(cs *syncer.ConfigSyncer) *Manager {
+func NewManager(cs *syncer.ConfigSyncer, registry task.Registry) *Manager {
 	return &Manager{
 		configSyncer: cs,
 		schedulers:   make(map[string]Scheduler),
 		routerLines:  make(map[string][]syncer.Line),
+		registry:     registry,
 		stopChan:     make(chan struct{}),
 	}
 }
 
 func (m *Manager) Start() {
+	// 注册PingTask
+	pingMeta := task.TaskMeta{
+		Type:        "ping",
+		Description: "Ping task for line monitoring",
+		Platforms: []task.PlatformSupport{
+			{
+				Platform: "cisco_iosxe",
+				Protocols: []task.ProtocolSupport{
+					{
+						Protocol: "ssh",
+						CommandTypes: []task.CommandTypeSupport{
+							{
+								CommandType: "commands",
+								ImplFactory: func() task.Task { return &task.PingTask{} },
+								Params:      []task.ParamSpec{},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := m.registry.Register(pingMeta); err != nil {
+		ylog.Errorf("manager", "failed to register PingTask: %v", err)
+		return
+	}
 	// 初始全量同步
 	m.fullSync()
 

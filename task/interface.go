@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/scrapli/scrapligo/channel"
@@ -48,13 +49,20 @@ type TaskContext struct {
 	Protocol    string                 // 协议类型（ssh, scrapli）
 	CommandType string                 // 命令类型（commands, interactive_event）
 	Params      map[string]interface{} // 任务参数
+	Ctx         context.Context
+}
+
+func (tc TaskContext) WithContext(ctx context.Context) TaskContext {
+	tc.Ctx = ctx
+	return tc
 }
 
 type Task interface {
 	// 元信息
 	Meta() TaskMeta
 
-	Execute(tct TaskContext) (Result, error) // 执行任务,
+	ValidateParams(params map[string]interface{}) error
+	BuildCommand(tct TaskContext)(interface(),error)
 	// 执行任务前检查,改为平台内置函数，不要求用户实现
 	//ValidateParams() error // 参数校验
 	// 返回结果，由用户自行解析

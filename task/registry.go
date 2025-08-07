@@ -5,13 +5,27 @@ import (
 	"sync"
 )
 
-type TaskRegistry struct {
-	tasks map[string]TaskMeta // 任务名称 -> 任务元信息
-	mu    sync.RWMutex        // 读写锁
+type Registry interface {
+	Register(meta TaskMeta) error
+	Discover(taskType, platform, protocol, commandType string) (Task, error)
+	ListPlatforms(platform string) []string
+}
+
+// DefaultRegistry 默认实现
+type DefaultRegistry struct {
+	tasks map[string]TaskMeta
+	mu    sync.RWMutex
+}
+
+// 确保DefaultRegistry实现Registry接口
+var _ Registry = (*DefaultRegistry)(nil)
+
+func NewDefaultRegistry() Registry {
+	return &DefaultRegistry{tasks: make(map[string]TaskMeta)}
 }
 
 // Register 注册任务（层级化）
-func (r *TaskRegistry) Register(meta TaskMeta) error {
+func (r *DefaultRegistry) Register(meta TaskMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.tasks[meta.Type]; exists {
@@ -22,7 +36,7 @@ func (r *TaskRegistry) Register(meta TaskMeta) error {
 }
 
 // Discover 发现任务实现（严格层级匹配）
-func (r *TaskRegistry) Discover(taskType, platform, protocol, commandType string) (Task, error) {
+func (r *DefaultRegistry) Discover(taskType, platform, protocol, commandType string) (Task, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -48,7 +62,7 @@ func (r *TaskRegistry) Discover(taskType, platform, protocol, commandType string
 }
 
 // ListPlatforms 查询平台支持的任务
-func (r *TaskRegistry) ListPlatforms(platform string) []string {
+func (r *DefaultRegistry) ListPlatforms(platform string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

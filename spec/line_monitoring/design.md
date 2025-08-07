@@ -17,7 +17,7 @@ graph TD
     D -->|持有| F[IntervalQueue-30s]
     D --> J[Executor]
     J -->|管理| L[ConnPool:10.0.0.1]
-    F -->|生成task| N[TaskRegistry]
+    F -->|生成task| N[Registry]
     F -->|提交task| J
     J --> O[Aggregator]
     O -->|批量上报| P[Zabbix]
@@ -71,6 +71,7 @@ graph TD
 
 
 #### 任务（Task）
+Task 仅定义参数规范，实际工作由适配器完成
 - 每一类任务都能返回支持的协议类型如ssh/scrapli,以及协议下命令的类型如interactive_event/commands，此外还有命令类型下支持的平台如cisco_iosxe、huawei_vrp
 - 使用者提供协议类型、平台类型，不关心命令类型
 - 任务开发者知道命令类型，为协议和平台提供任务实现
@@ -78,6 +79,7 @@ graph TD
 - 任务执行前进行Platform/Protocol/CommandType匹配性校验和参数规范性校验
 
 ##### 注册中心（Registry）
+注册和发现适配器实例
 - 提供注册接口注册实现的任务类型
 - 有一个注册中心，存储所有实现的各任务类型。
 - 提供任务发现接口。
@@ -97,9 +99,15 @@ graph TD
 - 支持scrapligo和channel
 - 支持多条专线的IP合并为一个参数，一次性检查
 
+##### 平台适配器（PlatformAdapter）
+- 将通用任务参数转换为设备特定的协议指令
+- 封装不同厂商设备的特殊处理逻辑
+
+
 
 ##### 执行器 （Executor）
-负责执行已生成的任务实例，依赖外部传入的连接和任务
+负责执行已生成的任务实例，专注协议驱动交互与流程控制,依赖外部传入的连接和任务
+获取适配器 → 生成命令 → 提交到protocolDriver
 - 参数规范性校验
 - 保障协议driver的类型与task的实现匹配
 - 保障task的实现支持当前的platform
@@ -107,6 +115,7 @@ graph TD
 - 控制任务超时（默认30秒）和重试（最多3次）#最好放到Executor外面,由调用者控制
 - 提交任务结果到aggregator
 - 任务结果解析 #暂不实施，返回rawOutput,用户自行解析
+
 
 #### 异步执行器 （asyncExecutor）
 - **职责**：非阻塞执行任务，通过通道提交和返回结果。
@@ -154,20 +163,20 @@ sequenceDiagram
     participant Queue
     participant RouterScheduler
     participant Executor
-    participant TaskRegistry
+    participant Registry
     participant Aggregator
 
     %% 任务分发与执行
-    Queue->>TaskRegistry: 生成任务命令（PingTask）
-    TaskRegistry->>Queue: 返回命令（"ping 10.0.0.1"）
+    Queue->>Registry: 生成任务命令（PingTask）
+    Registry->>Queue: 返回命令（"ping 10.0.0.1"）
     Queue->>Executor: 提交任务（Task）
     Queue-->>Executor: 提供合并后的任务列表
     Executor->>Executor: 申请连接（GetConn）
 
     Executor->>scrapligo.Channel: 执行命令
     scrapligo.Channel-->>Executor: 返回输出
-    Executor->>TaskRegistry: 解析输出
-    TaskRegistry-->>Executor: 返回Result
+    Executor->>Registry: 解析输出
+    Registry-->>Executor: 返回Result
     Executor->>Aggregator: 提交结果
     Executor->>Executor: 释放连接（ReleaseConn）
 ```
@@ -274,6 +283,7 @@ type Manager struct {
 	configSyncer *syncer.ConfigSyncer
 	schedulers   map[string]Scheduler     // key: routerIP
 	routerLines  map[string][]syncer.Line // key: routerIP
+	registry     task.Registry
 	mu           sync.Mutex
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
@@ -467,23 +477,18 @@ func (h *CiscoIOSXEHandler) GenerateCommand(params map[string]interface{}) ([]*s
 ### 注册任务
 - 通过 `init()` 函数在模块加载时注册任务：
 ```go
-type Registry struct {
-	mu    sync.RWMutex
-	tasks map[string]Task
-}
-// Register adds a new task implementation to the registry
-func (r *Registry) Register(name string, t Task) error {
-  r.tasks[name] = t
-}
-func (r *Registry) RegisterBatch(name string, t Task) error {
-  r.tasks[name] = t
-}
-init(){
-	//todo
+// Registry 定义任务注册与发现的接口
+type Registry interface {
+    Register(meta TaskMeta) error
+    Discover(taskType, platform, protocol, commandType string) (Task, error)
+    ListPlatforms(platform string) []string
 }
 
-//registry.RegisterBatch("ping", &PingTask{})  // 明确支持批量
-//registry.Register("config", &ConfigTask{})   // 仅单任务
+// DefaultRegistry 默认实现（原Registry结构体重命名）
+type DefaultRegistry struct {
+    tasks map[string]TaskMeta
+    mu    sync.RWMutex
+}
 
 ```
 
