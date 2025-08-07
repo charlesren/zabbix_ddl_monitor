@@ -1,60 +1,61 @@
+package task
+
+import "log"
+
 type PingTask struct{}
 
 func (t *PingTask) Meta() TaskMeta {
 	return TaskMeta{
 		Name: "ping",
 		ProtocolSupport: []ProtocolCapability{
-			{
-				Protocol:   "ssh",
-				InputTypes: []string{"commands"},
-			},
-			{
-				Protocol:   "scrapli",
-				InputTypes: []string{"interactive"},
-			},
+			{Protocol: "ssh", CommandTypes: []string{"commands"}},
+			{Protocol: "scrapli", CommandTypes: []string{"interactive_event"}},
 		},
+		Platforms: []PlatformSupport{
+			{Platform: "cisco_iosxe", Params: map[string]ParamSpec{
+				"ips": {Name: "ips", Type: "[]string", Required: true},
+			}},
+		},
+	}
+}
+
+func (t *PingTask) Execute(ctx TaskContext) (Result, error) {
+	switch ctx.CommandType {
+	case "commands":
+		commands, _ := t.GenerateCommands(ctx)
+		// 执行命令并返回结果
+	case "interactive_event":
+		events, _ := t.GenerateInteractiveEvents(ctx)
+		// 执行交互事件并返回结果
+	}
+	// 返回统一结果
+}
+
+func init() {
+	registry := GetTaskRegistry()
+	meta := TaskMeta{
+		Name: "ping",
 		Platforms: []PlatformSupport{
 			{
 				Platform: "cisco_iosxe",
-				Params: map[string]ParamSpec{
-					"timeout": {Type: "duration", Default: 2 * time.Second},
-					"repeat":  {Type: "int", Default: 5},
-				},
-			},
-			{
-				Platform: "huawei_vrp",
-				Params: map[string]ParamSpec{
-					"timeout": {Type: "duration", Default: 3 * time.Second},
+				Protocols: []ProtocolSupport{
+					{
+						Protocol: "ssh",
+						CommandTypes: []CommandTypeSupport{
+							{
+								CommandType: "commands",
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: map[string]ParamSpec{
+									"ips": {Name: "ips", Type: "[]string", Required: true},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 	}
-}
-
-func (t *PingTask) Generate(inputType, platform string, params map[string]interface{}) (interface{}, error) {
-	// 参数校验
-	if err := validateParams(params, t.Meta(), platform); err != nil {
-		return nil, err
-	}
-
-	// 生成命令
-	switch inputType {
-	case "commands":
-		return t.generateCommands(platform, params)
-	case "interactive":
-		return t.generateInteractive(platform, params)
-	default:
-		return nil, ErrUnsupportedInputType
-	}
-}
-
-func (t *PingTask) generateCommands(platform string, params map[string]interface{}) ([]string, error) {
-	switch platform {
-	case "cisco_iosxe":
-		return []string{fmt.Sprintf("ping %s repeat %d", params["target_ip"], params["repeat"])}, nil
-	case "huawei_vrp":
-		return []string{fmt.Sprintf("ping -c %d %s", params["repeat"], params["target_ip"])}, nil
-	default:
-		return nil, ErrUnsupportedPlatform
+	if err := registry.Register(meta); err != nil {
+		log.Fatalf("Failed to register ping task: %v", err)
 	}
 }

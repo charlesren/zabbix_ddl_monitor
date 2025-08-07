@@ -1,66 +1,25 @@
-package task
-
-import (
-	"context"
-	"fmt"
-	"time"
-
-	"github.com/charlesren/ylog"
-	"github.com/charlesren/zabbix_ddl_monitor/connection"
-)
-
 type Executor struct {
-	// 无连接池等状态字段
-	taskTimeout time.Duration // 单任务超时时间
+	maxRetries int           // 最大重试次数
+	timeout    time.Duration // 超时时间
 }
 
-func NewExecutor() *Executor {
-	return &Executor{
-		taskTimeout: 30 * time.Second,
-	}
-}
-
-// Execute 同步执行单个任务（需外部管理连接）
-func (e *Executor) Execute(
-	ctx context.Context,
-	conn connection.ProtocolDriver,
-	platform string,
-	taskType string,
-	params map[string]interface{},
-) (Result, error) {
-	// 1. 获取任务实现
-	t, err := GlobalRegistry.Get(taskType)
-	if err != nil {
-		return Result{}, fmt.Errorf("unknown task type: %s", taskType)
+// Execute 执行任务（仅关注执行逻辑）
+func (e *Executor) Execute(task Task, conn ProtocolDriver, ctx TaskContext) (Result, error) {
+	// 1. 参数校验
+	if err := task.ValidateParams(ctx.Params); err != nil {
+		return Result{Success: false, Error: fmt.Sprintf("invalid params: %v", err)}, nil
 	}
 
-	// 2. 检查是否支持批量（即使单任务也走批量接口）
-	/*
-		if batchTask, ok := t.(BatchTask); ok {
-			results := batchTask.ExecuteBatch(conn, platform, []map[string]interface{}{params})
-			if len(results) > 0 {
-				return results[0], nil
-			}
-			return Result{}, fmt.Errorf("empty batch results")
+	// 2. 执行任务（带超时和重试）
+	var result Result
+	for i := 0; i < e.maxRetries; i++ {
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), e.timeout)
+		defer cancel()
+
+		result, err := task.Execute(timeoutCtx, conn, ctx)
+		if err == nil {
+			return result, nil
 		}
-	*/
-
-	// 3. 普通任务执行
-	start := time.Now()
-	commands, err := t.GenerateCommands(platform, params)
-	if err != nil {
-		return Result{}, fmt.Errorf("generate commands failed: %w", err)
 	}
-
-	output, err := conn.SendCommands(commands)
-	if err != nil {
-		return Result{}, fmt.Errorf("send commands failed: %w", err)
-	}
-	result, err := t.ParseOutput(platform, output)
-	if err != nil {
-		return Result{}, fmt.Errorf("parse output failed: %w", err)
-	}
-	ylog.Debugf("executor", "sync task completed in %v (type=%s)",
-		time.Since(start), taskType)
-	return result, nil
+	return Result{Success: false, Error: "max retries exceeded"}, nil
 }

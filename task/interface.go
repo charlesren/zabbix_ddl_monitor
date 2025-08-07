@@ -20,47 +20,60 @@ type ParamSpec struct {
 	Validate func(interface{}) error `json:"-"`
 }
 
-type ProtocolCapability struct {
-	Protocol     string   // "ssh"或"scrapli"
-	CommandTypes []string // ["commands", "interactive_event"]
+type TaskMeta struct {
+	Type        string            // 任务类型（如 "ping"）
+	Description string            // 任务描述
+	Platforms   []PlatformSupport // 支持的平台列表
 }
 
 type PlatformSupport struct {
-	Platform string               // "cisco_iosxe"
-	Params   map[string]ParamSpec // 平台特有参数规范
+	Platform  string            // 平台名称（如 "cisco_iosxe"）
+	Protocols []ProtocolSupport // 支持的协议列表
 }
 
-type TaskMeta struct {
-	Name            string
-	ProtocolSupport []ProtocolCapability
-	Platforms       []PlatformSupport
+type ProtocolSupport struct {
+	Protocol     string               // 协议类型（如 "ssh"）
+	CommandTypes []CommandTypeSupport // 支持的命令类型列表
+}
+
+type CommandTypeSupport struct {
+	CommandType string      // 命令类型（如 "commands"）
+	ImplFactory func() Task // 任务实现的工厂方法
+	Params      []ParamSpec // 参数规范
+}
+
+// TaskContext 封装任务执行的上下文信息
+type TaskContext struct {
+	Platform    string                 // 平台类型（cisco_iosxe, huawei_vrp）
+	Protocol    string                 // 协议类型（ssh, scrapli）
+	CommandType string                 // 命令类型（commands, interactive_event）
+	Params      map[string]interface{} // 任务参数
 }
 
 type Task interface {
 	// 元信息
 	Meta() TaskMeta
 
-	// 命令生成（动态适配协议和平台）
-	Generate(protocolType string, commandType string, platform string, params map[string]interface{}) (interface{}, error)
-
-	// 结果解析
-	ParseOutput(protocolType string, commandType string, platform string, rawOutput interface{}) (Result, error)
+	Execute(tct TaskContext) (Result, error) // 执行任务,
+	// 执行任务前检查,改为平台内置函数，不要求用户实现
+	//ValidateParams() error // 参数校验
+	// 返回结果，由用户自行解析
+	//ParseOutput(platform string, protocolType string, commandType string, rawOutput interface{}) (Result, error)
 }
 
-type SimpleTask interface {
+type SshCommandsTask interface {
 	Task
 	GenerateCommands(params map[string]interface{}) ([]string, error)
 }
 
-type InteractiveTask interface {
+type ScrapliCommandsTask interface {
 	Task
-	GenerateInteractiveEvents(params map[string]interface{}) ([]*channel.SendInteractiveEvent, error)
+	GenerateCommands(params map[string]interface{}) ([]string, error)
 }
 
-type BatchTask interface {
+type ScrapliInteractiveTask interface {
 	Task
-	GenerateBatchCommands(params []map[string]interface{}) ([]string, error)
-	ParseBatchOutput(output string) []Result
+	GenerateInteractiveEvents(params map[string]interface{}) ([]*channel.SendInteractiveEvent, error)
 }
 
 func mapToStruct(m map[string]interface{}, out interface{}) error {

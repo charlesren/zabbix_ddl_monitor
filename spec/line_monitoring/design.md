@@ -38,13 +38,18 @@ graph TD
 - 管理所有RouterScheduler创建(启动时、收到专线新增时按需创建，根据全量列表周期校准)
 - 路由器上绑定的专线数量为零时延迟删除RouterScheduler(10分钟),如果在延迟期间有新的专线关联上，则取消延迟删除
 - 专线变更信息通知到相应的RouterScheduler,RouterScheduler收到通知后更新自身信息
+- 管理任务注册中心Registry
 
 #### 路由器调度器（RouterScheduler）
 - 更新绑定到自身Line信息
-- 维护路由器级别的任务队列（`IntervalQueue`/`ImmediateQueue`）。
+- 维护路由器级别的任务队列（`IntervalQueue`）。
 - 收到任务信号分发至 `Executor`。
 - 拥有connectPool
 - 调度PingTask类型的任务，任务的触发时机由IntervalQueue决定
+- 从ConnectionPool申请连接、用完释放
+- 根据Router里Protocol信息，申请相应的协议的连接
+- Router里自带platform信息，用于匹配task实现的平台类型
+- 根据任务类型（PingTask）以及router的协议类型、平台类型,利用任务注册中心里PingTask的信息生成任务，确保task命令类型与驱动匹配.优先选择Iteractive_event，其次选择commands.
 
 #### 路由器任务队列（IntervalQueue)
   周期性的提供line列表，便于生成task(作为task的一个参数)
@@ -58,49 +63,50 @@ graph TD
 - 需支持多协议类型ssh/netconf/scrapli连接
 - 负责连接的创建、关闭、健康检查
 - 提供protocoldriver的实例化和缓存，返回增强驱动
+- 通过工厂模式创建不同的ProtocolDriver，便于扩展其它协议类型
 
 #### 协议驱动（ProtocolDriver）
 - 实现协议原生操作（如ssh命令发送，scrapli交互）
 - 包括同样的基本方法，如Close,返回driver的协议类型的方法
 
 
-
-
 #### 任务（Task）
+- 每一类任务都能返回支持的协议类型如ssh/scrapli,以及协议下命令的类型如interactive_event/commands，此外还有命令类型下支持的平台如cisco_iosxe、huawei_vrp
+- 使用者提供协议类型、平台类型，不关心命令类型
+- 任务开发者知道命令类型，为协议和平台提供任务实现
 - 任务的实现可能支持多平台，如cisco_iosxe、huawei_vrp
-- 任务的实现能返回支持的协议类型如ssh/scrapli,以及协议下命令的类型如interactive_event/commands，此外还有支持的平台如cisco_iosxe、huawei_vrp
-- 提供命令生成接口，利用传入的协议类型、平台类型、命令类型及参数生成命令
-- 参数规范性校验。
+- 任务执行前进行Platform/Protocol/CommandType匹配性校验和参数规范性校验
+
+##### 注册中心（Registry）
 - 提供注册接口注册实现的任务类型
 - 有一个注册中心，存储所有实现的各任务类型。
 - 提供任务发现接口。
 - 提供平台适配器查询接口。
-- 任务结果解析
 
-
-##### 任务实例生成器 （TaskGenerator）
-- 根据协议类型、平台类型、任务参数调用任务的对应生成方法，确保task命令类型与驱动匹配
-- 应该有一个input选择的策略或优先级。
 
 ##### 任务实现
 - 声明支持的协议类型（如ssh/netconf/scrapli）
 - 实现任务逻辑，与协议驱动匹配
+- TaskType>Platform>Protocol>CommandType>TaskImpl依次递进的层级结构
+- 协议可支持多种命令类型，如interactive_event/commands
+- 当前scrapli实现interactive_event类型
+- 当前ssh实现commands类型
 
 ##### 监控任务实现 （ping_task）
 - 支持多平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)
 - 支持scrapligo和channel
-- 支持命令合并
+- 支持多条专线的IP合并为一个参数，一次性检查
 
 
-
-#### 执行器 （Executor）
-- 从ConnectionPool申请连接、用完释放
-- 根据Router里Protocol信息，申请相应的协议的连接
-- 保障driver的类型与task的实现匹配
+##### 执行器 （Executor）
+负责执行已生成的任务实例，依赖外部传入的连接和任务
+- 参数规范性校验
+- 保障协议driver的类型与task的实现匹配
 - 保障task的实现支持当前的platform
 - 提交任务到ProtocolDriver，执行任务
-- 控制任务超时（默认30秒）和重试（最多3次）
+- 控制任务超时（默认30秒）和重试（最多3次）#最好放到Executor外面,由调用者控制
 - 提交任务结果到aggregator
+- 任务结果解析 #暂不实施，返回rawOutput,用户自行解析
 
 #### 异步执行器 （asyncExecutor）
 - **职责**：非阻塞执行任务，通过通道提交和返回结果。
@@ -397,18 +403,33 @@ driver, err := pool.Get(ctx, router.IP, router.Protocol)
 
 ### 任务接口规范
 ```go
-type Task interface {
-    GenerateCommands(platform string, params map[string]interface{}) ([]*channel.SendInteractiveEvent, error)
-    Execute(platform string, conn *connection.Connection, params map[string]interface{}) (Result, error)
-    ParseOutput(platform string, output string) (Result, error)
-    ParamsSpec() []ParamSpec
+type ProtocolCapability struct {
+	Protocol     string   // "ssh"或"scrapli"
+	CommandTypes []string // ["commands", "interactive_event"]
 }
 
-// 可选批量任务接口
-type BatchTask interface {
-    Task
-    GenerateBatchCommands(platform string, params []map[string]interface{}) ([]*channel.SendInteractiveEvent, error)
+type PlatformSupport struct {
+	Platform string               // "cisco_iosxe"
+	Params   map[string]ParamSpec // 平台特有参数规范
 }
+
+type TaskMeta struct {
+	Type            string
+	ProtocolSupport []ProtocolCapability
+	Platforms       []PlatformSupport
+}
+
+type Task interface {
+	// 元信息
+	Meta() TaskMeta
+
+	// 命令生成（动态适配协议和平台）
+	Generate(protocolType string, commandType string, platform string, params map[string]interface{}) (interface{}, error)
+
+	// 结果解析
+	ParseOutput(protocolType string, commandType string, platform string, rawOutput interface{}) (Result, error)
+}
+
 
 //ParamSpec用于参数校验，与 `Registry` 交互
 type ParamSpec struct {
@@ -473,24 +494,12 @@ type Result struct {
     Data    map[string]interface{}  // 指标数据（如延迟、丢包率）
     Error   *TaskError              // 错误详情（可选）
 }
-type BatchResult struct {
-    Timestamp  time.Time         // 批次时间戳
-    Results    []Result          // 合并后的检测结果
-    RouterID   string            // 路由器标识（用于溯源）
-}
+
 ```
 
 
 ## 4.数据流与错误处理
 
-
-### 4.1 正常流程
-1. **连接申请**：
-   - `Executor` 从 `ConnPool` 获取连接，若不存在则新建并缓存。
-2. **命令生成**：
-   - 调用 `TaskRegistry.GenerateCommand()`，传入平台类型和参数（如 `{IP: "10.0.0.1"}`）。
-3. **结果解析**：
-   - 原始输出通过 `TaskRegistry.ParseOutput()` 转换为统一 `Result` 格式。
 
 
 

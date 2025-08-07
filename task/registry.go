@@ -1,44 +1,65 @@
 package task
 
 import (
+	"fmt"
 	"sync"
 )
 
-type Registry struct {
-	tasks sync.Map // map[string]Task
+type TaskRegistry struct {
+	tasks map[string]TaskMeta // 任务名称 -> 任务元信息
+	mu    sync.RWMutex        // 读写锁
 }
 
-var globalRegistry = &Registry{}
-
-func GlobalRegistry() *Registry {
-	return globalRegistry
-}
-
-// 注册任务（需实现Task接口）
-func (r *Registry) Register(task Task) error {
-	meta := task.Meta()
-	if _, loaded := r.tasks.LoadOrStore(meta.Name, task); loaded {
-		return ErrTaskExists
+// Register 注册任务（层级化）
+func (r *TaskRegistry) Register(meta TaskMeta) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tasks[meta.Type]; exists {
+		return fmt.Errorf("task '%s' already registered", meta.Type)
 	}
+	r.tasks[meta.Type] = meta
 	return nil
 }
 
-// 发现任务支持的能力
-func (r *Registry) GetTaskCapabilities(name string) (TaskMeta, error) {
-	if task, ok := r.tasks.Load(name); ok {
-		return task.(Task).Meta(), nil
+// Discover 发现任务实现（严格层级匹配）
+func (r *TaskRegistry) Discover(taskType, platform, protocol, commandType string) (Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	meta, exists := r.tasks[taskType]
+	if !exists {
+		return nil, fmt.Errorf("task type '%s' not found", taskType)
 	}
-	return TaskMeta{}, ErrTaskNotFound
+
+	for _, p := range meta.Platforms {
+		if p.Platform == platform {
+			for _, proto := range p.Protocols {
+				if proto.Protocol == protocol {
+					for _, cmd := range proto.CommandTypes {
+						if cmd.CommandType == commandType {
+							return cmd.ImplFactory(), nil
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil, fmt.Errorf("no matching task for platform '%s', protocol '%s', command type '%s'", platform, protocol, commandType)
 }
 
-// 根据条件筛选任务
-func (r *Registry) FindTasks(filter func(TaskMeta) bool) []string {
-	var matches []string
-	r.tasks.Range(func(key, value interface{}) bool {
-		if filter(value.(Task).Meta()) {
-			matches = append(matches, key.(string))
+// ListPlatforms 查询平台支持的任务
+func (r *TaskRegistry) ListPlatforms(platform string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var supported []string
+	for name, meta := range r.tasks {
+		for _, p := range meta.Platforms {
+			if p.Platform == platform {
+				supported = append(supported, name)
+				break
+			}
 		}
-		return true
-	})
-	return matches
+	}
+	return supported
 }

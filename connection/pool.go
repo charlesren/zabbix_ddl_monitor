@@ -12,7 +12,6 @@ import (
 
 // ProtocolDriver 基础协议接口
 type ProtocolDriver interface {
-	SendCommands(commands []string) (string, error)
 	ProtocolType() string
 	Close() error
 }
