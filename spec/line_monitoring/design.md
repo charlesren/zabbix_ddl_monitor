@@ -12,14 +12,14 @@
 graph TD
     A[ConfigSyncer] -->|拉取配置| B[Zabbix]
     C[Manager] -->|Line列表| A
-    A -->|推送变更通知| C
+     C[Manager] -->|持有| E[TaskRegistry]
+    A -->|Line变更信息| C
     C -->|创建/更新| D[RouterScheduler1]
+     D -->|持有| L[ConnPool:10.0.0.1]
     D -->|持有| F[IntervalQueue-30s]
-    D --> J[Executor]
-    J -->|管理| L[ConnPool:10.0.0.1]
-    F -->|生成task| N[Registry]
-    F -->|提交task| J
-    J --> O[Aggregator]
+       F -->|触发task| D[RouterScheduler1]
+      D -->|发送任务、连接、任务信息| J[Executor]
+       J --> O[Aggregator]
     O -->|批量上报| P[Zabbix]
 ```
 
@@ -38,7 +38,7 @@ graph TD
 - 管理所有RouterScheduler创建(启动时、收到专线新增时按需创建，根据全量列表周期校准)
 - 路由器上绑定的专线数量为零时延迟删除RouterScheduler(10分钟),如果在延迟期间有新的专线关联上，则取消延迟删除
 - 专线变更信息通知到相应的RouterScheduler,RouterScheduler收到通知后更新自身信息
-- 管理任务注册中心Registry
+- 管理任务注册中心TaskRegistry
 
 #### 路由器调度器（RouterScheduler）
 - 更新绑定到自身Line信息
@@ -78,7 +78,7 @@ Task 仅定义参数规范，实际工作由适配器完成
 - 任务的实现可能支持多平台，如cisco_iosxe、huawei_vrp
 - 任务执行前进行Platform/Protocol/CommandType匹配性校验和参数规范性校验
 
-##### 注册中心（Registry）
+##### 任务注册中心TaskRegistry）
 注册和发现适配器实例
 - 提供注册接口注册实现的任务类型
 - 有一个注册中心，存储所有实现的各任务类型。
@@ -91,7 +91,8 @@ Task 仅定义参数规范，实际工作由适配器完成
 - 实现任务逻辑，与协议驱动匹配
 - TaskType>Platform>Protocol>CommandType>TaskImpl依次递进的层级结构
 - 协议可支持多种命令类型，如interactive_event/commands
-- 当前scrapli实现interactive_event类型
+- 可以有平台抽象层屏蔽平台差异，实现平台无关的命令逻辑
+- 当前scrapli实现interactive_event和commands类型
 - 当前ssh实现commands类型
 
 ##### 监控任务实现 （ping_task）
@@ -241,15 +242,7 @@ sequenceDiagram
     Driver-->>User: Result
 
 
-###  任务合并规则
-1. **可合并条件**：
-   - 相同路由器平台（如 `cisco_iosxe`）。
-   - 相同任务类型（如均为 `PingTask`）。
-   - 参数兼容（如 `repeat` 和 `timeout` 值相同）。
-2. **合并策略**：
-   - 批量生成命令（如 `ping ip1 ip2 ip3`）。
-   - 解析输出时按顺序拆分结果。
-3. **Fallback**：若任务未实现 `BatchTask`，自动降级为单任务模式。
+
 
 
 ## 3. 核心数据结构
@@ -429,16 +422,6 @@ type TaskMeta struct {
 	Platforms       []PlatformSupport
 }
 
-type Task interface {
-	// 元信息
-	Meta() TaskMeta
-
-	// 命令生成（动态适配协议和平台）
-	Generate(protocolType string, commandType string, platform string, params map[string]interface{}) (interface{}, error)
-
-	// 结果解析
-	ParseOutput(protocolType string, commandType string, platform string, rawOutput interface{}) (Result, error)
-}
 
 
 //ParamSpec用于参数校验，与 `Registry` 交互
@@ -448,6 +431,55 @@ type ParamSpec struct {
     Required bool                   // 是否必填
     Default  interface{}            // 默认值
     Validate func(interface{}) error // 校验函数
+}
+// TaskContext 封装任务执行的上下文信息
+type TaskContext struct {
+	TaskType string // 任务类型（如 "PingTask"）
+	Platform string // 平台类型（cisco_iosxe, huawei_vrp）
+	Protocol string // 协议类型（ssh, scrapli）
+	// 指定命令类型（commands, interactive_event）
+	// 有则按指定类型生成命令
+	// 没有则按当前实现生成命令
+	// 有多种实现按优先级高的生成命令（interactive_event > commands）
+	CommandType string
+	Params      map[string]interface{} // 任务参数
+	Ctx         context.Context
+}
+type (
+	TaskName    string
+	Platform    string
+	Protocol    string
+	CommandType string
+)
+
+const (
+	CiscoIOSXE Platform = "cisco_iosxe"
+	CiscoIOSXR Platform = "cisco_iosxr"
+	CiscoNXOS  Platform = "cisco_nxos"
+	H3CComware Platform = "h3c_comware"
+	HuaweiVRP  Platform = "huawei_vrp"
+
+	SSH                  Protocol    = "ssh"
+	Scrapli              Protocol    = "scrapli"
+	TypeCommands         CommandType = "commands"
+	TypeInteractiveEvent CommandType = "interactive_event"
+)
+
+type Command struct {
+	Type    CommandType
+	Payload interface{} // []string 或 []*channel.SendInteractiveEvent
+}
+
+type Task interface {
+	// 元信息
+	Meta() TaskMeta
+
+	ValidateParams(params map[string]interface{}) error
+	BuildCommand(tct TaskContext) (Command, error)
+	// 执行任务前检查,改为平台内置函数，不要求用户实现
+	//ValidateParams() error // 参数校验
+	// 返回结果，由用户自行解析
+	ParseOutput(tct TaskContext, raw interface{}) (Result, error)
 }
 
 ```

@@ -1,11 +1,12 @@
+package task
+
 type PlatformAdapter interface {
 	NormalizeParams(params map[string]interface{}) map[string]interface{}
 	ConvertOutput(raw string) map[string]interface{}
 }
 
 var adapters = map[string]PlatformAdapter{
-	"cisco_iosxe": &CiscoAdapter{},
-	"huawei_vrp":  &HuaweiAdapter{},
+	"cisco_iosxe": &CiscoIOSXEAdapter{},
 }
 
 // 示例：华为平台适配器

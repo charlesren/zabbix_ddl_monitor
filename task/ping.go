@@ -1,52 +1,52 @@
 package task
 
-import "log"
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/scrapli/scrapligo/channel"
+)
 
 type PingTask struct{}
 
-func (t *PingTask) Meta() TaskMeta {
+func (PingTask) Meta() TaskMeta {
 	return TaskMeta{
-		Name: "ping",
-		ProtocolSupport: []ProtocolCapability{
-			{Protocol: "ssh", CommandTypes: []string{"commands"}},
-			{Protocol: "scrapli", CommandTypes: []string{"interactive_event"}},
-		},
-		Platforms: []PlatformSupport{
-			{Platform: "cisco_iosxe", Params: map[string]ParamSpec{
-				"ips": {Name: "ips", Type: "[]string", Required: true},
-			}},
-		},
-	}
-}
-
-func (t *PingTask) Execute(ctx TaskContext) (Result, error) {
-	switch ctx.CommandType {
-	case "commands":
-		commands, _ := t.GenerateCommands(ctx)
-		// 执行命令并返回结果
-	case "interactive_event":
-		events, _ := t.GenerateInteractiveEvents(ctx)
-		// 执行交互事件并返回结果
-	}
-	// 返回统一结果
-}
-
-func init() {
-	registry := GetTaskRegistry()
-	meta := TaskMeta{
-		Name: "ping",
+		Type:        "ping",
+		Description: "Ping task for network devices",
 		Platforms: []PlatformSupport{
 			{
-				Platform: "cisco_iosxe",
+				Platform: CiscoIOSXE,
 				Protocols: []ProtocolSupport{
 					{
-						Protocol: "ssh",
+						Protocol: Scrapli,
 						CommandTypes: []CommandTypeSupport{
 							{
-								CommandType: "commands",
+								CommandType: TypeInteractiveEvent,
 								ImplFactory: func() Task { return &PingTask{} },
-								Params: map[string]ParamSpec{
-									"ips": {Name: "ips", Type: "[]string", Required: true},
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: true},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Platform: HuaweiVRP,
+				Protocols: []ProtocolSupport{
+					{
+						Protocol: Scrapli,
+						CommandTypes: []CommandTypeSupport{
+							{
+								CommandType: TypeInteractiveEvent,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: true},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 								},
 							},
 						},
@@ -55,7 +55,78 @@ func init() {
 			},
 		},
 	}
-	if err := registry.Register(meta); err != nil {
-		log.Fatalf("Failed to register ping task: %v", err)
+}
+
+func (PingTask) ValidateParams(params map[string]interface{}) error {
+	if _, ok := params["target_ip"]; !ok {
+		return fmt.Errorf("missing required parameter: target_ip")
 	}
+	return nil
+}
+
+func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
+	targetIP := ctx.Params["target_ip"].(string)
+	repeat := 5
+	if r, ok := ctx.Params["repeat"]; ok {
+		repeat = r.(int)
+	}
+	timeout := 2 * time.Second
+	if t, ok := ctx.Params["timeout"]; ok {
+		timeout = t.(time.Duration)
+	}
+
+	var events []*channel.SendInteractiveEvent
+	switch ctx.Platform {
+	case CiscoIOSXE:
+		events = []*channel.SendInteractiveEvent{
+			{
+				ChannelInput:    "enable",
+				ChannelResponse: "Password:",
+				HideInput:       false,
+			},
+			{
+				ChannelInput:    "admin123", // Assume enable password is "admin123"
+				ChannelResponse: "#",
+				HideInput:       false,
+			},
+			{
+				ChannelInput:    fmt.Sprintf("ping %s repeat %d timeout %d", targetIP, repeat, timeout.Milliseconds()),
+				ChannelResponse: "#",
+				HideInput:       false,
+			},
+		}
+	case HuaweiVRP:
+		events = []*channel.SendInteractiveEvent{
+			{
+				ChannelInput:    "system-view",
+				ChannelResponse: "Enter system view, return user view with",
+				HideInput:       false,
+			},
+			{
+				ChannelInput:    fmt.Sprintf("ping -c %d -W %d %s", repeat, timeout.Milliseconds(), targetIP),
+				ChannelResponse: "]",
+				HideInput:       false,
+			},
+			{
+				ChannelInput:    "quit",
+				ChannelResponse: "",
+				HideInput:       false,
+			},
+		}
+	default:
+		return Command{}, fmt.Errorf("unsupported platform: %s", ctx.Platform)
+	}
+
+	return Command{
+		Type:    TypeInteractiveEvent,
+		Payload: events,
+	}, nil
+}
+
+func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
+	out := raw.(string)
+	return Result{
+		Success: strings.Contains(out, "0% packet loss") || strings.Contains(out, "100% packet loss"),
+		Data:    map[string]interface{}{"raw": out},
+	}, nil
 }

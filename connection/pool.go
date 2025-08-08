@@ -1,143 +1,128 @@
 package connection
 
 import (
-	"errors"
+	"fmt"
 	"sync"
 	"time"
 
-	"github.com/scrapli/scrapligo/driver/network"
-	"github.com/scrapli/scrapligo/driver/options"
-	"golang.org/x/crypto/ssh"
+	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 )
 
-// ProtocolDriver 基础协议接口
+type (
+	Platform    string
+	Protocol    string
+	CommandType string
+)
+
+const (
+	CiscoIOSXE Platform = "cisco_iosxe"
+	CiscoIOSXR Platform = "cisco_iosxr"
+	CiscoNXOS  Platform = "cisco_nxos"
+	H3CComware Platform = "h3c_comware"
+	HuaweiVRP  Platform = "huawei_vrp"
+
+	ProtocolSSH          Protocol    = "ssh"
+	ProtocolScrapli      Protocol    = "scrapli"
+	TypeCommands         CommandType = "commands"
+	TypeInteractiveEvent CommandType = "interactive_event"
+)
+
+// connection/interfaces.go
 type ProtocolDriver interface {
-	ProtocolType() string
+	ProtocolType() Protocol
 	Close() error
+	Execute(req *ProtocolRequest) (*ProtocolResponse, error)
+	GetCapability() ProtocolCapability
 }
 
-// EnhancedDriver 轻量驱动包装器（未来可扩展）
-type EnhancedDriver struct {
-	ProtocolDriver
+type ProtocolRequest struct {
+	CommandType CommandType // commands/interactive_event
+	Payload     interface{} // []string 或 []*channel.SendInteractiveEvent
+	Timeout     time.Duration
 }
 
-// ConnectionPool 连接池实现
+type ProtocolResponse struct {
+	Success    bool
+	RawData    []byte
+	Structured interface{} // *response.Response 或 *response.MultiResponse
+}
+
+/*
+	type SshProtocolDriver interface {
+		ProtocolDriver
+		SendCommands(commands []string) (string, error)
+	}
+
+	type ScrapliProtocolDriver interface {
+		ProtocolDriver
+		SendInteractive(events []*channel.SendInteractiveEvent, opts ...util.Option) (*response.Response, error)
+		SendCommand(command string, opts ...util.Option) (*response.Response, error)
+		SendCommands(commands []string, opts ...util.Option) (*response.MultiResponse, error)
+		SendConfig(config string, opts ...util.Option) (*response.Response, error)
+		SendConfigs(configs []string, opts ...util.Option) (*response.MultiResponse, error)
+	}
+*/
 type ConnectionPool struct {
-	scrapliPool *DriverPool[*network.Driver]
-	sshPool     *DriverPool[*ssh.Session]
+	router    *syncer.Router               // 源头Router
+	factories map[Protocol]ProtocolFactory // 协议工厂映射
+	pools     map[Protocol]*DriverPool     // 各协议的连接池
+	mu        sync.RWMutex
+}
+
+type DriverPool struct {
+	connections map[string]ProtocolDriver // key为IP或唯一标识
+	factory     ProtocolFactory
 	mu          sync.Mutex
 }
 
-// NewConnectionPool 创建连接池（需传入实际初始化逻辑）
-func NewConnectionPool(
-	scrapliInitFunc func() (*network.Driver, error),
-	sshInitFunc func() (*ssh.Session, error),
-) *ConnectionPool {
-	return &ConnectionPool{
-		scrapliPool: NewDriverPool(scrapliInitFunc),
-		sshPool:     NewDriverPool(sshInitFunc),
+// connection/pool.go
+func NewConnectionPool(router *syncer.Router) *ConnectionPool {
+	pool := &ConnectionPool{
+		router:    router,
+		factories: make(map[Protocol]ProtocolFactory),
+		pools:     make(map[Protocol]*DriverPool),
+	}
+	// 注册默认工厂
+	pool.RegisterFactory(ProtocolSSH, &SSHFactory{})
+	pool.RegisterFactory(ProtocolScrapli, &ScrapliFactory{})
+	return pool
+}
+
+func (p *ConnectionPool) RegisterFactory(proto Protocol, factory ProtocolFactory) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.factories[proto] = factory
+	p.pools[proto] = &DriverPool{
+		connections: make(map[string]ProtocolDriver),
+		factory:     factory,
 	}
 }
 
-// GetDriver 获取驱动（自动管理连接）
-func (p *ConnectionPool) GetDriver(host, protocol string, opts ...DriverOption) (ProtocolDriver, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// connection/pool.go
+func (p *ConnectionPool) Get(proto Protocol) (ProtocolDriver, error) {
+	p.mu.RLock()
+	pool, exists := p.pools[proto]
+	p.mu.RUnlock()
+	if !exists {
+		return nil, fmt.Errorf("unsupported protocol: %s", proto)
+	}
 
-	switch protocol {
-	case "scrapli":
-		driver, err := p.scrapliPool.Get(host)
-		if err != nil {
-			return nil, err
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	// 1. 尝试复用现有连接
+	if conn, exists := pool.connections[p.router.IP]; exists {
+		if pool.factory.HealthCheck(conn) {
+			return conn, nil
 		}
-		return &ScrapliDriver{driver: driver, channel: driver.Channel}, nil
-
-	case "ssh":
-		session, err := p.sshPool.Get(host)
-		if err != nil {
-			return nil, err
-		}
-		return &SSHDriver{session: session}, nil
-
-	default:
-		return nil, errors.New("unsupported protocol")
-	}
-}
-
-// Get 获取驱动（返回EnhancedDriver包装实例）
-func (p *ConnectionPool) Get(ip, protocol string) *EnhancedDriver {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	var baseDriver ProtocolDriver
-	switch protocol {
-	case "scrapli":
-		driver, _ := p.scrapliPool.Get(ip)
-		baseDriver = &ScrapliDriver{driver: driver, channel: driver.Channel}
-	case "ssh":
-		session, _ := p.sshPool.Get(ip)
-		baseDriver = &SSHDriver{session: session}
-	default:
-		panic("unsupported protocol: " + protocol)
+		_ = conn.Close() // 清理失效连接
 	}
 
-	return &EnhancedDriver{ProtocolDriver: baseDriver}
-}
-
-// DriverOption 驱动配置函数
-type DriverOption func(interface{})
-
-// DriverPool 通用驱动池（泛型实现）
-type DriverPool[T any] struct {
-	pool   map[string]T
-	create func() (T, error)
-	mu     sync.Mutex
-}
-
-func NewDriverPool[T any](createFn func() (T, error)) *DriverPool[T] {
-	return &DriverPool[T]{
-		pool:   make(map[string]T),
-		create: createFn,
-	}
-}
-
-func (p *DriverPool[T]) Get(key string) (T, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if conn, ok := p.pool[key]; ok {
-		return conn, nil
-	}
-
-	conn, err := p.create()
-	if err != nil {
-		return conn, err
-	}
-	p.pool[key] = conn
-	return conn, nil
-}
-
-var scrapliInit = func() (*network.Driver, error) {
-	return network.NewDriver(
-		"", // 实际使用时替换为host
-		options.WithAuthUsername("admin"),
-		options.WithAuthPassword("password"),
-		options.WithTimeoutOps(30*time.Second),
-	)
-}
-
-var sshInit = func() (*ssh.Session, error) {
-	// 实现SSH连接逻辑
-	config := &ssh.ClientConfig{
-		User: "admin",
-		Auth: []ssh.AuthMethod{
-			ssh.Password("password"),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-	client, err := ssh.Dial("tcp", "host:22", config)
+	// 2. 创建新连接
+	conn, err := pool.factory.Create(p.router)
 	if err != nil {
 		return nil, err
 	}
-	return client.NewSession()
+	pool.connections[p.router.IP] = conn
+	return conn, nil
 }

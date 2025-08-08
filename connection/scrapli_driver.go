@@ -1,7 +1,9 @@
 package connection
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -9,7 +11,11 @@ import (
 	"github.com/scrapli/scrapligo/driver/network"
 	"github.com/scrapli/scrapligo/driver/options"
 	"github.com/scrapli/scrapligo/platform"
+	"github.com/scrapli/scrapligo/response"
 )
+
+var ErrUnsupportedCommandType = errors.New("unsupported command type")
+var ErrUnsupportedInputType = errors.New("unsupported input type")
 
 type ScrapliDriver struct {
 	host       string
@@ -23,8 +29,48 @@ type ScrapliDriver struct {
 	timeout    time.Duration    // 操作超时时间
 }
 
-func (d *ScrapliDriver) ProtocolType() string {
-	return "scrapli"
+func (d *ScrapliDriver) ProtocolType() Protocol {
+	return ProtocolScrapli
+}
+
+// connection/scrapli_driver.go
+func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
+	switch req.CommandType {
+	case TypeCommands:
+		cmds, ok := req.Payload.([]string)
+		if !ok {
+			return nil, fmt.Errorf("invalid commands payload")
+		}
+		resp, err := d.driver.SendCommands(cmds)
+		if err != nil {
+			return nil, err
+		}
+		// 提取所有Response的结果并拼接为RawData
+		var rawData strings.Builder
+		for _, r := range resp.Responses {
+			rawData.WriteString(r.Result)
+		}
+		return &ProtocolResponse{
+			Success:    err == nil,
+			RawData:    []byte(rawData.String()),
+			Structured: resp,
+		}, err
+
+	case TypeInteractiveEvent:
+		events, ok := req.Payload.([]*channel.SendInteractiveEvent)
+		if !ok {
+			return nil, fmt.Errorf("invalid events payload")
+		}
+		resp, err := d.channel.SendInteractive(events)
+		return &ProtocolResponse{
+			Success:    err == nil,
+			RawData:    resp,
+			Structured: nil, // 交互式命令无结构化响应
+		}, err
+
+	default:
+		return nil, ErrUnsupportedCommandType
+	}
 }
 
 // SendConfig 发送配置命令
@@ -88,29 +134,29 @@ func (d *ScrapliDriver) Connect() error {
 }
 
 // SendInteractive 发送交互式命令
-func (d *ScrapliDriver) SendInteractive(events []*channel.SendInteractiveEvent) (string, error) {
+func (d *ScrapliDriver) SendInteractive(events []*channel.SendInteractiveEvent) ([]byte, error) {
 	if err := d.ensureConnected(); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	resp, err := d.channel.SendInteractive(events)
 	if err != nil {
-		return "", fmt.Errorf("send interactive failed: %w", err)
+		return nil, fmt.Errorf("send interactive failed: %w", err)
 	}
-	return string(resp), nil
+	return resp, nil
 }
 
 // SendCommand 发送普通命令
-func (d *ScrapliDriver) SendCommands(commands []string) (string, error) {
+func (d *ScrapliDriver) SendCommands(commands []string) (*response.MultiResponse, error) {
 	if err := d.ensureConnected(); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	response, err := d.driver.SendCommands(commands)
 	if err != nil {
-		return "", fmt.Errorf("send command failed: %w", err)
+		return nil, fmt.Errorf("send command failed: %w", err)
 	}
-	return response.Result, nil
+	return response, nil
 }
 
 // GetPrompt 获取设备提示符
@@ -144,11 +190,10 @@ func (d *ScrapliDriver) ensureConnected() error {
 	}
 	return nil
 }
-func (d *ScrapliDriver) Execute(input interface{}) (interface{}, error) {
-	switch v := input.(type) {
-	case []*channel.SendInteractiveEvent:
-		return d.driver.SendInteractive(v)
-	default:
-		return nil, ErrUnsupportedInputType
-	}
+
+// connection/scrapli_driver.go
+func (d *ScrapliDriver) GetCapability() ProtocolCapability {
+	caps := ScrapliCapability
+	caps.PlatformSupport = []Platform{Platform(d.platform)} // 动态设置当前平台
+	return caps
 }

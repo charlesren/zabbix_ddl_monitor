@@ -7,24 +7,23 @@ import (
 
 type Registry interface {
 	Register(meta TaskMeta) error
-	Discover(taskType, platform, protocol, commandType string) (Task, error)
-	ListPlatforms(platform string) []string
+	Discover(taskType TaskType, platform Platform, protocol Protocol, commandType CommandType) (Task, error)
+	ListPlatforms(platform Platform) []TaskType
 }
 
-// DefaultRegistry 默认实现
 type DefaultRegistry struct {
-	tasks map[string]TaskMeta
+	tasks map[TaskType]TaskMeta
 	mu    sync.RWMutex
 }
 
-// 确保DefaultRegistry实现Registry接口
 var _ Registry = (*DefaultRegistry)(nil)
 
 func NewDefaultRegistry() Registry {
-	return &DefaultRegistry{tasks: make(map[string]TaskMeta)}
+	return &DefaultRegistry{
+		tasks: make(map[TaskType]TaskMeta),
+	}
 }
 
-// Register 注册任务（层级化）
 func (r *DefaultRegistry) Register(meta TaskMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -35,8 +34,12 @@ func (r *DefaultRegistry) Register(meta TaskMeta) error {
 	return nil
 }
 
-// Discover 发现任务实现（严格层级匹配）
-func (r *DefaultRegistry) Discover(taskType, platform, protocol, commandType string) (Task, error) {
+func (r *DefaultRegistry) Discover(
+	taskType TaskType,
+	platform Platform,
+	protocol Protocol,
+	commandType CommandType,
+) (Task, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -61,12 +64,11 @@ func (r *DefaultRegistry) Discover(taskType, platform, protocol, commandType str
 	return nil, fmt.Errorf("no matching task for platform '%s', protocol '%s', command type '%s'", platform, protocol, commandType)
 }
 
-// ListPlatforms 查询平台支持的任务
-func (r *DefaultRegistry) ListPlatforms(platform string) []string {
+func (r *DefaultRegistry) ListPlatforms(platform Platform) []TaskType {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var supported []string
+	var supported []TaskType
 	for name, meta := range r.tasks {
 		for _, p := range meta.Platforms {
 			if p.Platform == platform {

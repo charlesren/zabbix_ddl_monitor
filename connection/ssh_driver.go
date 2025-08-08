@@ -3,21 +3,22 @@ package connection
 import (
 	"bytes"
 	"fmt"
+	"time"
 
+	"github.com/scrapli/scrapligo/channel"
 	"golang.org/x/crypto/ssh"
 )
 
 type SSHDriver struct {
-	client  *ssh.Client
 	session *ssh.Session
 }
 
-func NewSSHDriver(s *ssh.Session) *SSHDriver {
-	return &SSHDriver{session: s}
+func NewSSHDriver(session *ssh.Session) *SSHDriver {
+	return &SSHDriver{session: session}
 }
 
-func (d *SSHDriver) ProtocolType() string {
-	return "ssh"
+func (d *SSHDriver) ProtocolType() Protocol {
+	return ProtocolSSH
 }
 
 func (d *SSHDriver) SendCommands(commands []string) (string, error) {
@@ -31,6 +32,42 @@ func (d *SSHDriver) SendCommands(commands []string) (string, error) {
 	return output.String(), nil
 }
 
+func (d *SSHDriver) SendInteractive(events []*channel.SendInteractiveEvent) (string, error) {
+	return "", fmt.Errorf("SSH protocol does not support interactive commands")
+}
+
 func (d *SSHDriver) Close() error {
 	return d.session.Close()
+}
+
+// connection/ssh_driver.go
+func (d *SSHDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
+	if req.CommandType != TypeCommands {
+		return nil, ErrUnsupportedCommandType
+	}
+
+	cmds, ok := req.Payload.([]string)
+	if !ok {
+		return nil, fmt.Errorf("invalid commands payload")
+	}
+
+	output, err := d.SendCommands(cmds)
+	return &ProtocolResponse{
+		Success:    err == nil,
+		RawData:    []byte(output),
+		Structured: nil, // SSH无结构化响应
+	}, err
+}
+
+// connection/ssh_driver.go
+func (d *SSHDriver) GetCapability() ProtocolCapability {
+	return ProtocolCapability{
+		Protocol:        ProtocolSSH,
+		PlatformSupport: []Platform{CiscoIOSXE, HuaweiVRP},
+		CommandTypes: []CommandTypeSupport{
+			{Type: TypeCommands, Description: "SSH command channel"},
+		},
+		MaxConcurrent: 3,
+		Timeout:       15 * time.Second,
+	}
 }
