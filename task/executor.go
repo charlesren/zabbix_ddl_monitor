@@ -40,7 +40,6 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	resp, err := conn.Execute(&connection.ProtocolRequest{
 		CommandType: cmd.Type,
 		Payload:     payload,
-		Timeout:     ctx.Timeout,
 	})
 
 	if err != nil {
@@ -62,11 +61,11 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 		}
 		var raw interface{}
 		switch cmd.Type {
-		case TypeCommands:
+		case connection.CommandTypeCommands:
 			raw, err = conn.(interface {
 				SendCommands([]string) (string, error)
 			}).SendCommands(cmd.Payload.([]string))
-		case TypeInteractiveEvent:
+		case connection.CommandTypeInteractiveEvent:
 			raw, err = conn.(interface {
 				SendInteractive([]interface{}) (string, error)
 			}).SendInteractive(cmd.Payload.([]interface{}))
@@ -105,7 +104,7 @@ func WithTimeout(d time.Duration) Middleware {
 }
 
 // task/executor.go
-func validateCapability(driver ProtocolDriver, ctx TaskContext) error {
+func validateCapability(driver connection.ProtocolDriver, ctx TaskContext) error {
 	caps := driver.GetCapability()
 
 	// 检查平台支持
@@ -116,11 +115,6 @@ func validateCapability(driver ProtocolDriver, ctx TaskContext) error {
 	// 检查命令类型支持
 	if !caps.SupportsCommandType(ctx.CommandType) {
 		return fmt.Errorf("command type %s not supported", ctx.CommandType)
-	}
-
-	// 检查超时限制
-	if ctx.Timeout > caps.Timeout && caps.Timeout > 0 {
-		return fmt.Errorf("requested timeout exceeds protocol limit")
 	}
 
 	return nil

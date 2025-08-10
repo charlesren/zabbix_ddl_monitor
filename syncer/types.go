@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 	"github.com/charlesren/zapix"
 )
 
@@ -67,11 +68,11 @@ func (l *Line) ComputeHash() {
 }
 
 type Router struct {
-	IP       string //eage router,需要从host的macros里获取，为{$LINE_ROUTER_IP}的值
-	Username string //路由器用户名，需要从host的macros里获取，为{$LINE_ROUTER_USERNAME}的值
-	Password string //路由器密码，需要从host的macros里获取，为{$LINE_ROUTER_PASSWORD}的值
-	Platform string //路由器操作系统平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)，需要从host的macros里获取，为{$LINE_ROUTER_PLATFORM}的值
-	Protocol string //路由器driver协议 "scrapli-channel" "ssh" 或 "netconf",需要从host的macros里获取，为{$LINE_ROUTER_PROTOCOL}的值
+	IP       string              //eage router,需要从host的macros里获取，为{$LINE_ROUTER_IP}的值
+	Username string              //路由器用户名，需要从host的macros里获取，为{$LINE_ROUTER_USERNAME}的值
+	Password string              //路由器密码，需要从host的macros里获取，为{$LINE_ROUTER_PASSWORD}的值
+	Platform string              //路由器操作系统平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)，需要从host的macros里获取，为{$LINE_ROUTER_PLATFORM}的值
+	Protocol connection.Protocol //路由器driver协议 "scrapli-channel" "ssh" 或 "netconf",需要从host的macros里获取，为{$LINE_ROUTER_PROTOCOL}的值
 }
 
 // 从Zabbix API获取路由器详细信息
@@ -95,4 +96,16 @@ type Subscription struct {
 	cs     *ConfigSyncer
 	cancel context.CancelFunc
 	once   sync.Once
+}
+
+func (r *Router) ToConnectionConfig() connection.ConnectionConfig {
+	return connection.ConnectionConfig{
+		IP:       r.IP,
+		Username: r.Username,
+		Password: r.Password,
+		Metadata: map[string]interface{}{
+			"platform": r.Platform,
+			"protocol": r.Protocol,
+		},
+	}
 }

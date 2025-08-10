@@ -1,5 +1,7 @@
 package connection
 
+import "time"
+
 // 配置模式类型（设备配置层级）
 type ConfigMode string
 
@@ -36,4 +38,18 @@ type ConfigFeature struct {
 	Name        string
 	Description string
 	Commands    []string // 相关命令前缀
+}
+
+type ConnectionConfig struct {
+	// 基础字段（必填）
+	IP       string
+	Username string
+	Password string
+
+	// 可选字段
+	Port    int           // 默认22（SSH）
+	Timeout time.Duration // 默认30s
+
+	// 扩展参数（动态键值对）
+	Metadata map[string]interface{} // 例如：{"platform": "cisco_iosxe", "protocol": "ssh"}
 }

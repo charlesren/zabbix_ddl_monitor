@@ -7,10 +7,10 @@ var (
 	// SSH协议能力
 	SSHCapability = ProtocolCapability{
 		Protocol:        ProtocolSSH,
-		PlatformSupport: []Platform{CiscoIOSXE, HuaweiVRP},
+		PlatformSupport: []Platform{PlatformCiscoIOSXE, PlatformHuaweiVRP},
 		CommandTypes: []CommandTypeSupport{
 			{
-				Type:        TypeCommands,
+				Type:        CommandTypeCommands,
 				Description: "Basic command execution",
 				Example:     "show version",
 			},
@@ -30,15 +30,15 @@ var (
 	// Scrapli协议能力
 	ScrapliCapability = ProtocolCapability{
 		Protocol:        ProtocolScrapli,
-		PlatformSupport: []Platform{CiscoIOSXE, CiscoNXOS, HuaweiVRP},
+		PlatformSupport: []Platform{PlatformCiscoIOSXE, PlatformCiscoNXOS, PlatformHuaweiVRP},
 		CommandTypes: []CommandTypeSupport{
 			{
-				Type:        TypeCommands,
+				Type:        CommandTypeCommands,
 				Description: "Batch command execution",
 				Example:     "show running-config",
 			},
 			{
-				Type:        TypeInteractiveEvent,
+				Type:        CommandTypeInteractiveEvent,
 				Description: "Interactive session",
 				Example:     "dialog-based configuration",
 			},

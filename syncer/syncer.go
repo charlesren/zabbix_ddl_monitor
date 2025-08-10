@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charlesren/ylog"
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 	"github.com/charlesren/zapix"
 )
 
@@ -345,7 +346,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 				Username: macros["{$LINE_ROUTER_USERNAME}"],
 				Password: macros["{$LINE_ROUTER_PASSWORD}"],
 				Platform: macros["{$LINE_ROUTER_PLATFORM}"],
-				Protocol: macros["{$LINE_ROUTER_PROTOCOL}"],
+				Protocol: connection.Protocol(macros["{$LINE_ROUTER_PROTOCOL}"]),
 			},
 		}
 		line.ComputeHash()

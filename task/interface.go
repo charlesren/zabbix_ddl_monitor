@@ -4,27 +4,15 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 	"github.com/scrapli/scrapligo/channel"
 )
 
 type (
 	TaskType    string
-	Platform    string
-	Protocol    string
-	CommandType string
-)
-
-const (
-	CiscoIOSXE Platform = "cisco_iosxe"
-	CiscoIOSXR Platform = "cisco_iosxr"
-	CiscoNXOS  Platform = "cisco_nxos"
-	H3CComware Platform = "h3c_comware"
-	HuaweiVRP  Platform = "huawei_vrp"
-
-	ProtocolSSH          Protocol    = "ssh"
-	ProtocolScrapli      Protocol    = "scrapli"
-	TypeCommands         CommandType = "commands"
-	TypeInteractiveEvent CommandType = "interactive_event"
+	Platform    = connection.Platform
+	Protocol    = connection.Protocol
+	CommandType = connection.CommandType
 )
 
 type Command struct {

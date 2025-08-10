@@ -9,6 +9,7 @@ replace (
 	github.com/charlesren/zabbix_ddl_monitor/internal/config => ./internal/config
 	github.com/charlesren/zabbix_ddl_monitor/internal/router => ./internal/router
 	github.com/charlesren/zabbix_ddl_monitor/syncer => ./syncer
+	github.com/charlesren/zabbix_ddl_monitor/connection => ./connection
 	github.com/charlesren/zapix => ../zapix
 )
 

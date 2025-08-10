@@ -1,12 +1,11 @@
 package connection
 
-import "github.com/charlesren/zabbix_ddl_monitor/syncer"
-
 // connection/scrapli_factory.go
 type ScrapliFactory struct{}
 
-func (f *ScrapliFactory) Create(router *syncer.Router) (ProtocolDriver, error) {
-	driver := NewScrapliDriver(router.Platform, router.IP, router.Username, router.Password)
+func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error) {
+	platform, _ := config.Metadata["platform"].(string)
+	driver := NewScrapliDriver(platform, config.IP, config.Username, config.Password)
 	if err := driver.Connect(); err != nil {
 		return nil, err
 	}

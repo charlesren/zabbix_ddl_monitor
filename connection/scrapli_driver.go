@@ -36,7 +36,7 @@ func (d *ScrapliDriver) ProtocolType() Protocol {
 // connection/scrapli_driver.go
 func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
 	switch req.CommandType {
-	case TypeCommands:
+	case CommandTypeCommands:
 		cmds, ok := req.Payload.([]string)
 		if !ok {
 			return nil, fmt.Errorf("invalid commands payload")
@@ -56,7 +56,7 @@ func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error)
 			Structured: resp,
 		}, err
 
-	case TypeInteractiveEvent:
+	case CommandTypeInteractiveEvent:
 		events, ok := req.Payload.([]*channel.SendInteractiveEvent)
 		if !ok {
 			return nil, fmt.Errorf("invalid events payload")

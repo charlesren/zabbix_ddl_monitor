@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charlesren/zabbix_ddl_monitor/connection"
 	"github.com/scrapli/scrapligo/channel"
 )
 
@@ -16,13 +17,13 @@ func (PingTask) Meta() TaskMeta {
 		Description: "Ping task for network devices",
 		Platforms: []PlatformSupport{
 			{
-				Platform: CiscoIOSXE,
+				Platform: connection.PlatformCiscoIOSXE,
 				Protocols: []ProtocolSupport{
 					{
-						Protocol: Scrapli,
+						Protocol: connection.ProtocolScrapli,
 						CommandTypes: []CommandTypeSupport{
 							{
-								CommandType: TypeInteractiveEvent,
+								CommandType: connection.CommandTypeInteractiveEvent,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
 									{Name: "target_ip", Type: "string", Required: true},
@@ -35,13 +36,13 @@ func (PingTask) Meta() TaskMeta {
 				},
 			},
 			{
-				Platform: HuaweiVRP,
+				Platform: connection.PlatformHuaweiVRP,
 				Protocols: []ProtocolSupport{
 					{
-						Protocol: Scrapli,
+						Protocol: Protocol(connection.ProtocolScrapli),
 						CommandTypes: []CommandTypeSupport{
 							{
-								CommandType: TypeInteractiveEvent,
+								CommandType: connection.CommandTypeInteractiveEvent,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
 									{Name: "target_ip", Type: "string", Required: true},
@@ -77,7 +78,7 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 
 	var events []*channel.SendInteractiveEvent
 	switch ctx.Platform {
-	case CiscoIOSXE:
+	case connection.PlatformCiscoIOSXE:
 		events = []*channel.SendInteractiveEvent{
 			{
 				ChannelInput:    "enable",
@@ -95,7 +96,7 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 				HideInput:       false,
 			},
 		}
-	case HuaweiVRP:
+	case connection.PlatformHuaweiVRP:
 		events = []*channel.SendInteractiveEvent{
 			{
 				ChannelInput:    "system-view",
@@ -118,7 +119,7 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 	}
 
 	return Command{
-		Type:    TypeInteractiveEvent,
+		Type:    connection.CommandTypeInteractiveEvent,
 		Payload: events,
 	}, nil
 }

@@ -33,12 +33,10 @@ func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line) *Rout
 	scheduler := &RouterScheduler{
 		router:     router,
 		lines:      initialLines,
-		connection: connection.NewConnection(router),
+		connection: connection.NewConnectionPool(router.ToConnectionConfig()),
 		queues:     make(map[time.Duration]*IntervalTaskQueue),
 		stopChan:   make(chan struct{}),
 	}
-
-	// 初始化时构建队列
 	scheduler.initializeQueues()
 	return scheduler
 }
@@ -77,8 +75,7 @@ func (s *RouterScheduler) Start() {
 func (s *RouterScheduler) executeTasks(q *IntervalTaskQueue) {
 	defer s.wg.Done()
 
-	// 1. 获取连接（带重试和超时）
-	conn, err := s.connection.GetWithRetry(3, 2*time.Second)
+	conn, err := s.connection.Get(s.router.Protocol)
 	if err != nil {
 		ylog.Errorf("scheduler", "router=%s get connection failed: %v", s.router.IP, err)
 		return

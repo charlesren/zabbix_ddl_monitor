@@ -42,7 +42,7 @@ func (d *SSHDriver) Close() error {
 
 // connection/ssh_driver.go
 func (d *SSHDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
-	if req.CommandType != TypeCommands {
+	if req.CommandType != CommandTypeCommands {
 		return nil, ErrUnsupportedCommandType
 	}
 
@@ -63,9 +63,9 @@ func (d *SSHDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
 func (d *SSHDriver) GetCapability() ProtocolCapability {
 	return ProtocolCapability{
 		Protocol:        ProtocolSSH,
-		PlatformSupport: []Platform{CiscoIOSXE, HuaweiVRP},
+		PlatformSupport: []Platform{PlatformCiscoIOSXE, PlatformHuaweiVRP},
 		CommandTypes: []CommandTypeSupport{
-			{Type: TypeCommands, Description: "SSH command channel"},
+			{Type: CommandTypeCommands, Description: "SSH command channel"},
 		},
 		MaxConcurrent: 3,
 		Timeout:       15 * time.Second,
