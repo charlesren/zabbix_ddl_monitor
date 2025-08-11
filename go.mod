@@ -6,10 +6,10 @@ replace (
 	github.com/charlesren/userconfig => ../userconfig
 	github.com/charlesren/ylog => ../ylog
 	github.com/charlesren/zabbix_ddl_monitor => ./
+	github.com/charlesren/zabbix_ddl_monitor/connection => ./connection
 	github.com/charlesren/zabbix_ddl_monitor/internal/config => ./internal/config
 	github.com/charlesren/zabbix_ddl_monitor/internal/router => ./internal/router
 	github.com/charlesren/zabbix_ddl_monitor/syncer => ./syncer
-	github.com/charlesren/zabbix_ddl_monitor/connection => ./connection
 	github.com/charlesren/zapix => ../zapix
 )
 
@@ -17,9 +17,11 @@ require (
 	github.com/charlesren/userconfig v0.0.0-00010101000000-000000000000
 	github.com/charlesren/ylog v0.0.0-00010101000000-000000000000
 	github.com/charlesren/zapix v0.0.0-00010101000000-000000000000
+	github.com/golang/mock v1.6.0
 	github.com/scrapli/scrapligo v1.3.3
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
+	golang.org/x/crypto v0.39.0
 )
 
 require (
@@ -50,7 +52,6 @@ require (
 	go.uber.org/mock v0.5.2 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/crypto v0.39.0 // indirect
 	golang.org/x/mod v0.25.0 // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/sync v0.15.0 // indirect

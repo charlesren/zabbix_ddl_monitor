@@ -64,6 +64,12 @@ graph TD
 - 负责连接的创建、关闭、健康检查
 - 提供protocoldriver的实例化和缓存，返回增强驱动
 - 通过工厂模式创建不同的ProtocolDriver，便于扩展其它协议类型
+- 实现连接池预热功能，根据router绑定的协议类型，初始化连接,支持初始话连接的数量可调
+- 缓存router绑定的协议类型的连接的capability
+- 空闲连接自动清理
+- 心跳保活
+
+
 
 #### 协议驱动（ProtocolDriver）
 - 实现协议原生操作（如ssh命令发送，scrapli交互）
@@ -437,6 +443,21 @@ type ConnectionPool struct {
 	debugMode   bool
 	activeConns map[string]string // connID -> stack trace
 }
+
+type ScrapliDriver struct {
+    host       string
+    username   string
+    password   string
+    platform   string
+    mu         sync.Mutex       // 保证线程安全
+    driver     *network.Driver  // 主驱动
+    channel    *channel.Channel // 独立缓存Channel
+    maxRetries int              // 最大重试次数
+    timeout    time.Duration    // 操作超时时间
+    ctx        context.Context  // 新增上下文字段
+    cancel     context.CancelFunc // 对应的取消函数
+}
+
 ```
 
 

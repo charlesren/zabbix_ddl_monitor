@@ -124,6 +124,12 @@ func (p *ConnectionPool) Get(proto Protocol) (ProtocolDriver, error) {
 	// 1. 尝试复用有效空闲连接
 	for _, conn := range pool.connections {
 		if !conn.inUse && conn.valid {
+			// 新增健康检查
+			if healthy := pool.factory.HealthCheck(conn.driver); !healthy {
+				conn.valid = false
+				_ = conn.driver.Close()
+				continue
+			}
 			return p.activateConnection(conn), nil
 		}
 	}

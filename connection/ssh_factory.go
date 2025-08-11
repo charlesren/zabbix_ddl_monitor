@@ -2,7 +2,6 @@ package connection
 
 import (
 	"fmt"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -11,11 +10,15 @@ type SSHFactory struct{}
 
 func (f *SSHFactory) Create(config ConnectionConfig) (ProtocolDriver, error) {
 	// 设置默认值
-	if config.Port == 0 {
-		config.Port = 22
-	}
-	if config.Timeout == 0 {
-		config.Timeout = 30 * time.Second
+	// 创建临时副本避免修改原始配置
+	configCopy := config
+	defer func() {
+		configCopy.Password = ""
+		configCopy.Metadata = nil
+	}()
+
+	if configCopy.Port == 0 {
+		configCopy.Port = 22
 	}
 
 	// 单步建立SSH会话
