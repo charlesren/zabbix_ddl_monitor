@@ -11,7 +11,7 @@ type ProtocolCapability struct {
 	PlatformSupport []Platform // 支持的平台列表
 
 	// 命令能力
-	CommandTypes []CommandTypeSupport
+	CommandTypesSupport []CommandType
 
 	// 配置能力
 	ConfigModes []ConfigModeCapability
@@ -23,12 +23,6 @@ type ProtocolCapability struct {
 	// 高级功能
 	SupportsAutoComplete bool // 是否支持命令自动补全
 	SupportsColorOutput  bool // 是否支持彩色输出
-}
-
-type CommandTypeSupport struct {
-	Type        CommandType
-	Description string
-	Example     string
 }
 
 // connection/capability.go

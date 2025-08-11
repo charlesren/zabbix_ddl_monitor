@@ -64,8 +64,8 @@ func (d *SSHDriver) GetCapability() ProtocolCapability {
 	return ProtocolCapability{
 		Protocol:        ProtocolSSH,
 		PlatformSupport: []Platform{PlatformCiscoIOSXE, PlatformHuaweiVRP},
-		CommandTypes: []CommandTypeSupport{
-			{Type: CommandTypeCommands, Description: "SSH command channel"},
+		CommandTypesSupport: []CommandType{
+			CommandTypeCommands,
 		},
 		MaxConcurrent: 3,
 		Timeout:       15 * time.Second,

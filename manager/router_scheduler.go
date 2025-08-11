@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -8,6 +10,11 @@ import (
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
 	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 	"github.com/charlesren/zabbix_ddl_monitor/task"
+)
+
+// 预热参数配置
+var (
+	warmUpConnectionCount = 3 // 预热连接数
 )
 
 type Scheduler interface {
@@ -19,24 +26,49 @@ type Scheduler interface {
 	Start()
 }
 type RouterScheduler struct {
-	router     *syncer.Router
-	lines      []syncer.Line
-	connection *connection.ConnectionPool
-	queues     map[time.Duration]*IntervalTaskQueue
-	executor   *task.Executor
-	stopChan   chan struct{}
-	wg         sync.WaitGroup
-	mu         sync.Mutex
+	manager        *Manager
+	router         *syncer.Router
+	lines          []syncer.Line
+	connection     *connection.ConnectionPool
+	connCapability *connection.ProtocolCapability //预加载的连接能力信息
+	capabilityMu   sync.RWMutex                   // 能力信息的读写锁
+	queues         map[time.Duration]*IntervalTaskQueue
+	executor       *task.Executor
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+	mu             sync.Mutex
 }
 
-func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line) *RouterScheduler {
+func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manager *Manager) *RouterScheduler {
 	scheduler := &RouterScheduler{
 		router:     router,
 		lines:      initialLines,
 		connection: connection.NewConnectionPool(router.ToConnectionConfig()),
 		queues:     make(map[time.Duration]*IntervalTaskQueue),
+		manager:    manager,
 		stopChan:   make(chan struct{}),
 	}
+	//  预热连接池
+	if err := scheduler.connection.WarmUp(scheduler.router.Protocol, warmUpConnectionCount); err != nil {
+		ylog.Warnf("scheduler", "connection pool warm-up failed: %v (router=%s)",
+			err, scheduler.router.IP)
+	} else {
+		ylog.Infof("scheduler", "successfully warmed up %d connections (router=%s)",
+			warmUpConnectionCount, scheduler.router.IP)
+	}
+	// 同步预加载Connection能力
+	conn, err := scheduler.connection.Get(scheduler.router.Protocol)
+	if err != nil {
+		ylog.Warnf("scheduler", "preload capability failed: %v", err)
+	}
+	capability := conn.GetCapability()
+	scheduler.capabilityMu.Lock()
+	scheduler.connCapability = &capability
+	scheduler.capabilityMu.Unlock()
+
+	scheduler.connection.Release(conn)
+	ylog.Debugf("scheduler", "preloaded capabilities for %s", scheduler.router.IP)
+
 	scheduler.initializeQueues()
 	return scheduler
 }
@@ -75,6 +107,7 @@ func (s *RouterScheduler) Start() {
 func (s *RouterScheduler) executeTasks(q *IntervalTaskQueue) {
 	defer s.wg.Done()
 
+	// 1. 获取连接
 	conn, err := s.connection.Get(s.router.Protocol)
 	if err != nil {
 		ylog.Errorf("scheduler", "router=%s get connection failed: %v", s.router.IP, err)
@@ -82,15 +115,123 @@ func (s *RouterScheduler) executeTasks(q *IntervalTaskQueue) {
 	}
 	defer s.connection.Release(conn)
 
-	// 2. 获取任务快照（无锁阻塞）
-	tasks := q.GetTasksSnapshot()
-	if len(tasks) == 0 {
+	// 2. 获取连接支持的能力
+	// 2.1. 获取预加载的能力信息（带降级逻辑）
+	var supportedCmdTypes []connection.CommandType
+	s.capabilityMu.RLock()
+	if s.connCapability != nil {
+		supportedCmdTypes = s.connCapability.CommandTypesSupport
+	}
+	s.capabilityMu.RUnlock()
+
+	// 降级：预加载失败时实时获取
+	if supportedCmdTypes == nil {
+		conn, err := s.connection.Get(s.router.Protocol)
+		if err != nil {
+			ylog.Errorf("scheduler", "router=%s get connection failed: %v", s.router.IP, err)
+			return
+		}
+		defer s.connection.Release(conn)
+		supportedCmdTypes = conn.GetCapability().CommandTypesSupport
+	}
+
+	// 3. 获取任务快照
+	lines := q.GetTasksSnapshot()
+	if len(lines) == 0 {
+		ylog.Debugf("scheduler", "no tasks to execute (router=%s)", s.router.IP)
 		return
 	}
 
-	// 3. 通过Executor执行
-	results := s.executor.ExecuteWithConn(conn, s.router.Platform, tasks)
-	s.handleResults(results) // 上报结果
+	// 4. 合并IP
+	mergedIPs := mergeLinesIP(lines)
+
+	// 5. 创建基础TaskContext
+	baseCtx := task.TaskContext{
+		Platform: s.router.Platform,
+		Protocol: s.router.Protocol,
+		Params: map[string]interface{}{
+			"target_ip": mergedIPs,
+			"repeat":    10,
+			"timeout":   10 * time.Second,
+		},
+		Ctx: context.Background(),
+	}
+
+	// 6. 通过 Manager 获取 registry 发现任务
+	var matchedTask task.Task
+	var matchedCmdType task.CommandType
+	for _, cmdType := range supportedCmdTypes {
+		t, err := s.manager.registry.Discover(
+			"ping",
+			s.router.Platform,
+			s.router.Protocol,
+			cmdType,
+		)
+		if err == nil {
+			matchedTask = t
+			matchedCmdType = cmdType
+			break
+		}
+	}
+
+	if matchedTask == nil {
+		ylog.Errorf("scheduler", "no matching task for router=%s (supported=%v)",
+			s.router.IP, supportedCmdTypes)
+		return
+	}
+
+	// 7. 设置最终CommandType并生成Command
+	finalCtx := baseCtx
+	finalCtx.CommandType = matchedCmdType
+
+	cmd, err := matchedTask.BuildCommand(finalCtx)
+	if err != nil {
+		ylog.Errorf("scheduler", "build command failed: %v", err)
+		return
+	}
+
+	// 8. 执行Command
+	resp, err := conn.Execute(&connection.ProtocolRequest{
+		CommandType: cmd.Type,
+		Payload:     cmd.Payload,
+	})
+	if err != nil {
+		ylog.Errorf("scheduler", "execute failed: %v", err)
+		return
+	}
+
+	// 9. 解析结果
+	res, err := matchedTask.ParseOutput(finalCtx, resp.RawData)
+	if err != nil {
+		ylog.Errorf("scheduler", "parse output failed: %v", err)
+		return
+	}
+
+	// 10. 处理结果
+	s.handleResults([]task.Result{res})
+}
+
+// mergeLinesIP 合并所有line的IP
+func mergeLinesIP(lines []syncer.Line) string {
+	ips := make([]string, len(lines))
+	for i, line := range lines {
+		ips[i] = line.IP
+	}
+	return strings.Join(ips, ",")
+}
+
+func (s *RouterScheduler) handleResults(results []task.Result) {
+	defer func() {
+		if err := recover(); err != nil {
+			ylog.Errorf("scheduler", "panic during result handling: %v", err)
+		}
+	}()
+
+	for _, result := range results {
+		if !result.Success {
+			ylog.Warnf("scheduler", "task failed: %s", result.Error)
+		}
+	}
 }
 
 // 停止调度器（阻塞等待所有任务完成）

@@ -214,7 +214,7 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 // 确保调度器存在
 func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 	if _, exists := m.schedulers[routerIP]; !exists {
-		m.schedulers[routerIP] = NewRouterScheduler(&lines[0].Router, lines)
+		m.schedulers[routerIP] = NewRouterScheduler(&lines[0].Router, lines, m)
 		go m.schedulers[routerIP].Start()
 	}
 }

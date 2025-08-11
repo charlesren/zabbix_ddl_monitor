@@ -345,7 +345,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 				IP:       macros["{$LINE_ROUTER_IP}"],
 				Username: macros["{$LINE_ROUTER_USERNAME}"],
 				Password: macros["{$LINE_ROUTER_PASSWORD}"],
-				Platform: macros["{$LINE_ROUTER_PLATFORM}"],
+				Platform: connection.Platform(macros["{$LINE_ROUTER_PLATFORM}"]),
 				Protocol: connection.Protocol(macros["{$LINE_ROUTER_PROTOCOL}"]),
 			},
 		}

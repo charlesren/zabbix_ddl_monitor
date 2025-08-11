@@ -2,8 +2,8 @@ package connection
 
 // connection/util.go
 func (pc ProtocolCapability) SupportsCommandType(cmdType CommandType) bool {
-	for _, ct := range pc.CommandTypes {
-		if ct.Type == cmdType {
+	for _, ct := range pc.CommandTypesSupport {
+		if ct == cmdType {
 			return true
 		}
 	}

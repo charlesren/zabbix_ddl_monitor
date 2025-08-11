@@ -8,12 +8,8 @@ var (
 	SSHCapability = ProtocolCapability{
 		Protocol:        ProtocolSSH,
 		PlatformSupport: []Platform{PlatformCiscoIOSXE, PlatformHuaweiVRP},
-		CommandTypes: []CommandTypeSupport{
-			{
-				Type:        CommandTypeCommands,
-				Description: "Basic command execution",
-				Example:     "show version",
-			},
+		CommandTypesSupport: []CommandType{
+			CommandTypeCommands,
 		},
 		ConfigModes: []ConfigModeCapability{
 			{
@@ -31,17 +27,9 @@ var (
 	ScrapliCapability = ProtocolCapability{
 		Protocol:        ProtocolScrapli,
 		PlatformSupport: []Platform{PlatformCiscoIOSXE, PlatformCiscoNXOS, PlatformHuaweiVRP},
-		CommandTypes: []CommandTypeSupport{
-			{
-				Type:        CommandTypeCommands,
-				Description: "Batch command execution",
-				Example:     "show running-config",
-			},
-			{
-				Type:        CommandTypeInteractiveEvent,
-				Description: "Interactive session",
-				Example:     "dialog-based configuration",
-			},
+		CommandTypesSupport: []CommandType{
+			CommandTypeCommands,
+			CommandTypeInteractiveEvent,
 		},
 		ConfigModes: []ConfigModeCapability{
 			{

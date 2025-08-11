@@ -249,11 +249,11 @@ sequenceDiagram
 ### 专线配置
 ```go
 type Line struct {
-    ID       string
-    IP       string
-    Interval time.Duration
-    Router   Router
-    	Hash     uint64 // Line信息的hash，用于比对是否有变化
+	ID       string        //预留，为CMDB相应编号,需要从host的macros里获取，为{$LINE_ID}的值
+	IP       string        //专线IP, 对应zabbix主机host.Host
+	Interval time.Duration //检查间隔，需要从host的macros里获取，为{$LINE_CHECK_INTERVAL}的值
+	Router   Router
+	Hash     uint64 // Line信息的hash，用于比对是否有变化
 }
 var DefaultInterval time.Duration = 3 * time.Minute
 ```
@@ -261,12 +261,12 @@ var DefaultInterval time.Duration = 3 * time.Minute
 ### 路由器信息
 ```go
 type Router struct {
-	ID       string
-    IP       string
-    Username string
-    Password string  // 加密存储
-    Platform string  // 平台类型
-    Protocol string  // "scrapli channel" "ssh" 或 "netconf"
+	IP       string              //eage router,需要从host的macros里获取，为{$LINE_ROUTER_IP}的值
+	Username string              //路由器用户名，需要从host的macros里获取，为{$LINE_ROUTER_USERNAME}的值
+	Password string              //路由器密码，需要从host的macros里获取，为{$LINE_ROUTER_PASSWORD}的值
+	Platform connection.Platform //路由器操作系统平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)，需要从host的macros里获取，为{$LINE_ROUTER_PLATFORM}的值
+	Protocol connection.Protocol //路由器driver协议 "scrapli-channel" "ssh" 或 "netconf",需要从host的macros里获取，为{$LINE_ROUTER_PROTOCOL}的值
+}	Protocol connection.Protocol //路由器driver协议 "scrapli-channel" "ssh" 或 "netconf",需要从host的macros里获取，为{$LINE_ROUTER_PROTOCOL}的值
 }
 ```
 
@@ -286,33 +286,36 @@ type Manager struct {
 // 引用github.com/charlesren/zapix
 ```go
 type ConfigSyncer struct {
-    client       *zapix.ZabbixClient
-    lines       map[string]Line  // 当前全量配置
-    version     int64           // 单调递增版本号
-    subscribers []chan<- LineChangeEvent    // 订阅者列表
-    mu          sync.RWMutex    // 读写锁替代互斥锁
+	client       Client                   // 使用接口
+	lines        map[string]Line          // 当前全量配置
+	version      int64                    // 单调递增版本号
+	subscribers  []chan<- LineChangeEvent // 订阅者列表
+	mu           sync.RWMutex             // 读写锁替代互斥锁
 	syncInterval time.Duration
-    lastSyncTime time.Time // 记录最后一次同步时间
-    ctx context.Context
-   	cancel       context.CancelFunc
+	lastSyncTime time.Time // 记录最后一次同步时间
+	ctx          context.Context
+	cancel       context.CancelFunc
 	stopOnce     sync.Once
 	stopped      bool
 }
 const (
-    LineCreate ChangeType = iota + 1
-    LineUpdate
-    LineDelete
+	LineCreate ChangeType = iota + 1
+	LineUpdate
+	LineDelete
 )
+
 type LineChangeEvent struct {
-    Type    ChangeType
-    Line   Line
+	Type    ChangeType
+	Line    Line  // 事件关联的专线数据
+	Version int64 // 配置版本号
 }
 // Events 返回只读通道供用户使用
 func (s *Subscription) Events() <-chan LineChangeEvent {
 	return s.events
 }
+// Subscription 封装订阅的通道和取消逻辑
 type Subscription struct {
-	events chan LineChangeEvent // 内部使用双向通道
+	events chan LineChangeEvent
 	cs     *ConfigSyncer
 	cancel context.CancelFunc
 	once   sync.Once
@@ -330,16 +333,6 @@ type IntervalTaskQueue struct {
 	ticker     *time.Ticker  // 内置调度器
 }
 
-type RouterScheduler struct {
-	router     *syncer.Router
-	lines      []syncer.Line
-	connection *connection.ConnectionPool
-	queues     map[time.Duration]*IntervalTaskQueue
-	executor   *task.Executor
-	stopChan   chan struct{}
-	wg         sync.WaitGroup
-	mu         sync.Mutex
-}
 type Scheduler interface {
 	OnLineCreated(line syncer.Line)     // 专线创建
 	OnLineUpdated(old, new syncer.Line) // 专线更新（提供新旧值）
@@ -348,22 +341,34 @@ type Scheduler interface {
 	Stop()
 	Start()
 }
+type RouterScheduler struct {
+	manager        *Manager
+	router         *syncer.Router
+	lines          []syncer.Line
+	connection     *connection.ConnectionPool
+	connCapability *connection.ProtocolCapability //预加载的连接能力信息
+	capabilityMu   sync.RWMutex                   // 能力信息的读写锁
+	queues         map[time.Duration]*IntervalTaskQueue
+	executor       *task.Executor
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+	mu             sync.Mutex
+}
 ```
 ### 执行器
 ```go
-type SyncExecutor struct {
-	// 无连接池等状态字段
-	taskTimeout time.Duration // 单任务超时时间
+type (
+	ExecutorFunc func(Task, connection.ProtocolDriver, TaskContext) (Result, error)
+	Middleware   func(ExecutorFunc) ExecutorFunc
+)
+
+type Executor struct {
+	core     ExecutorFunc
+	callback func(Result, error)
 }
-func (e *SyncExecutor) Execute(
-	ctx context.Context,
-	conn connection.ProtocolDriver,
-	platform string,
-	taskType string,
-	params map[string]interface{},
-) (Result, error) {
-	return Result{}, nil
-}
+
+// task/executor.go
+func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {}
 ```
 ### 异步执行器
 ```go
@@ -386,88 +391,122 @@ func (e *AsyncExecutor) worker() {
 ```
 ### 连接池
 ```go
-type ConnectionPool interface {
-    Get(routerIP string, protocol string) (ProtocolDriver, error)
-    Release(driver ProtocolDriver)
-}
 type ProtocolDriver interface {
-    SendCommands(commands []string) (string, error)
-    Close() error
+	ProtocolType() Protocol
+	Close() error
+	Execute(req *ProtocolRequest) (*ProtocolResponse, error)
+	GetCapability() ProtocolCapability
 }
-type ScrapliDriver struct {
-	channel *scrapligo.Channel
+
+type ProtocolRequest struct {
+	CommandType CommandType // commands/interactive_event
+	Payload     interface{} // []string 或 []*channel.SendInteractiveEvent
+	// Timeout     time.Duration
+}
+
+type ProtocolResponse struct {
+	Success    bool
+	RawData    []byte
+	Structured interface{} // *response.Response 或 *response.MultiResponse
 }
 
 
-// 连接池获取示例（自动选择协议）
-driver, err := pool.Get(ctx, router.IP, router.Protocol)
+type pooledConnection struct {
+	driver    ProtocolDriver
+	createdAt time.Time
+	lastUsed  time.Time
+	valid     bool
+	inUse     bool
+	id        string
+}
+
+type DriverPool struct {
+	connections map[string]*pooledConnection
+	factory     ProtocolFactory
+	mu          sync.Mutex
+}
+
+type ConnectionPool struct {
+	config      ConnectionConfig
+	factories   map[Protocol]ProtocolFactory
+	pools       map[Protocol]*DriverPool
+	mu          sync.RWMutex
+	idleTimeout time.Duration
+	ctx         context.Context
+	cancel      context.CancelFunc
+	debugMode   bool
+	activeConns map[string]string // connID -> stack trace
+}
 ```
 
 
 ### 任务接口规范
 ```go
-type ProtocolCapability struct {
-	Protocol     string   // "ssh"或"scrapli"
-	CommandTypes []string // ["commands", "interactive_event"]
-}
-
-type PlatformSupport struct {
-	Platform string               // "cisco_iosxe"
-	Params   map[string]ParamSpec // 平台特有参数规范
-}
-
-type TaskMeta struct {
-	Type            string
-	ProtocolSupport []ProtocolCapability
-	Platforms       []PlatformSupport
-}
-
-
-
-//ParamSpec用于参数校验，与 `Registry` 交互
-type ParamSpec struct {
-    Name     string                 // 参数名（如 "target_ip"）
-    Type     string                 // 类型（"string"/"int"/"duration"）
-    Required bool                   // 是否必填
-    Default  interface{}            // 默认值
-    Validate func(interface{}) error // 校验函数
-}
-// TaskContext 封装任务执行的上下文信息
-type TaskContext struct {
-	TaskType string // 任务类型（如 "PingTask"）
-	Platform string // 平台类型（cisco_iosxe, huawei_vrp）
-	Protocol string // 协议类型（ssh, scrapli）
-	// 指定命令类型（commands, interactive_event）
-	// 有则按指定类型生成命令
-	// 没有则按当前实现生成命令
-	// 有多种实现按优先级高的生成命令（interactive_event > commands）
-	CommandType string
-	Params      map[string]interface{} // 任务参数
-	Ctx         context.Context
-}
 type (
-	TaskName    string
-	Platform    string
-	Protocol    string
-	CommandType string
-)
-
-const (
-	CiscoIOSXE Platform = "cisco_iosxe"
-	CiscoIOSXR Platform = "cisco_iosxr"
-	CiscoNXOS  Platform = "cisco_nxos"
-	H3CComware Platform = "h3c_comware"
-	HuaweiVRP  Platform = "huawei_vrp"
-
-	SSH                  Protocol    = "ssh"
-	Scrapli              Protocol    = "scrapli"
-	TypeCommands         CommandType = "commands"
-	TypeInteractiveEvent CommandType = "interactive_event"
+	TaskType    string
+	Platform    = connection.Platform
+	Protocol    = connection.Protocol
+	CommandType = connection.CommandType
 )
 
 type Command struct {
 	Type    CommandType
 	Payload interface{} // []string 或 []*channel.SendInteractiveEvent
+}
+
+type Result struct {
+	Success bool                   `json:"success"`
+	Data    map[string]interface{} `json:"data"`
+	Error   string                 `json:"error,omitempty"`
+}
+
+type ParamSpec struct {
+	Name     string                  `json:"name"`
+	Type     string                  `json:"type"`
+	Required bool                    `json:"required"`
+	Default  interface{}             `json:"default"`
+	Validate func(interface{}) error `json:"-"`
+}
+
+type TaskMeta struct {
+	Type        TaskType          // 任务类型（如 "ping"）
+	Description string            // 任务描述
+	Platforms   []PlatformSupport // 支持的平台列表
+}
+
+type PlatformSupport struct {
+	Platform  Platform          // 平台名称（如 "cisco_iosxe"）
+	Protocols []ProtocolSupport // 支持的协议列表
+}
+
+type ProtocolSupport struct {
+	Protocol     Protocol             // 协议类型（如 "ssh"）
+	CommandTypes []CommandTypeSupport // 支持的命令类型列表
+}
+
+type CommandTypeSupport struct {
+	CommandType CommandType // 命令类型（如 "commands"）
+	ImplFactory func() Task // 任务实现的工厂方法
+	Params      []ParamSpec // 参数规范
+}
+
+// TaskContext 封装任务执行的上下文信息
+type TaskContext struct {
+	TaskType TaskType // 任务类型（如 "PingTask"）
+	Platform Platform // 平台类型（cisco_iosxe, huawei_vrp）
+	Protocol Protocol // 协议类型（ssh, scrapli）
+	// 指定命令类型（commands, interactive_event）
+	// 有则按指定类型生成命令
+	// 没有则按当前实现生成命令
+	// 有多种实现按优先级高的生成命令（interactive_event > commands）
+	CommandType CommandType
+	Params      map[string]interface{} // 任务参数
+	Ctx         context.Context
+}
+
+func (tc TaskContext) WithContext(ctx context.Context) TaskContext {
+	tc.Ctx = ctx
+	return tc
 }
 
 type Task interface {
@@ -507,20 +546,26 @@ func (h *CiscoIOSXEHandler) GenerateCommand(params map[string]interface{}) ([]*s
 
 ```
 ### 注册任务
-- 通过 `init()` 函数在模块加载时注册任务：
 ```go
-// Registry 定义任务注册与发现的接口
 type Registry interface {
-    Register(meta TaskMeta) error
-    Discover(taskType, platform, protocol, commandType string) (Task, error)
-    ListPlatforms(platform string) []string
+	Register(meta TaskMeta) error
+	Discover(taskType TaskType, platform Platform, protocol Protocol, commandType CommandType) (Task, error)
+	ListPlatforms(platform Platform) []TaskType
 }
 
-// DefaultRegistry 默认实现（原Registry结构体重命名）
 type DefaultRegistry struct {
-    tasks map[string]TaskMeta
-    mu    sync.RWMutex
+	tasks map[TaskType]TaskMeta
+	mu    sync.RWMutex
 }
+
+var _ Registry = (*DefaultRegistry)(nil)
+
+func NewDefaultRegistry() Registry {
+	return &DefaultRegistry{
+		tasks: make(map[TaskType]TaskMeta),
+	}
+}
+
 
 ```
 
