@@ -19,6 +19,10 @@ type IntervalTaskQueue struct {
 // 初始化时启动调度协程
 
 func NewIntervalTaskQueue(interval time.Duration) *IntervalTaskQueue {
+	// 确保间隔至少为1纳秒以避免time.NewTicker panic
+	if interval <= 0 {
+		interval = time.Nanosecond
+	}
 	q := &IntervalTaskQueue{
 		interval:   interval,
 		execNotify: make(chan struct{}, 1), // 缓冲防止阻塞

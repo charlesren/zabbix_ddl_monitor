@@ -55,27 +55,37 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 		if err := task.ValidateParams(ctx.Params); err != nil {
 			return Result{Error: err.Error()}, err
 		}
+
+		// 验证连接能力
+		if err := validateCapability(conn, ctx); err != nil {
+			return Result{Error: err.Error()}, err
+		}
+
 		cmd, err := task.BuildCommand(ctx)
 		if err != nil {
 			return Result{Error: err.Error()}, err
 		}
-		var raw interface{}
-		switch cmd.Type {
-		case connection.CommandTypeCommands:
-			raw, err = conn.(interface {
-				SendCommands([]string) (string, error)
-			}).SendCommands(cmd.Payload.([]string))
-		case connection.CommandTypeInteractiveEvent:
-			raw, err = conn.(interface {
-				SendInteractive([]interface{}) (string, error)
-			}).SendInteractive(cmd.Payload.([]interface{}))
+
+		// 使用标准的ProtocolDriver接口
+		var payload interface{}
+		switch v := cmd.Payload.(type) {
+		case []string:
+			payload = v
+		case []*channel.SendInteractiveEvent:
+			payload = v
 		default:
-			return Result{Error: "unknown command type"}, fmt.Errorf("unknown command type")
+			return Result{Error: "unsupported payload type"}, fmt.Errorf("unsupported payload type")
 		}
+
+		resp, err := conn.Execute(&connection.ProtocolRequest{
+			CommandType: cmd.Type,
+			Payload:     payload,
+		})
 		if err != nil {
 			return Result{Error: err.Error()}, err
 		}
-		return task.ParseOutput(ctx, raw)
+
+		return task.ParseOutput(ctx, resp.RawData)
 	}
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		core = middlewares[i](core)
@@ -99,6 +109,70 @@ func WithTimeout(d time.Duration) Middleware {
 			timeoutCtx, cancel := context.WithTimeout(ctx.Ctx, d)
 			defer cancel()
 			return next(task, conn, ctx.WithContext(timeoutCtx))
+		}
+	}
+}
+
+func WithRetry(maxRetries int, delay time.Duration) Middleware {
+	return func(next ExecutorFunc) ExecutorFunc {
+		return func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
+			var lastErr error
+			var lastResult Result
+
+			for attempt := 0; attempt <= maxRetries; attempt++ {
+				result, err := next(task, conn, ctx)
+				if err == nil && result.Success {
+					return result, nil
+				}
+
+				lastResult = result
+				lastErr = err
+
+				// Don't delay after the last attempt
+				if attempt < maxRetries {
+					time.Sleep(delay)
+				}
+			}
+
+			return lastResult, lastErr
+		}
+	}
+}
+
+func WithLogging(logger func(level, message string)) Middleware {
+	return func(next ExecutorFunc) ExecutorFunc {
+		return func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
+			start := time.Now()
+			logger("INFO", fmt.Sprintf("Starting task %s for platform %s", ctx.TaskType, ctx.Platform))
+
+			result, err := next(task, conn, ctx)
+
+			duration := time.Since(start)
+			if err != nil {
+				logger("ERROR", fmt.Sprintf("Task %s failed after %v: %v", ctx.TaskType, duration, err))
+			} else if result.Success {
+				logger("INFO", fmt.Sprintf("Completed task %s successfully in %v", ctx.TaskType, duration))
+			} else {
+				logger("WARN", fmt.Sprintf("Task %s completed with failure in %v: %s", ctx.TaskType, duration, result.Error))
+			}
+
+			return result, err
+		}
+	}
+}
+
+func WithMetrics(collector func(taskType string, platform connection.Platform, success bool, duration time.Duration)) Middleware {
+	return func(next ExecutorFunc) ExecutorFunc {
+		return func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
+			start := time.Now()
+
+			result, err := next(task, conn, ctx)
+
+			duration := time.Since(start)
+			success := err == nil && result.Success
+			collector(string(ctx.TaskType), ctx.Platform, success, duration)
+
+			return result, err
 		}
 	}
 }

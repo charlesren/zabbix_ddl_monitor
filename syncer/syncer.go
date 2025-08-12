@@ -314,22 +314,6 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 	// 解析专线信息
 	lines := make(map[string]Line)
 	for _, host := range hosts {
-		line := Line{
-			ID:       "",
-			IP:       host.Host,
-			Interval: 30 * time.Second, // 需要从host的macros里获取，为{$LINE_CHECK_INTERVAL}的值
-			Router: Router{
-				IP:       "", // 需要从 host.Interfaces 获取，duiy
-				Username: "", // 需要从其他字段或配置获取
-				Password: "", // 需要从其他字段或配置获取
-				Platform: "", // 需要从 host.Tags 或其他字段获取
-				Protocol: "",
-			},
-		}
-		line.ComputeHash()
-		lines[line.ID] = line
-	}
-	for _, host := range hosts {
 		// 从macros中提取关键信息
 		macros := make(map[string]string)
 		for _, macro := range host.Macros {
@@ -361,7 +345,7 @@ func parseDurationFromMacro(value string, defaultVal time.Duration) time.Duratio
 		return defaultVal
 	}
 	sec, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
+	if err != nil || sec < 0 {
 		return defaultVal
 	}
 	return time.Duration(sec) * time.Second

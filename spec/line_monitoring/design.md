@@ -39,6 +39,7 @@ graph TD
 - 路由器上绑定的专线数量为零时延迟删除RouterScheduler(10分钟),如果在延迟期间有新的专线关联上，则取消延迟删除
 - 专线变更信息通知到相应的RouterScheduler,RouterScheduler收到通知后更新自身信息
 - 管理任务注册中心TaskRegistry
+- 在启动时注册了 `PingTask`任务。
 
 #### 路由器调度器（RouterScheduler）
 - 更新绑定到自身Line信息
@@ -55,6 +56,7 @@ graph TD
   周期性的提供line列表，便于生成task(作为task的一个参数)
 - IntervalQueue根据检查间隔定时触发任务。
 - 维护相同interval的line列表
+- 专线变化时动态调整、迁移。
 
 
 #### 连接池 （ConnectionPool）

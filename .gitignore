@@ -1,3 +1,4 @@
 conf/svr.yml
 .env
 .jj
+.DS_Store

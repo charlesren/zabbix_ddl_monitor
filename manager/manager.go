@@ -10,8 +10,14 @@ import (
 	"github.com/charlesren/zabbix_ddl_monitor/task"
 )
 
+// ConfigSyncerInterface defines the interface for ConfigSyncer to enable testing
+type ConfigSyncerInterface interface {
+	GetLines() map[string]syncer.Line
+	Subscribe(ctx context.Context) *syncer.Subscription
+}
+
 type Manager struct {
-	configSyncer *syncer.ConfigSyncer
+	configSyncer ConfigSyncerInterface
 	schedulers   map[string]Scheduler     // key: routerIP
 	routerLines  map[string][]syncer.Line // key: routerIP
 	registry     task.Registry
@@ -20,7 +26,7 @@ type Manager struct {
 	wg           sync.WaitGroup
 }
 
-func NewManager(cs *syncer.ConfigSyncer, registry task.Registry) *Manager {
+func NewManager(cs ConfigSyncerInterface, registry task.Registry) *Manager {
 	return &Manager{
 		configSyncer: cs,
 		schedulers:   make(map[string]Scheduler),
@@ -71,9 +77,27 @@ func (m *Manager) Start() {
 }
 
 func (m *Manager) Stop() {
-	close(m.stopChan)
+	// 先关闭stopChan通知所有goroutine退出
+	select {
+	case <-m.stopChan:
+		// Already closed
+	default:
+		close(m.stopChan)
+	}
+
+	// 等待后台goroutine完成
 	m.wg.Wait()
+
+	// 安全地停止所有调度器
+	m.mu.Lock()
+	schedulers := make([]Scheduler, 0, len(m.schedulers))
 	for _, s := range m.schedulers {
+		schedulers = append(schedulers, s)
+	}
+	m.mu.Unlock()
+
+	// 在锁外停止调度器以避免死锁
+	for _, s := range schedulers {
 		s.Stop()
 	}
 }
@@ -214,7 +238,12 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 // 确保调度器存在
 func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 	if _, exists := m.schedulers[routerIP]; !exists {
-		m.schedulers[routerIP] = NewRouterScheduler(&lines[0].Router, lines, m)
+		m.schedulers[routerIP] = m.createScheduler(&lines[0].Router, lines)
 		go m.schedulers[routerIP].Start()
 	}
+}
+
+// 创建调度器的工厂方法，可以在测试中重写
+func (m *Manager) createScheduler(router *syncer.Router, lines []syncer.Line) Scheduler {
+	return NewRouterScheduler(router, lines, m)
 }

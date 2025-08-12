@@ -17,7 +17,6 @@ require (
 	github.com/charlesren/userconfig v0.0.0-00010101000000-000000000000
 	github.com/charlesren/ylog v0.0.0-00010101000000-000000000000
 	github.com/charlesren/zapix v0.0.0-00010101000000-000000000000
-	github.com/golang/mock v1.6.0
 	github.com/scrapli/scrapligo v1.3.3
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
