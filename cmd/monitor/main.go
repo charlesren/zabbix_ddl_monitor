@@ -4,11 +4,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/charlesren/userconfig"
 	"github.com/charlesren/ylog"
+	"github.com/charlesren/zabbix_ddl_monitor/manager"
 	"github.com/charlesren/zabbix_ddl_monitor/syncer"
+	"github.com/charlesren/zabbix_ddl_monitor/task"
 	"github.com/charlesren/zapix"
 	"github.com/spf13/viper"
 )
@@ -76,11 +80,34 @@ func initZabbix() {
 }
 
 func main() {
+	ylog.Infof("Main", "服务启动，配置文件: %s", ConfPath)
 
-	ylog.Infof("Main", "Service started with config:%s", ConfPath)
-	// 通过config解析 proxy ip
-	//	proxyIP := UserConfig.GetString("server.ip")
-	syncer, _ := syncer.NewConfigSyncer(zc, 5*time.Minute)
-	go syncer.Start()
-	syncer.Stop()
+	// 初始化任务注册表
+	registry := task.NewDefaultRegistry()
+
+	// 创建配置同步器
+	syncer, err := syncer.NewConfigSyncer(zc, 5*time.Minute)
+	if err != nil {
+		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
+		return
+	}
+
+	// 创建管理器
+	mgr := manager.NewManager(syncer, registry)
+
+	// 启动管理器
+	mgr.Start()
+
+	// 设置信号处理
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// 等待终止信号
+	<-sigChan
+	ylog.Infof("Main", "接收到终止信号，开始优雅关闭...")
+
+	// 停止管理器
+	mgr.Stop()
+
+	ylog.Infof("Main", "服务已停止")
 }

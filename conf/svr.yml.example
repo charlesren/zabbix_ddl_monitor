@@ -104,8 +104,8 @@ bluecat:
   serverip: xx.xxx.xx.xxx
 ############################# Zabbix Settings #############################
 zabbix:
-  username: xxxx
-  password: xxxxxxxxx
-  serverip: xx.xx.xx.xx
+  username: Admin
+  password: zabbix
+  serverip: 1.1.1.1
   serverport: 80
-  proxyip: xx.xx.xx.xx
+  proxyip: 1.1.1.2

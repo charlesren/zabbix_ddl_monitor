@@ -2,3 +2,4 @@ conf/svr.yml
 .env
 .jj
 .DS_Store
+ddl_monitor
