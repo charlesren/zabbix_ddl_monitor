@@ -25,7 +25,7 @@ type ResultEvent struct {
 
 // ResultHandler 结果处理器接口
 type ResultHandler interface {
-	HandleResult(event ResultEvent) error
+	HandleResult(event []ResultEvent) error
 }
 
 // Aggregator 结果聚合器
@@ -239,11 +239,9 @@ func (a *Aggregator) handleEvents(events []ResultEvent) {
 	}
 
 	for _, handler := range a.handlers {
-		for _, event := range events {
-			if err := handler.HandleResult(event); err != nil {
-				ylog.Errorf("aggregator", "handler failed to process event for %s: %v",
-					event.IP, err)
-			}
+		if err := handler.HandleResult(events); err != nil {
+			ylog.Errorf("aggregator", "handler failed to process events  %v",
+				err)
 		}
 	}
 }
@@ -289,13 +287,15 @@ type AggregatorStats struct {
 // LogHandler 日志处理器
 type LogHandler struct{}
 
-func (h *LogHandler) HandleResult(event ResultEvent) error {
-	if event.Success {
-		ylog.Infof("result", "✓ %s ping %s success (duration: %v)",
-			event.RouterIP, event.IP, event.Duration)
-	} else {
-		ylog.Warnf("result", "✗ %s ping %s failed: %s (duration: %v)",
-			event.RouterIP, event.IP, event.Error, event.Duration)
+func (h *LogHandler) HandleResult(events []ResultEvent) error {
+	for _, event := range events {
+		if event.Success {
+			ylog.Infof("result", "✓ %s ping %s success (duration: %v)",
+				event.RouterIP, event.IP, event.Duration)
+		} else {
+			ylog.Warnf("result", "✗ %s ping %s failed: %s (duration: %v)",
+				event.RouterIP, event.IP, event.Error, event.Duration)
+		}
 	}
 	return nil
 }
@@ -312,17 +312,19 @@ func NewJSONFileHandler(filename string) *JSONFileHandler {
 	}
 }
 
-func (h *JSONFileHandler) HandleResult(event ResultEvent) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func (h *JSONFileHandler) HandleResult(events []ResultEvent) error {
+	for _, event := range events {
+		h.mu.Lock()
+		defer h.mu.Unlock()
 
-	data, err := json.MarshalIndent(event, "", "  ")
-	if err != nil {
-		return err
+		data, err := json.MarshalIndent(event, "", "  ")
+		if err != nil {
+			return err
+		}
+
+		// 这里应该实现文件写入逻辑
+		ylog.Debugf("json_handler", "would write to %s: %s", h.filename, string(data))
 	}
-
-	// 这里应该实现文件写入逻辑
-	ylog.Debugf("json_handler", "would write to %s: %s", h.filename, string(data))
 	return nil
 }
 
@@ -331,27 +333,17 @@ type MetricsHandler struct {
 	// 这里可以集成Prometheus、InfluxDB等监控系统
 }
 
-func (h *MetricsHandler) HandleResult(event ResultEvent) error {
-	// 示例：更新监控指标
-	if event.Success {
-		// increment success counter
-	} else {
-		// increment failure counter
+func (h *MetricsHandler) HandleResult(events []ResultEvent) error {
+	for _, event := range events {
+		// 示例：更新监控指标
+		if event.Success {
+			// increment success counter
+		} else {
+			// increment failure counter
+		}
+
+		ylog.Debugf("metrics_handler", "updated metrics for %s: success=%t",
+			event.IP, event.Success)
 	}
-
-	ylog.Debugf("metrics_handler", "updated metrics for %s: success=%t",
-		event.IP, event.Success)
-	return nil
-}
-
-// ZabbixHandler Zabbix处理器（发送结果到Zabbix）
-type ZabbixHandler struct {
-	// Zabbix集成逻辑
-}
-
-func (h *ZabbixHandler) HandleResult(event ResultEvent) error {
-	// 示例：发送结果到Zabbix
-	ylog.Debugf("zabbix_handler", "would send to zabbix: %s success=%t",
-		event.IP, event.Success)
 	return nil
 }

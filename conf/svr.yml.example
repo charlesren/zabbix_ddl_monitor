@@ -109,3 +109,4 @@ zabbix:
   serverip: 1.1.1.1
   serverport: 80
   proxyip: 1.1.1.2
+  proxyport: 80

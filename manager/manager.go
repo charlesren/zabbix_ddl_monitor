@@ -21,6 +21,7 @@ type Manager struct {
 	schedulers   map[string]Scheduler     // key: routerIP
 	routerLines  map[string][]syncer.Line // key: routerIP
 	registry     task.Registry
+	aggregator   *task.Aggregator
 	mu           sync.Mutex
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
@@ -32,6 +33,7 @@ func NewManager(cs ConfigSyncerInterface, registry task.Registry) *Manager {
 		schedulers:   make(map[string]Scheduler),
 		routerLines:  make(map[string][]syncer.Line),
 		registry:     registry,
+		aggregator:   task.NewAggregator(5, 500, 15*time.Second),
 		stopChan:     make(chan struct{}),
 	}
 }
@@ -63,6 +65,11 @@ func (m *Manager) Start() {
 		ylog.Errorf("manager", "failed to register PingTask: %v", err)
 		return
 	}
+	// 结果聚合器增加Handler
+	m.aggregator.AddHandler(&task.LogHandler{})
+	m.aggregator.AddHandler(&task.MetricsHandler{})
+	m.aggregator.Start()
+
 	// 初始全量同步
 	m.fullSync()
 
@@ -100,6 +107,10 @@ func (m *Manager) Stop() {
 	for _, s := range schedulers {
 		s.Stop()
 	}
+	if m.aggregator != nil {
+		m.aggregator.Stop()
+	}
+
 }
 
 // 全量同步专线配置

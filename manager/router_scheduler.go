@@ -34,7 +34,6 @@ type RouterScheduler struct {
 	capabilityMu   sync.RWMutex                   // 能力信息的读写锁
 	queues         map[time.Duration]*IntervalTaskQueue
 	asyncExecutor  *task.AsyncExecutor
-	aggregator     *task.Aggregator
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
 	mu             sync.Mutex
@@ -84,11 +83,6 @@ func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manag
 		task.WithTimeout(30*time.Second), // 30秒超时
 	)
 
-	// 创建结果聚合器
-	scheduler.aggregator = task.NewAggregator(2, 100, 10*time.Second)
-	scheduler.aggregator.AddHandler(&task.LogHandler{})
-	scheduler.aggregator.AddHandler(&task.MetricsHandler{})
-
 	return scheduler
 }
 
@@ -115,7 +109,6 @@ func (s *RouterScheduler) initializeQueues() {
 func (s *RouterScheduler) Start() {
 	// 启动异步执行器和聚合器
 	s.asyncExecutor.Start()
-	s.aggregator.Start()
 
 	for _, q := range s.queues {
 		s.wg.Add(1)
@@ -232,7 +225,7 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 					Error:   err.Error(),
 					Data:    make(map[string]interface{}),
 				}
-				if aggErr := s.aggregator.SubmitTaskResult(line, "ping", failedResult, duration); aggErr != nil {
+				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", failedResult, duration); aggErr != nil {
 					ylog.Errorf("scheduler", "failed to submit failed result to aggregator for %s: %v", line.IP, aggErr)
 				}
 			}
@@ -256,7 +249,7 @@ func (s *RouterScheduler) distributeBatchResult(lines []syncer.Line, batchResult
 		// 如果有详细的批量结果，按IP分发
 		for _, line := range lines {
 			if ipResult, exists := batchResults[line.IP]; exists {
-				if aggErr := s.aggregator.SubmitTaskResult(line, "ping", ipResult, duration); aggErr != nil {
+				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", ipResult, duration); aggErr != nil {
 					ylog.Errorf("scheduler", "failed to submit result to aggregator for %s: %v", line.IP, aggErr)
 				}
 			} else {
@@ -266,7 +259,7 @@ func (s *RouterScheduler) distributeBatchResult(lines []syncer.Line, batchResult
 					Error:   "no result found in batch response",
 					Data:    map[string]interface{}{"status": "unknown"},
 				}
-				if aggErr := s.aggregator.SubmitTaskResult(line, "ping", unknownResult, duration); aggErr != nil {
+				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", unknownResult, duration); aggErr != nil {
 					ylog.Errorf("scheduler", "failed to submit unknown result to aggregator for %s: %v", line.IP, aggErr)
 				}
 			}
@@ -289,7 +282,7 @@ func (s *RouterScheduler) distributeBatchResult(lines []syncer.Line, batchResult
 			lineResult.Data["line_ip"] = line.IP
 			lineResult.Data["batch_mode"] = true
 
-			if aggErr := s.aggregator.SubmitTaskResult(line, "ping", lineResult, duration); aggErr != nil {
+			if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", lineResult, duration); aggErr != nil {
 				ylog.Errorf("scheduler", "failed to submit result to aggregator for %s: %v", line.IP, aggErr)
 			}
 		}
@@ -318,9 +311,6 @@ func (s *RouterScheduler) Stop() {
 	// 停止异步执行器和聚合器
 	if s.asyncExecutor != nil {
 		s.asyncExecutor.Stop()
-	}
-	if s.aggregator != nil {
-		s.aggregator.Stop()
 	}
 
 	// 停止所有队列
