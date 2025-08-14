@@ -133,7 +133,8 @@ func (e *AsyncExecutor) worker(id int) {
 // processTask 处理单个任务
 func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 	start := time.Now()
-
+	ylog.Debugf("async_executor", "worker %d processing %s task for %s",
+		workerID, req.Context.TaskType, req.Context.Platform)
 	// 为任务添加超时上下文
 	taskCtx := req.Context
 	if taskCtx.Ctx == nil {
@@ -149,10 +150,13 @@ func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 
 	// 记录执行结果
 	if err != nil {
-		ylog.Warnf("async_executor", "worker %d: task %s failed in %v: %v",
+		ylog.Errorf("async_executor", "worker %d task failed: %s (duration: %v, error: %v)",
 			workerID, req.Context.TaskType, duration, err)
+	} else if !result.Success {
+		ylog.Warnf("async_executor", "worker %d task completed with failure: %s (duration: %v, error: %s)",
+			workerID, req.Context.TaskType, duration, result.Error)
 	} else {
-		ylog.Debugf("async_executor", "worker %d: task %s completed in %v",
+		ylog.Debugf("async_executor", "worker %d task success: %s (duration: %v)",
 			workerID, req.Context.TaskType, duration)
 	}
 
@@ -161,8 +165,7 @@ func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					ylog.Errorf("async_executor", "worker %d: callback panic for task %s: %v",
-						workerID, req.Context.TaskType, r)
+					ylog.Errorf("async_executor", "worker %d callback panic: %v", workerID, r)
 				}
 			}()
 			req.Callback(result, err)

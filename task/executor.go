@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/charlesren/ylog"
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
 	"github.com/scrapli/scrapligo/channel"
 )
@@ -22,8 +23,10 @@ type Executor struct {
 
 // task/executor.go
 func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
+	ylog.Debugf("executor", "executing task %s on %s (%s)", ctx.TaskType, ctx.Platform, ctx.Protocol)
 	cmd, err := task.BuildCommand(ctx)
 	if err != nil {
+		ylog.Errorf("executor", "failed to build command for %s: %v", ctx.TaskType, err)
 		return Result{Error: err.Error()}, err
 	}
 
@@ -31,10 +34,13 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	var payload interface{}
 	switch v := cmd.Payload.(type) {
 	case []string:
+		ylog.Debugf("executor", "sending commands: %v", v)
 		payload = v
 	case []*channel.SendInteractiveEvent:
+		ylog.Debugf("executor", "sending interactive events: %d events", len(v))
 		payload = v
 	default:
+		ylog.Errorf("executor", "unsupported payload type: %T", cmd.Payload)
 		return Result{Error: "unsupported payload type"}, nil
 	}
 	resp, err := conn.Execute(&connection.ProtocolRequest{
@@ -43,10 +49,12 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	})
 
 	if err != nil {
+		ylog.Errorf("executor", "execution failed for %s: %v", ctx.TaskType, err)
 		return Result{Error: err.Error()}, err
 	}
 
 	// 统一使用原始数据解析
+	ylog.Debugf("executor", "task %s completed, parsing output", ctx.TaskType)
 	return task.ParseOutput(ctx, resp.RawData)
 }
 

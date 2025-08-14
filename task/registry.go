@@ -3,6 +3,8 @@ package task
 import (
 	"fmt"
 	"sync"
+
+	"github.com/charlesren/ylog"
 )
 
 type Registry interface {
@@ -28,9 +30,11 @@ func (r *DefaultRegistry) Register(meta TaskMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.tasks[meta.Type]; exists {
+		ylog.Warnf("registry", "task %s already registered", meta.Type)
 		return fmt.Errorf("task '%s' already registered", meta.Type)
 	}
 	r.tasks[meta.Type] = meta
+	ylog.Infof("registry", "registered new task: %s", meta.Type)
 	return nil
 }
 
@@ -45,6 +49,7 @@ func (r *DefaultRegistry) Discover(
 
 	meta, exists := r.tasks[taskType]
 	if !exists {
+		ylog.Errorf("registry", "task type not found: %s", taskType)
 		return nil, fmt.Errorf("task type '%s' not found", taskType)
 	}
 

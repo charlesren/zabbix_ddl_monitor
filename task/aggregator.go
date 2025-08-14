@@ -138,7 +138,7 @@ func (a *Aggregator) SubmitTaskResult(line syncer.Line, taskType TaskType, resul
 		Error:     result.Error,
 		Duration:  duration,
 	}
-
+	ylog.Debugf("aggregator", "submitting result for %s (success: %t)", line.IP, result.Success)
 	return a.Submit(event)
 }
 
@@ -239,9 +239,9 @@ func (a *Aggregator) handleEvents(events []ResultEvent) {
 	}
 
 	for _, handler := range a.handlers {
+		ylog.Debugf("aggregator", "dispatching %d events to handler %T", len(events), handler)
 		if err := handler.HandleResult(events); err != nil {
-			ylog.Errorf("aggregator", "handler failed to process events  %v",
-				err)
+			ylog.Errorf("aggregator", "handler %T failed: %v", handler, err)
 		}
 	}
 }
