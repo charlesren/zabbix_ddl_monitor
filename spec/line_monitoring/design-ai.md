@@ -72,7 +72,7 @@ type ConfigSyncer struct {
 
 **配置获取流程：**
 1. 通过代理IP查询Zabbix代理ID
-2. 使用代理ID和标签过滤(`TempType=ddl`)获取主机列表
+2. 使用代理ID和标签过滤(`TempType=LINE`)获取主机列表
 3. 从主机宏中提取专线和路由器配置信息
 4. 生成Line对象并计算配置哈希
 

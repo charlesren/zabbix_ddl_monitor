@@ -88,7 +88,7 @@ func FetchRouterDetails(ip string) (*Router, error) {
 
 var ProxyIP string = "1.1.1.1"
 var LineSelectTag string = "TempType"
-var LineSelectValue string = "ddl"
+var LineSelectValue string = "LINE"
 
 // Subscription 封装订阅的通道和取消逻辑
 type Subscription struct {

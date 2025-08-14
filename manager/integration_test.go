@@ -408,7 +408,7 @@ func createTestHost(hostID, host, routerIP, routerUsername, routerPassword, plat
 			{Macro: "{$LINE_CHECK_INTERVAL}", Value: interval},
 		},
 		Tags: []zapix.HostTagObject{
-			{Tag: "TempType", Value: "ddl"},
+			{Tag: "TempType", Value: "LINE"},
 		},
 	}
 }
@@ -747,7 +747,7 @@ func TestManager_IntegrationErrorRecovery(t *testing.T) {
 			{Macro: "{$LINE_ID}", Value: "line2"},
 		},
 		Tags: []zapix.HostTagObject{
-			{Tag: "TempType", Value: "ddl"},
+			{Tag: "TempType", Value: "LINE"},
 		},
 	}
 	mockClient.AddHost(invalidHost)

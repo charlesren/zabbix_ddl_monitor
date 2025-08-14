@@ -11,7 +11,7 @@ The Zabbix DDL Monitor is a comprehensive network monitoring solution that autom
 ### 🔄 Dynamic Configuration Management
 - **Zabbix API Integration**: Automatically discovers dedicated lines from Zabbix hosts using proxy-based filtering
 - **Real-time Synchronization**: Monitors configuration changes and adapts monitoring tasks dynamically
-- **Tag-based Filtering**: Uses Zabbix host tags (`TempType=ddl`) to identify dedicated line hosts
+- **Tag-based Filtering**: Uses Zabbix host tags (`TempType=LINE`) to identify dedicated line hosts
 - **Macro-driven Configuration**: Extracts line and router details from Zabbix host macros
 
 ### 🚀 Scalable Task System
