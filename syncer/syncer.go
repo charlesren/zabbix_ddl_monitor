@@ -66,15 +66,23 @@ func (cs *ConfigSyncer) Stop() {
 
 // sync 执行同步逻辑
 func (cs *ConfigSyncer) sync() error {
+	ylog.Infof("syncer", "starting sync (proxy: %s)", cs.proxyIP)
 	newLines, err := cs.fetchLines()
 	if err != nil {
+		ylog.Errorf("syncer", "sync failed: %v", err)
 		return err
 	}
 
 	events := cs.detectChanges(newLines)
 	if len(events) == 0 {
+		ylog.Debugf("syncer", "no config changes detected")
 		return nil
 	}
+
+	ylog.Infof("syncer", "detected changes: created=%d updated=%d deleted=%d",
+		countEvents(events, LineCreate),
+		countEvents(events, LineUpdate),
+		countEvents(events, LineDelete))
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -89,17 +97,27 @@ func (cs *ConfigSyncer) sync() error {
 	go cs.notifyAll(events) // 异步通知
 	return nil
 }
+func countEvents(events []LineChangeEvent, typ ChangeType) int {
+	count := 0
+	for _, e := range events {
+		if e.Type == typ {
+			count++
+		}
+	}
+	return count
+}
 
 // fetchLines 从Zabbix获取数据
 // 1.通过给定的proxy ip 查询proxy id
 // 2.通过proxy id 和给定的tag，筛选出专线
 func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
+	ylog.Debugf("syncer", "fetching lines from proxy: %s", cs.proxyIP)
 	proxies, err := cs.client.GetProxyFormHost(cs.proxyIP)
 	if err != nil {
-		ylog.Errorf("syncer", "failed to fetch proxy info: %v", err)
+		ylog.Errorf("syncer", "proxy query failed: %v", err)
 	}
 	if len(proxies) == 0 {
-		ylog.Infof("syncer", "proxy %v not found ", ProxyIP)
+		ylog.Warnf("syncer", "proxy not found: %s", cs.proxyIP)
 		return nil, fmt.Errorf("proxy not found")
 	}
 	proxyID, err := strconv.Atoi(proxies[0].Proxyid)
@@ -107,6 +125,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 		ylog.Errorf("syncer", "invalid proxyID format: %v", err)
 		return nil, fmt.Errorf("invalid proxyID")
 	}
+	ylog.Debugf("syncer", "found proxy ID: %s", proxies[0].Proxyid)
 	//GetProxyFormHost 示例输出
 	/*
 			 {
@@ -388,8 +407,10 @@ func (cs *ConfigSyncer) detectChanges(newLines map[string]Line) []LineChangeEven
 
 	for oldID, oldLine := range cs.lines {
 		if newLine, exists := newLines[oldID]; !exists {
+			ylog.Infof("syncer", "line deleted: %s (router: %s)", oldLine.ID, oldLine.Router.IP)
 			events = append(events, LineChangeEvent{Type: LineDelete, Line: oldLine})
 		} else if oldLine.Hash != newLine.Hash {
+			ylog.Infof("syncer", "line updated: %s (router: %s)", newLine.ID, newLine.Router.IP)
 			events = append(events, LineChangeEvent{Type: LineUpdate, Line: newLine})
 		}
 	}
