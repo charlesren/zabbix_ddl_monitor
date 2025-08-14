@@ -105,6 +105,12 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	ylog.Infof("Main", "信号监听已启动 (SIGINT/SIGTERM)")
 	// 等待终止信号
+	// 添加测试代码
+	go func() {
+		time.Sleep(10 * time.Second) // 等待服务初始化
+		ylog.Infof("test", "开始手动触发同步测试")
+		mgr.FullSync()
+	}()
 	<-sigChan
 	ylog.Infof("Main", "接收到终止信号，开始优雅关闭...")
 

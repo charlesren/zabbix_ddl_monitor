@@ -115,7 +115,7 @@ func (m *Manager) Stop() {
 
 // 全量同步专线配置
 func (m *Manager) fullSync() {
-
+	ylog.Infof("manager", "执行全量同步")
 	lines := m.configSyncer.GetLines()
 	newRouterLines := make(map[string][]syncer.Line)
 
@@ -145,6 +145,7 @@ func (m *Manager) fullSync() {
 
 // 周期性全量同步
 func (m *Manager) periodicSync(interval time.Duration) {
+	ylog.Infof("manager", "启动周期性同步 (间隔: %v)", interval)
 	defer m.wg.Done()
 
 	ticker := time.NewTicker(interval)
@@ -162,6 +163,7 @@ func (m *Manager) periodicSync(interval time.Duration) {
 
 // 处理专线变更事件
 func (m *Manager) handleLineChanges(sub *syncer.Subscription) {
+	ylog.Infof("manager", "已订阅配置变更通知")
 	defer m.wg.Done()
 
 	for {
@@ -169,6 +171,7 @@ func (m *Manager) handleLineChanges(sub *syncer.Subscription) {
 		case <-m.stopChan:
 			return
 		case event := <-sub.Events():
+			ylog.Infof("manager", "收到变更事件: %v", event.Type)
 			m.processLineEvent(event)
 		}
 	}
