@@ -27,6 +27,7 @@ type LineChangeEvent struct {
 
 // syncer/syncer.go
 type ConfigSyncer struct {
+	proxyIP      string                   // 代理IP地址
 	client       Client                   // 使用接口
 	lines        map[string]Line          // 当前全量配置
 	version      int64                    // 单调递增版本号

@@ -81,12 +81,13 @@ func initZabbix() {
 
 func main() {
 	ylog.Infof("Main", "服务启动，配置文件: %s", ConfPath)
+	proxyIP := UserConfig.GetString("zabbix.proxyip")
 
 	// 初始化任务注册表
 	registry := task.NewDefaultRegistry()
 
 	// 创建配置同步器
-	syncer, err := syncer.NewConfigSyncer(zc, 5*time.Minute)
+	syncer, err := syncer.NewConfigSyncer(zc, 5*time.Minute, proxyIP)
 	if err != nil {
 		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
 		return

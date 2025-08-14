@@ -12,7 +12,7 @@ import (
 	"github.com/charlesren/zapix"
 )
 
-func NewConfigSyncer(zc *zapix.ZabbixClient, interval time.Duration) (*ConfigSyncer, error) {
+func NewConfigSyncer(zc *zapix.ZabbixClient, interval time.Duration, proxyIP string) (*ConfigSyncer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ConfigSyncer{
 		client:       zc,
@@ -20,6 +20,7 @@ func NewConfigSyncer(zc *zapix.ZabbixClient, interval time.Duration) (*ConfigSyn
 		syncInterval: interval,
 		ctx:          ctx,
 		cancel:       cancel,
+		proxyIP:      proxyIP,
 	}, nil
 }
 func (cs *ConfigSyncer) Start() {
@@ -93,8 +94,7 @@ func (cs *ConfigSyncer) sync() error {
 // 1.通过给定的proxy ip 查询proxy id
 // 2.通过proxy id 和给定的tag，筛选出专线
 func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
-	ProxyIP := "10.10.10.10" // TODO: 替换为配置或参数传入的实际 proxy host
-	proxies, err := cs.client.GetProxyFormHost(ProxyIP)
+	proxies, err := cs.client.GetProxyFormHost(cs.proxyIP)
 	if err != nil {
 		ylog.Errorf("syncer", "failed to fetch proxy info: %v", err)
 	}
