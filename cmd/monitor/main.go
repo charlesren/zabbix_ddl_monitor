@@ -82,40 +82,54 @@ func initZabbix() {
 func main() {
 	ylog.Infof("Main", "服务启动，配置文件: %s", ConfPath)
 	proxyIP := UserConfig.GetString("zabbix.proxyip")
+	proxyPort := UserConfig.GetString("zabbix.proxyport")
 	ylog.Infof("Main", "using proxyIP: %s", proxyIP)
+	ylog.Infof("Main", "using proxyPort: %s", proxyPort)
 
-	// 初始化任务注册表
-	registry := task.NewDefaultRegistry()
-	ylog.Infof("Main", "任务注册表初始化完成")
-	// 创建配置同步器
 	syncer, err := syncer.NewConfigSyncer(zc, 5*time.Minute, proxyIP)
 	if err != nil {
 		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
 		return
 	}
 	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 5m)")
+	syncer.Start()
+	defer syncer.Stop()
+
+	registry := task.NewDefaultRegistry()
+	ylog.Infof("Main", "任务注册表初始化完成")
+
+	aggregator := task.NewAggregator(5, 500, 15*time.Second)
+	aggregator.AddHandler(&task.LogHandler{})
+	aggregator.AddHandler(&task.MetricsHandler{})
+	zabbixSenderConfig := task.ZabbixSenderConfig{
+		ProxyIP:           proxyIP,
+		ProxyPort:         proxyPort,
+		ConnectionTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		PoolSize:          5,
+	}
+	zabbixSender, err := task.NewZabbixSenderHandler(zabbixSenderConfig)
+	if err != nil {
+		ylog.Errorf("Main", "创建zabbix sender失败:%v", err)
+		return
+	}
+	aggregator.AddHandler(zabbixSender)
+	aggregator.Start()
+	defer aggregator.Stop()
+
 	// 创建管理器
-	mgr := manager.NewManager(syncer, registry)
+	mgr := manager.NewManager(syncer, registry, aggregator)
 	ylog.Infof("Main", "管理器初始化完成")
-	// 启动管理器
 	mgr.Start()
 	ylog.Infof("Main", "管理器启动完成")
+	defer mgr.Stop()
+
 	// 设置信号处理
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	ylog.Infof("Main", "信号监听已启动 (SIGINT/SIGTERM)")
 	// 等待终止信号
-	// 添加测试代码
-	go func() {
-		time.Sleep(10 * time.Second) // 等待服务初始化
-		ylog.Infof("test", "开始手动触发同步测试")
-		mgr.FullSync()
-	}()
 	<-sigChan
 	ylog.Infof("Main", "接收到终止信号，开始优雅关闭...")
-
-	// 停止管理器
-	mgr.Stop()
-	ylog.Infof("Main", "管理器已停止")
-	ylog.Infof("Main", "服务已停止")
 }

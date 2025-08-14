@@ -5,21 +5,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/charlesren/ylog"
 	"github.com/charlesren/zapix/sender"
 )
-
-// ZabbixHandler Zabbix处理器（发送结果到Zabbix）
-type ZabbixHandler struct {
-	// Zabbix集成逻辑
-}
-
-func (h *ZabbixHandler) HandleResult(event ResultEvent) error {
-	// 示例：发送结果到Zabbix
-	ylog.Debugf("zabbix_handler", "would send to zabbix: %s success=%t",
-		event.IP, event.Success)
-	return nil
-}
 
 type ZabbixSenderConfig struct {
 	ProxyIP           string        `yaml:"proxyip"`

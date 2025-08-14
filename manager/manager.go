@@ -27,18 +27,22 @@ type Manager struct {
 	wg           sync.WaitGroup
 }
 
-func NewManager(cs ConfigSyncerInterface, registry task.Registry) *Manager {
+func NewManager(cs ConfigSyncerInterface, registry task.Registry, aggregator *task.Aggregator) *Manager {
 	return &Manager{
 		configSyncer: cs,
 		schedulers:   make(map[string]Scheduler),
 		routerLines:  make(map[string][]syncer.Line),
 		registry:     registry,
-		aggregator:   task.NewAggregator(5, 500, 15*time.Second),
+		aggregator:   aggregator,
 		stopChan:     make(chan struct{}),
 	}
 }
 
 func (m *Manager) Start() {
+	if m.aggregator == nil {
+		ylog.Errorf("manager", "aggregator is nil")
+		return
+	}
 	// 注册PingTask
 	pingMeta := task.TaskMeta{
 		Type:        "ping",
@@ -65,10 +69,6 @@ func (m *Manager) Start() {
 		ylog.Errorf("manager", "failed to register PingTask: %v", err)
 		return
 	}
-	// 结果聚合器增加Handler
-	m.aggregator.AddHandler(&task.LogHandler{})
-	m.aggregator.AddHandler(&task.MetricsHandler{})
-	m.aggregator.Start()
 
 	// 初始全量同步
 	m.fullSync()
@@ -106,9 +106,6 @@ func (m *Manager) Stop() {
 	// 在锁外停止调度器以避免死锁
 	for _, s := range schedulers {
 		s.Stop()
-	}
-	if m.aggregator != nil {
-		m.aggregator.Stop()
 	}
 
 }
