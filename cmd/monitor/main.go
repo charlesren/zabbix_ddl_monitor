@@ -82,33 +82,34 @@ func initZabbix() {
 func main() {
 	ylog.Infof("Main", "服务启动，配置文件: %s", ConfPath)
 	proxyIP := UserConfig.GetString("zabbix.proxyip")
+	ylog.Infof("Main", "using proxyIP: %s", proxyIP)
 
 	// 初始化任务注册表
 	registry := task.NewDefaultRegistry()
-
+	ylog.Infof("Main", "任务注册表初始化完成")
 	// 创建配置同步器
 	syncer, err := syncer.NewConfigSyncer(zc, 5*time.Minute, proxyIP)
 	if err != nil {
 		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
 		return
 	}
-
+	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 5m)")
 	// 创建管理器
 	mgr := manager.NewManager(syncer, registry)
-
+	ylog.Infof("Main", "管理器初始化完成")
 	// 启动管理器
 	mgr.Start()
-
+	ylog.Infof("Main", "管理器启动完成")
 	// 设置信号处理
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
+	ylog.Infof("Main", "信号监听已启动 (SIGINT/SIGTERM)")
 	// 等待终止信号
 	<-sigChan
 	ylog.Infof("Main", "接收到终止信号，开始优雅关闭...")
 
 	// 停止管理器
 	mgr.Stop()
-
+	ylog.Infof("Main", "管理器已停止")
 	ylog.Infof("Main", "服务已停止")
 }

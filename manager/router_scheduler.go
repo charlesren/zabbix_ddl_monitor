@@ -108,17 +108,21 @@ func (s *RouterScheduler) initializeQueues() {
 // 启动调度循环
 func (s *RouterScheduler) Start() {
 	// 启动异步执行器和聚合器
+	ylog.Infof("scheduler", "starting router scheduler (router=%s, queues=%d)", s.router.IP, len(s.queues))
 	s.asyncExecutor.Start()
 
 	for _, q := range s.queues {
 		s.wg.Add(1)
 		go func(q *IntervalTaskQueue) {
+			ylog.Debugf("scheduler", "queue worker started (router=%s, interval=%v)", s.router.IP, q.interval)
 			defer s.wg.Done()
 			for {
 				select {
 				case <-s.stopChan:
+					ylog.Debugf("scheduler", "queue worker stopped (router=%s, interval=%v)", s.router.IP, q.interval)
 					return
 				case <-q.ExecNotify(): // 监听执行信号
+					ylog.Debugf("scheduler", "executing tasks (router=%s, interval=%v)", s.router.IP, q.interval)
 					s.executeTasksAsync(q)
 				}
 			}
@@ -301,6 +305,7 @@ func mergeLinesIP(lines []syncer.Line) string {
 // 停止调度器（阻塞等待所有任务完成）
 func (s *RouterScheduler) Stop() {
 	// 先关闭stopChan通知所有goroutine退出
+	ylog.Infof("scheduler", "stopping router scheduler (router=%s)", s.router.IP)
 	select {
 	case <-s.stopChan:
 		// Already closed
@@ -311,6 +316,7 @@ func (s *RouterScheduler) Stop() {
 	// 停止异步执行器和聚合器
 	if s.asyncExecutor != nil {
 		s.asyncExecutor.Stop()
+		ylog.Debugf("scheduler", "async executor stopped (router=%s)", s.router.IP)
 	}
 
 	// 停止所有队列
@@ -322,7 +328,7 @@ func (s *RouterScheduler) Stop() {
 
 	// 等待所有goroutine完成
 	s.wg.Wait()
-
+	ylog.Infof("scheduler", "router scheduler fully stopped (router=%s)", s.router.IP)
 	// 关闭连接池
 	if s.connection != nil {
 		_ = s.connection.Close()

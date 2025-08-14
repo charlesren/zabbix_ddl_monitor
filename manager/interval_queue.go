@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charlesren/ylog"
 	"github.com/charlesren/zabbix_ddl_monitor/syncer"
 )
 
@@ -23,6 +24,7 @@ func NewIntervalTaskQueue(interval time.Duration) *IntervalTaskQueue {
 	if interval <= 0 {
 		interval = time.Nanosecond
 	}
+	ylog.Debugf("queue", "creating new task queue (interval=%v)", interval)
 	q := &IntervalTaskQueue{
 		interval:   interval,
 		execNotify: make(chan struct{}, 1), // 缓冲防止阻塞
@@ -35,11 +37,13 @@ func NewIntervalTaskQueue(interval time.Duration) *IntervalTaskQueue {
 
 // 内部调度循环
 func (q *IntervalTaskQueue) schedule() {
+	ylog.Debugf("queue", "scheduler started (interval=%v)", q.interval)
 	for {
 		select {
 		case <-q.ticker.C:
 			select {
 			case q.execNotify <- struct{}{}: // 非阻塞发送信号
+				ylog.Debugf("queue", "sent exec signal (interval=%v)", q.interval)
 			default:
 			}
 		case <-q.stopChan:
@@ -90,7 +94,12 @@ func (q *IntervalTaskQueue) Contains(lineID string) bool {
 }
 
 func (q *IntervalTaskQueue) Stop() {
-	close(q.stopChan)
+	ylog.Debugf("queue", "stopping queue (interval=%v)", q.interval)
+	select {
+	case <-q.stopChan:
+	default:
+		close(q.stopChan)
+	}
 }
 
 func (q *IntervalTaskQueue) Add(line syncer.Line) {
