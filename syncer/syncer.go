@@ -3,7 +3,6 @@ package syncer
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
 	"time"
 
@@ -399,13 +398,14 @@ func parseDurationFromMacro(value string, defaultVal time.Duration) time.Duratio
 func (cs *ConfigSyncer) notifyAll(events []LineChangeEvent) {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-
+	ylog.Infof("syncer", "notifying %d subscribers with %d events", len(cs.subscribers), len(events))
 	for _, event := range events {
 		for _, sub := range cs.subscribers {
 			select {
 			case sub <- event:
+				ylog.Debugf("syncer", "event sent to subscriber: %v", event)
 			default:
-				log.Printf("warn: subscriber channel full, dropped event %v", event)
+				ylog.Warnf("syncer", "warn: subscriber channel full, dropped event %v", event)
 			}
 		}
 	}

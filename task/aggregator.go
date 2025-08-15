@@ -73,6 +73,7 @@ func NewAggregator(workers int, bufferSize int, flushInterval time.Duration) *Ag
 // AddHandler 添加结果处理器
 func (a *Aggregator) AddHandler(handler ResultHandler) {
 	a.handlers = append(a.handlers, handler)
+	ylog.Infof("aggregator", "added handler: %T", handler)
 }
 
 // Start 启动聚合器

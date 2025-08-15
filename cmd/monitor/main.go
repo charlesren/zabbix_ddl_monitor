@@ -96,7 +96,7 @@ func main() {
 		return
 	}
 	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 5m)")
-	syncer.Start()
+	go syncer.Start()
 	defer syncer.Stop()
 
 	registry := task.NewDefaultRegistry()
