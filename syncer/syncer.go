@@ -355,6 +355,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 		ylog.Errorf("syncer", "failed to fetch proxy info: %v", err)
 		return nil, err
 	}
+	ylog.Debugf("syncer", "get %v lines ", len(hosts))
 	// 解析专线信息
 	lines := make(map[string]Line)
 	for _, host := range hosts {
@@ -379,6 +380,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 		}
 		line.ComputeHash()
 		lines[line.IP] = line
+		ylog.Debugf("syncer", "get lines ip: %v, associated router: %v", len(hosts), line.Router.IP)
 	}
 	return lines, nil
 }
@@ -403,7 +405,7 @@ func (cs *ConfigSyncer) notifyAll(events []LineChangeEvent) {
 		for _, sub := range cs.subscribers {
 			select {
 			case sub <- event:
-				ylog.Debugf("syncer", "event sent to subscriber: %v", event)
+				ylog.Debugf("syncer", "event sent to subscriber: %+v", event)
 			default:
 				ylog.Warnf("syncer", "warn: subscriber channel full, dropped event %v", event)
 			}
