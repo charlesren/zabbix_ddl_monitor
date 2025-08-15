@@ -128,7 +128,7 @@ func (cs *ConfigSyncer) handleProxyId() error {
 }
 
 // fetchLines 从Zabbix获取数据
-// 1.通过给定的proxy ip 查询proxy id
+// 1.检查proxyID是否为0，如果为0则调用handleProxyId方法获取proxyID
 // 2.通过proxy id 和给定的tag，筛选出专线
 func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 	ylog.Debugf("syncer", "fetching lines from proxy: %s", cs.proxyName)
@@ -190,16 +190,28 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 		    "id": 1
 		}
 	*/
-
+	//参数说明：
+	// 1.通过SelectTag获取主机的tag
+	// 2.通过inheritedtags:true包含主机继承的tag
+	// 3.通过SelectMacros获取主机的宏信息
+	// 4.通过proxyid 筛选出绑定到特定proxy主机
+	// 5.通过status:0 filter 筛选出启用的主机
+	// 6.通过tags筛选出含有专线特征的主机
 	params := zapix.HostGetParams{
 		SelectTags:          zapix.SelectQuery("extend"),
 		SelectInheritedTags: zapix.SelectQuery("extend"),
 		SelectMacros:        zapix.SelectQuery("extend"),
 		ProxyIDs:            []int{cs.proxyID},
+		InheritedTags:       true,
 		Tags: []zapix.HostTagObject{
 			{
 				Tag:   LineSelectTag,
 				Value: LineSelectValue,
+			},
+		},
+		GetParameters: zapix.GetParameters{
+			Filter: map[string]interface{}{
+				"status": "0",
 			},
 		},
 	}
