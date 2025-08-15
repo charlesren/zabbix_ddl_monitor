@@ -196,21 +196,22 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 // buildCiscoEvents 构建Cisco平台的批量ping命令
 func (PingTask) buildCiscoEvents(targetIPs []string, repeat int, timeout time.Duration, enablePassword string) []*channel.SendInteractiveEvent {
 	var events []*channel.SendInteractiveEvent
-
-	// 只有提供了enable密码才尝试进入特权模式
-	if enablePassword != "" {
-		events = append(events,
-			&channel.SendInteractiveEvent{
-				ChannelInput:    "enable",
-				ChannelResponse: "Password:",
-				HideInput:       false,
-			},
-			&channel.SendInteractiveEvent{
-				ChannelInput:    enablePassword,
-				ChannelResponse: "#",
-				HideInput:       true,
-			})
-	}
+	/*
+		// 只有提供了enable密码才尝试进入特权模式
+		if enablePassword != "" {
+			events = append(events,
+				&channel.SendInteractiveEvent{
+					ChannelInput:    "enable",
+					ChannelResponse: "Password:",
+					HideInput:       false,
+				},
+				&channel.SendInteractiveEvent{
+					ChannelInput:    enablePassword,
+					ChannelResponse: "#",
+					HideInput:       true,
+				})
+		}
+	*/
 
 	// 为每个IP创建ping命令
 	for _, ip := range targetIPs {
@@ -245,6 +246,51 @@ func (PingTask) buildHuaweiEvents(targetIPs []string, repeat int, timeout time.D
 	return events
 }
 
+//ping 命令输出示例
+// 1. ZZB0000_DTT_05_OTV01 : cisco_iosxe系统
+/*
+```shell
+ZZB0000_DTT_05_OTV01#ping 10.194.10.106
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 10.194.10.106, timeout is 2 seconds:
+!!!!!
+Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/1 ms
+ZZB0000_DTT_05_OTV01#
+*/
+
+// 2. ZZA_DTT_17_SA21  : cisco_iosxr系统
+/*
+```shell
+ZZA_DTT_17_SA21#
+> ping 10.194.10.106
+
+ping 10.194.10.106
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 10.194.10.106, timeout is 2 seconds:
+!!!!!
+Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/4 ms
+ZZA_DTT_17_SA21#
+>
+```
+*/
+
+// 3. ZZB0000_DTT_05_SA17 : cisco_nxos系统
+/*
+```shell
+ZZB0000_DTT_05_SA17# ping 10.194.17.20
+PING 10.194.17.20 (10.194.17.20): 56 data bytes
+64 bytes from 10.194.17.20: icmp_seq=0 ttl=61 time=1.687 ms
+64 bytes from 10.194.17.20: icmp_seq=1 ttl=61 time=1.116 ms
+64 bytes from 10.194.17.20: icmp_seq=2 ttl=61 time=1.405 ms
+64 bytes from 10.194.17.20: icmp_seq=3 ttl=61 time=1.374 ms
+64 bytes from 10.194.17.20: icmp_seq=4 ttl=61 time=1.416 ms
+
+--- 10.194.17.20 ping statistics ---
+5 packets transmitted, 5 packets received, 0.00% packet loss
+round-trip min/avg/max = 1.116/1.399/1.687 ms
+ZZB0000_DTT_05_SA17#
+```
+*/
 func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
 	// 安全的类型转换
 	var output string
