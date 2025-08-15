@@ -29,7 +29,10 @@ func (cs *ConfigSyncer) Start() {
 		return
 	}
 	ylog.Infof("syncer", "starting syncer...")
+	//获取并设置代理ID,后续不需重复获取
 	cs.handleProxyId()
+	//启动时先同步一次
+	cs.sync()
 	ticker := time.NewTicker(cs.syncInterval)
 	defer ticker.Stop()
 
