@@ -81,12 +81,16 @@ func initZabbix() {
 
 func main() {
 	ylog.Infof("Main", "服务启动，配置文件: %s", ConfPath)
+	//用来通过代理名称获取代理的id
+	proxyname := UserConfig.GetString("zabbix.proxyname")
+	ylog.Infof("Main", "using proxyname: %s", proxyname)
+	//用来配置数据接收的链接
 	proxyIP := UserConfig.GetString("zabbix.proxyip")
-	proxyPort := UserConfig.GetString("zabbix.proxyport")
 	ylog.Infof("Main", "using proxyIP: %s", proxyIP)
+	proxyPort := UserConfig.GetString("zabbix.proxyport")
 	ylog.Infof("Main", "using proxyPort: %s", proxyPort)
 
-	syncer, err := syncer.NewConfigSyncer(zc, 5*time.Minute, proxyIP)
+	syncer, err := syncer.NewConfigSyncer(zc, 5*time.Minute, proxyname)
 	if err != nil {
 		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
 		return

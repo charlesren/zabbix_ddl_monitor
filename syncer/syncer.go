@@ -12,7 +12,7 @@ import (
 	"github.com/charlesren/zapix"
 )
 
-func NewConfigSyncer(zc *zapix.ZabbixClient, interval time.Duration, proxyIP string) (*ConfigSyncer, error) {
+func NewConfigSyncer(zc *zapix.ZabbixClient, interval time.Duration, proxyName string) (*ConfigSyncer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ConfigSyncer{
 		client:       zc,
@@ -20,31 +20,32 @@ func NewConfigSyncer(zc *zapix.ZabbixClient, interval time.Duration, proxyIP str
 		syncInterval: interval,
 		ctx:          ctx,
 		cancel:       cancel,
-		proxyIP:      proxyIP,
+		proxyName:    proxyName,
 	}, nil
 }
 func (cs *ConfigSyncer) Start() {
 	if cs.stopped {
-		log.Println("warning: cannot start already stopped syncer")
+		ylog.Warnf("syncer", "cannot start already stopped syncer")
 		return
 	}
-
+	ylog.Infof("syncer", "starting syncer...")
+	cs.handleProxyId()
 	ticker := time.NewTicker(cs.syncInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-cs.ctx.Done():
-			log.Println("syncer stopped by context")
+			ylog.Infof("syncer", "syncer stopped by context")
 			return
 		case <-ticker.C:
 			cs.lastSyncTime = time.Now()
 			if err := cs.checkHealth(); err != nil {
-				log.Printf("health check failed: %v", err)
+				ylog.Errorf("syncer", "health check failed: %v", err)
 				continue
 			}
 			if err := cs.sync(); err != nil {
-				log.Printf("sync failed: %v (retrying...)", err)
+				ylog.Errorf("syncer", "sync failed: %v (retrying...)", err)
 				time.Sleep(30 * time.Second)
 			}
 		}
@@ -66,7 +67,7 @@ func (cs *ConfigSyncer) Stop() {
 
 // sync 执行同步逻辑
 func (cs *ConfigSyncer) sync() error {
-	ylog.Infof("syncer", "starting sync (proxy: %s)", cs.proxyIP)
+	ylog.Infof("syncer", "starting sync (proxy: %s)", cs.proxyName)
 	newLines, err := cs.fetchLines()
 	if err != nil {
 		ylog.Errorf("syncer", "sync failed: %v", err)
@@ -106,26 +107,36 @@ func countEvents(events []LineChangeEvent, typ ChangeType) int {
 	}
 	return count
 }
+func (cs *ConfigSyncer) handleProxyId() error {
+	proxies, err := cs.client.GetProxyFormHost(cs.proxyName)
+	if err != nil {
+		ylog.Errorf("syncer", "proxy query failed: %v", err)
+		return fmt.Errorf("proxy query failed: %v", err)
+	}
+	if len(proxies) == 0 {
+		ylog.Warnf("syncer", "proxy not found: %s", cs.proxyName)
+		return fmt.Errorf("proxy not found")
+	}
+	proxyID, err := strconv.Atoi(proxies[0].Proxyid)
+	if err != nil {
+		ylog.Errorf("syncer", "invalid proxyID format: %v", err)
+		return fmt.Errorf("invalid proxyID")
+	}
+	cs.proxyID = proxyID
+	ylog.Debugf("syncer", "found proxy ID: %v", proxyID)
+	return nil
+}
 
 // fetchLines 从Zabbix获取数据
 // 1.通过给定的proxy ip 查询proxy id
 // 2.通过proxy id 和给定的tag，筛选出专线
 func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
-	ylog.Debugf("syncer", "fetching lines from proxy: %s", cs.proxyIP)
-	proxies, err := cs.client.GetProxyFormHost(cs.proxyIP)
-	if err != nil {
-		ylog.Errorf("syncer", "proxy query failed: %v", err)
+	ylog.Debugf("syncer", "fetching lines from proxy: %s", cs.proxyName)
+	if cs.proxyID == 0 {
+		if err := cs.handleProxyId(); err != nil {
+			return nil, err
+		}
 	}
-	if len(proxies) == 0 {
-		ylog.Warnf("syncer", "proxy not found: %s", cs.proxyIP)
-		return nil, fmt.Errorf("proxy not found")
-	}
-	proxyID, err := strconv.Atoi(proxies[0].Proxyid)
-	if err != nil {
-		ylog.Errorf("syncer", "invalid proxyID format: %v", err)
-		return nil, fmt.Errorf("invalid proxyID")
-	}
-	ylog.Debugf("syncer", "found proxy ID: %s", proxies[0].Proxyid)
 	//GetProxyFormHost 示例输出
 	/*
 			 {
@@ -184,7 +195,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 		SelectTags:          zapix.SelectQuery("extend"),
 		SelectInheritedTags: zapix.SelectQuery("extend"),
 		SelectMacros:        zapix.SelectQuery("extend"),
-		ProxyIDs:            []int{proxyID},
+		ProxyIDs:            []int{cs.proxyID},
 		Tags: []zapix.HostTagObject{
 			{
 				Tag:   LineSelectTag,

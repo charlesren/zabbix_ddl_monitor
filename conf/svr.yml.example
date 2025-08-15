@@ -108,5 +108,6 @@ zabbix:
   password: zabbix
   serverip: 1.1.1.1
   serverport: 80
-  proxyip: 1.1.1.2
+  proxyname: zabbix-proxy-01
+  proxyip: 1.1.1.1
   proxyport: 80
