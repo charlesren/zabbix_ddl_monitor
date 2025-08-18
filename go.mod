@@ -13,7 +13,7 @@ replace (
 require (
 	github.com/charlesren/userconfig v0.1.0
 	github.com/charlesren/ylog v0.1.0
-	github.com/charlesren/zapix v0.1.0
+	github.com/charlesren/zapix v0.1.1
 	github.com/scrapli/scrapligo v1.3.3
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0

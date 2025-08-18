@@ -44,6 +44,8 @@ type ConfigSyncer struct {
 type Client interface {
 	GetProxyFormHost(ip string) ([]zapix.ProxyObject, error)
 	HostGet(params zapix.HostGetParams) ([]zapix.HostObject, error)
+	UsermacroGet(params zapix.UsermacroGetParams) ([]zapix.UsermacroObject, error)
+	TemplateGet(params zapix.TemplateGetParams) ([]zapix.TemplateObject, error)
 	// 其他必要方法...
 }
 
