@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/charlesren/ylog"
+	"github.com/scrapli/scrapligo/driver/options"
+	"github.com/scrapli/scrapligo/platform"
 )
 
 // connection/scrapli_factory.go
@@ -12,12 +14,34 @@ type ScrapliFactory struct{}
 func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error) {
 	ylog.Debugf("scrapli", "creating driver with config: %+v", config)
 
-	platform, _ := config.Metadata["platform"].(string)
-	driver := NewScrapliDriver(platform, config.IP, config.Username, config.Password)
-	if err := driver.Connect(); err != nil {
-		return nil, fmt.Errorf("create platform failed: %w", err) // 更清晰的错误信息
+	platformOS, _ := config.Metadata["platform"].(string)
+
+	p, err := platform.NewPlatform(
+		platformOS,
+		config.IP,
+		options.WithAuthNoStrictKey(),
+		options.WithAuthUsername(config.Username),
+		options.WithAuthPassword(config.Password),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create platform failed: %w", err)
 	}
-	return driver, nil
+
+	driver, err := p.GetNetworkDriver()
+	if err != nil {
+		return nil, fmt.Errorf("get network driver failed: %w", err)
+	}
+
+	if err := driver.Open(); err != nil {
+		return nil, fmt.Errorf("open connection failed: %w", err)
+	}
+
+	return &ScrapliDriver{
+		driver:  driver,
+		channel: driver.Channel,
+		host:    config.IP,
+	}, nil
+
 }
 
 func (f *ScrapliFactory) HealthCheck(driver ProtocolDriver) bool {
