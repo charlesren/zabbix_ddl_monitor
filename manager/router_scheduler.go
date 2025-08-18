@@ -48,6 +48,8 @@ func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manag
 		manager:    manager,
 		stopChan:   make(chan struct{}),
 	}
+	ylog.Debugf("scheduler", "connection config: %+v", router.ToConnectionConfig())
+
 	//  预热连接池
 	if err := scheduler.connection.WarmUp(scheduler.router.Protocol, warmUpConnectionCount); err != nil {
 		ylog.Warnf("scheduler", "connection pool warm-up failed: %v (router=%s)",
