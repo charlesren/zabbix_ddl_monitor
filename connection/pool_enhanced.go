@@ -270,11 +270,11 @@ func (lcb *LeastConnectionsBalancer) UpdateConnectionMetrics(conn *EnhancedPoole
 }
 
 // NewEnhancedConnectionPool 创建增强的连接池
-func NewEnhancedConnectionPool(config EnhancedConnectionConfig) *EnhancedConnectionPool {
+func NewEnhancedConnectionPool(config *EnhancedConnectionConfig) *EnhancedConnectionPool {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pool := &EnhancedConnectionPool{
-		config:            config,
+		config:            *config,
 		factories:         make(map[Protocol]ProtocolFactory),
 		pools:             make(map[Protocol]*EnhancedDriverPool),
 		ctx:               ctx,

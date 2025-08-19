@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,7 @@ type RouterScheduler struct {
 	manager        *Manager
 	router         *syncer.Router
 	lines          []syncer.Line
-	connection     *connection.ConnectionPool
+	connection     *connection.EnhancedConnectionPool
 	connCapability *connection.ProtocolCapability //预加载的连接能力信息
 	capabilityMu   sync.RWMutex                   // 能力信息的读写锁
 	queues         map[time.Duration]*IntervalTaskQueue
@@ -39,25 +40,105 @@ type RouterScheduler struct {
 	mu             sync.Mutex
 }
 
-func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manager *Manager) *RouterScheduler {
+/*
+	func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manager *Manager) *RouterScheduler {
+		scheduler := &RouterScheduler{
+			router:     router,
+			lines:      initialLines,
+			connection: connection.NewConnectionPool(router.ToConnectionConfig()),
+			queues:     make(map[time.Duration]*IntervalTaskQueue),
+			manager:    manager,
+			stopChan:   make(chan struct{}),
+		}
+		ylog.Debugf("scheduler", "connection config: %+v", router.ToConnectionConfig())
+
+		//  预热连接池
+		if err := scheduler.connection.WarmUp(scheduler.router.Protocol, warmUpConnectionCount); err != nil {
+			ylog.Warnf("scheduler", "connection pool warm-up failed: %v (router=%s)",
+				err, scheduler.router.IP)
+		} else {
+			ylog.Infof("scheduler", "successfully warmed up %d connections (router=%s)",
+				warmUpConnectionCount, scheduler.router.IP)
+		}
+		// 同步预加载Connection能力
+		conn, err := scheduler.connection.Get(scheduler.router.Protocol)
+		if err != nil {
+			ylog.Warnf("scheduler", "preload capability failed: %v", err)
+			// 设置默认能力以防止nil指针
+			defaultCapability := connection.ProtocolCapability{
+				CommandTypesSupport: []connection.CommandType{"commands"},
+			}
+			scheduler.capabilityMu.Lock()
+			scheduler.connCapability = &defaultCapability
+			scheduler.capabilityMu.Unlock()
+		} else {
+			capability := conn.GetCapability()
+			scheduler.capabilityMu.Lock()
+			scheduler.connCapability = &capability
+			scheduler.capabilityMu.Unlock()
+			scheduler.connection.Release(conn)
+			ylog.Debugf("scheduler", "preloaded capabilities for %s", scheduler.router.IP)
+		}
+
+		scheduler.initializeQueues()
+
+		// 创建异步执行器
+		scheduler.asyncExecutor = task.NewAsyncExecutor(3, // 3个工作goroutine
+			task.WithTimeout(30*time.Second), // 30秒超时
+		)
+
+		return scheduler
+	}
+*/
+func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manager *Manager) (*RouterScheduler, error) {
+	// 1. 使用Builder直接构造配置
+	config, err := connection.NewConfigBuilder().
+		WithBasicAuth(router.IP, router.Username, router.Password).
+		WithProtocol(router.Protocol, router.Platform).
+		WithTimeouts(
+			30*time.Second, // ConnectTimeout
+			30*time.Second, // ReadTimeout
+			10*time.Second, // WriteTimeout
+			5*time.Minute,  // IdleTimeout
+		).
+		WithRetryPolicy(
+			3,             // MaxRetries
+			1*time.Second, // RetryInterval
+			2.0,           // BackoffFactor
+		).
+		WithConnectionPool(
+			10,             // MaxConnections
+			2,              // MinConnections
+			10*time.Minute, // MaxIdleTime
+			30*time.Second, // HealthCheckTime
+		).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build connection config: %w", err)
+	}
+
+	// 2. 设置特定端口（覆盖默认值22）
+	config.Port = 22
+
+	// 3. 初始化连接池
+	pool := connection.NewEnhancedConnectionPool(config)
+
+	// 4. 创建调度器实例
 	scheduler := &RouterScheduler{
+		connection: pool,
 		router:     router,
 		lines:      initialLines,
-		connection: connection.NewConnectionPool(router.ToConnectionConfig()),
-		queues:     make(map[time.Duration]*IntervalTaskQueue),
 		manager:    manager,
+		queues:     make(map[time.Duration]*IntervalTaskQueue),
 		stopChan:   make(chan struct{}),
 	}
-	ylog.Debugf("scheduler", "connection config: %+v", router.ToConnectionConfig())
 
-	//  预热连接池
-	if err := scheduler.connection.WarmUp(scheduler.router.Protocol, warmUpConnectionCount); err != nil {
+	// 5. 预热连接池
+	if err := scheduler.connection.WarmUp(router.Protocol, warmUpConnectionCount); err != nil {
 		ylog.Warnf("scheduler", "connection pool warm-up failed: %v (router=%s)",
-			err, scheduler.router.IP)
-	} else {
-		ylog.Infof("scheduler", "successfully warmed up %d connections (router=%s)",
-			warmUpConnectionCount, scheduler.router.IP)
+			err, router.IP)
 	}
+
 	// 同步预加载Connection能力
 	conn, err := scheduler.connection.Get(scheduler.router.Protocol)
 	if err != nil {
@@ -78,14 +159,20 @@ func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manag
 		ylog.Debugf("scheduler", "preloaded capabilities for %s", scheduler.router.IP)
 	}
 
+	// 6. 初始化队列
 	scheduler.initializeQueues()
 
-	// 创建异步执行器
-	scheduler.asyncExecutor = task.NewAsyncExecutor(3, // 3个工作goroutine
-		task.WithTimeout(30*time.Second), // 30秒超时
+	// 7. 创建异步执行器
+	scheduler.asyncExecutor = task.NewAsyncExecutor(
+		2,
+		task.WithTimeout(30*time.Second),
 	)
+	// 可选：启用调试和事件监听
+	//scheduler.connection.EnableDebug()
+	//go scheduler.listenToPoolEvents()
 
-	return scheduler
+	return scheduler, nil
+
 }
 
 func (s *RouterScheduler) initializeQueues() {

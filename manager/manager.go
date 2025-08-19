@@ -230,12 +230,22 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 // 确保调度器存在
 func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 	if _, exists := m.schedulers[routerIP]; !exists {
-		m.schedulers[routerIP] = m.createScheduler(&lines[0].Router, lines)
-		go m.schedulers[routerIP].Start()
+		scheduler := m.createScheduler(&lines[0].Router, lines)
+		if scheduler == nil {
+			ylog.Errorf("manager", "scheduler creation failed for %s", routerIP)
+			return
+		}
+		m.schedulers[routerIP] = scheduler
+		go scheduler.Start()
 	}
 }
 
 // 创建调度器的工厂方法，可以在测试中重写
 func (m *Manager) createScheduler(router *syncer.Router, lines []syncer.Line) Scheduler {
-	return NewRouterScheduler(router, lines, m)
+	scheduler, err := NewRouterScheduler(router, lines, m)
+	if err != nil {
+		ylog.Errorf("manager", "failed to create scheduler for %s: %v", router.IP, err)
+		return nil
+	}
+	return scheduler
 }
