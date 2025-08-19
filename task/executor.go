@@ -24,6 +24,11 @@ type Executor struct {
 // task/executor.go
 func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
 	ylog.Debugf("executor", "executing task %s on %s (%s)", ctx.TaskType, ctx.Platform, ctx.Protocol)
+	if conn == nil {
+		ylog.Errorf("executor", "connection driver is nil for task %s", ctx.TaskType)
+		return Result{Error: "connection driver is nil"}, fmt.Errorf("connection driver is nil")
+	}
+
 	cmd, err := task.BuildCommand(ctx)
 	if err != nil {
 		ylog.Errorf("executor", "failed to build command for %s: %v", ctx.TaskType, err)

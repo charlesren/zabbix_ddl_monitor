@@ -75,6 +75,11 @@ func (e *AsyncExecutor) Stop() {
 
 // Submit 提交异步任务
 func (e *AsyncExecutor) Submit(task Task, conn connection.ProtocolDriver, ctx TaskContext, callback func(Result, error)) error {
+	if conn == nil {
+		ylog.Errorf("async_executor", "connection driver is nil for task %s", ctx.TaskType)
+		return fmt.Errorf("connection driver is nil")
+	}
+
 	select {
 	case e.taskChan <- AsyncTaskRequest{
 		Task:     task,
@@ -92,6 +97,10 @@ func (e *AsyncExecutor) Submit(task Task, conn connection.ProtocolDriver, ctx Ta
 
 // SubmitWithTimeout 提交异步任务，带超时
 func (e *AsyncExecutor) SubmitWithTimeout(task Task, conn connection.ProtocolDriver, ctx TaskContext, callback func(Result, error), timeout time.Duration) error {
+	if conn == nil {
+		ylog.Errorf("async_executor", "connection driver is nil for task %s", ctx.TaskType)
+		return fmt.Errorf("connection driver is nil")
+	}
 	select {
 	case e.taskChan <- AsyncTaskRequest{
 		Task:     task,

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charlesren/ylog"
 	"github.com/scrapli/scrapligo/channel"
 	"github.com/scrapli/scrapligo/driver/network"
 	"github.com/scrapli/scrapligo/driver/options"
@@ -38,7 +39,9 @@ func (d *ScrapliDriver) ProtocolType() Protocol {
 
 // connection/scrapli_driver.go
 func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
+	ylog.Debugf("ScrapliDriver", "driver: %v, channel: %v", d.driver, d.channel)
 	if d == nil || d.driver == nil || d.channel == nil {
+		ylog.Errorf("ScrapliDriver", "driver or channel not initialized")
 		return nil, fmt.Errorf("driver or channel not initialized")
 	}
 
