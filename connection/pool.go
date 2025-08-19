@@ -328,12 +328,14 @@ func (p *ConnectionPool) checkConnectionsHealth() {
 		pool.mu.Lock()
 		for _, conn := range pool.connections {
 			if !conn.inUse && time.Since(conn.lastUsed) > p.idleTimeout/2 {
-				if _, err := conn.driver.Execute(&ProtocolRequest{
-					CommandType: CommandTypeCommands,
-					Payload:     []string{"echo healthcheck"},
-				}); err != nil {
-					conn.valid = false
-				}
+				/*
+					if _, err := conn.driver.Execute(&ProtocolRequest{
+						CommandType: CommandTypeCommands,
+						Payload:     []string{"echo healthcheck"},
+					}); err != nil {
+						conn.valid = false
+					}
+				*/
 			}
 		}
 		pool.mu.Unlock()

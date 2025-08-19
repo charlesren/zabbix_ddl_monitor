@@ -42,16 +42,13 @@ func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error)
 		return nil, fmt.Errorf("driver or channel not initialized")
 	}
 
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+
+	// 检查上下文是否已取消
 	if err := d.ctx.Err(); err != nil {
 		return nil, err
-	}
-	// 检查上下文是否已取消
-	if d.ctx != nil {
-		select {
-		case <-d.ctx.Done():
-			return nil, d.ctx.Err()
-		default:
-		}
 	}
 
 	switch req.CommandType {
