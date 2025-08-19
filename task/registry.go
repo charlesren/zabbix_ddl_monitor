@@ -44,6 +44,9 @@ func (r *DefaultRegistry) Discover(
 	protocol Protocol,
 	commandType CommandType,
 ) (Task, error) {
+	ylog.Debugf("registry", "discovering task: type=%s, platform=%s, protocol=%s, cmdType=%s",
+		taskType, platform, protocol, commandType)
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -54,6 +57,7 @@ func (r *DefaultRegistry) Discover(
 	}
 
 	for _, p := range meta.Platforms {
+		ylog.Debugf("registry", "registered platform: %s (type: %T)", p.Platform, p.Platform)
 		if p.Platform == platform {
 			for _, proto := range p.Protocols {
 				if proto.Protocol == protocol {
@@ -66,6 +70,7 @@ func (r *DefaultRegistry) Discover(
 			}
 		}
 	}
+	ylog.Debugf("registry", "registered platforms for %s: %v", taskType, meta.Platforms)
 	return nil, fmt.Errorf("no matching task for platform '%s', protocol '%s', command type '%s'", platform, protocol, commandType)
 }
 

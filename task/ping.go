@@ -38,6 +38,48 @@ func (PingTask) Meta() TaskMeta {
 				},
 			},
 			{
+				Platform: connection.PlatformCiscoIOSXR,
+				Protocols: []ProtocolSupport{
+					{
+						Protocol: connection.ProtocolScrapli,
+						CommandTypes: []CommandTypeSupport{
+							{
+								CommandType: connection.CommandTypeInteractiveEvent,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: false},
+									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+									{Name: "enable_password", Type: "string", Required: false, Default: ""},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Platform: connection.PlatformCiscoNXOS,
+				Protocols: []ProtocolSupport{
+					{
+						Protocol: connection.ProtocolScrapli,
+						CommandTypes: []CommandTypeSupport{
+							{
+								CommandType: connection.CommandTypeInteractiveEvent,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: false},
+									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+									{Name: "enable_password", Type: "string", Required: false, Default: ""},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
 				Platform: connection.PlatformHuaweiVRP,
 				Protocols: []ProtocolSupport{
 					{
