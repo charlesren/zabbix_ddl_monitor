@@ -102,6 +102,15 @@ func main() {
 	registry := task.NewDefaultRegistry()
 	ylog.Infof("Main", "任务注册表初始化完成")
 
+	// 注册 PingTask
+	pingMeta := (&task.PingTask{}).Meta()
+	if err := registry.Register(pingMeta); err != nil {
+		ylog.Errorf("Main", "failed to register PingTask: %v", err)
+		return
+	}
+
+	ylog.Infof("Main", "PingTask registered")
+
 	aggregator := task.NewAggregator(5, 500, 15*time.Second)
 	aggregator.AddHandler(&task.LogHandler{})
 	aggregator.AddHandler(&task.MetricsHandler{})
