@@ -63,6 +63,7 @@ func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error)
 	if err := driver.Open(); err != nil {
 		return nil, fmt.Errorf("open connection failed: %w", err)
 	}
+	ylog.Debugf("scrapli", "driver created with config: %+v", config)
 
 	return &ScrapliDriver{
 		driver:  driver,

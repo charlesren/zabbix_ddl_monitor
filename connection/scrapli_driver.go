@@ -38,6 +38,10 @@ func (d *ScrapliDriver) ProtocolType() Protocol {
 
 // connection/scrapli_driver.go
 func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
+	if d == nil || d.driver == nil || d.channel == nil {
+		return nil, fmt.Errorf("driver or channel not initialized")
+	}
+
 	if err := d.ctx.Err(); err != nil {
 		return nil, err
 	}

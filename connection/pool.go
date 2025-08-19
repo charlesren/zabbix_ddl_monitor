@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+
 	"time"
+
+	"github.com/charlesren/ylog"
 )
 
 // connection/interfaces.go
@@ -194,9 +197,21 @@ func (p *ConnectionPool) HealthCheck() map[Protocol]int {
 		pool.mu.Lock()
 		healthy := 0
 		for _, conn := range pool.connections {
-			if conn.valid && !conn.inUse {
-				healthy++
+			if !conn.valid || conn.inUse {
+				continue // Skip invalid or in-use connections
 			}
+
+			// Perform a deep health check (e.g., test the connection)
+			if driver, ok := conn.driver.(*ScrapliDriver); ok {
+				_, err := driver.GetPrompt() // Simple test to verify the connection is alive
+				if err != nil {
+					ylog.Debugf("pool", "connection health check failed for %s: %v", proto, err)
+					conn.valid = false // Mark as invalid
+					continue
+				}
+			}
+
+			healthy++
 		}
 		pool.mu.Unlock()
 		stats[proto] = healthy
