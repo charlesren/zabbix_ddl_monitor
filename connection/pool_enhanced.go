@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/charlesren/ylog"
 )
 
 // 增强的连接池实现
@@ -365,30 +367,7 @@ func (p *EnhancedConnectionPool) Get(proto Protocol) (ProtocolDriver, error) {
 		return nil, err
 	}
 
-	// 包装为监控驱动
-	monitored := &MonitoredDriver{
-		ProtocolDriver: conn.driver,
-		conn:           conn,
-		pool:           p,
-		protocol:       proto,
-		startTime:      time.Now(),
-	}
-
-	// 更新统计信息
-	atomic.AddInt64(&pool.stats.ActiveConnections, 1)
-	atomic.AddInt64(&conn.usageCount, 1)
-	conn.lastUsed = time.Now()
-	conn.inUse = true
-
-	// 记录调试信息
-	if p.debugMode {
-		p.recordConnectionTrace(conn, "acquired")
-	}
-
-	// 发送事件
-	p.sendEvent(EventConnectionReused, proto, conn)
-
-	return monitored, nil
+	return p.activateConnection(conn), nil
 }
 
 // getConnectionFromPool 从池中获取连接
@@ -396,16 +375,28 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
-	// 使用负载均衡器选择连接
-	connections := make([]*EnhancedPooledConnection, 0, len(pool.connections))
+	// 过滤健康且可用的连接
+	healthyConnections := make([]*EnhancedPooledConnection, 0, len(pool.connections))
 	for _, conn := range pool.connections {
-		connections = append(connections, conn)
+		if !conn.inUse && conn.valid && conn.healthStatus == HealthStatusHealthy {
+			// 实时健康检查（重要！）
+			if err := p.defaultHealthCheck(conn.driver); err != nil {
+				ylog.Debugf("pool", "connection %s health check failed: %v", conn.id, err)
+				conn.valid = false
+				conn.healthStatus = HealthStatusUnhealthy
+				continue // 跳过不健康的连接
+			}
+			healthyConnections = append(healthyConnections, conn)
+		}
 	}
 
-	conn := pool.loadBalancer.SelectConnection(connections)
-	if conn != nil {
-		p.collector.IncrementConnectionsReused(pool.protocol)
-		return conn, nil
+	// 使用负载均衡器选择健康连接
+	if len(healthyConnections) > 0 {
+		conn := pool.loadBalancer.SelectConnection(healthyConnections)
+		if conn != nil {
+			p.collector.IncrementConnectionsReused(pool.protocol)
+			return conn, nil
+		}
 	}
 
 	// 检查是否可以创建新连接
@@ -562,6 +553,45 @@ func (p *EnhancedConnectionPool) startBackgroundTasks() {
 
 	// 事件处理任务
 	go p.eventHandlerTask()
+
+	// 空闲连接健康检查任务
+	// go p.idleConnectionHealthTask()
+}
+
+// idleConnectionHealthTask 空闲连接健康检查任务
+func (p *EnhancedConnectionPool) idleConnectionHealthTask() {
+	ticker := time.NewTicker(p.healthCheckTime / 2) // 每半次健康检查间隔执行
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.checkIdleConnectionsHealth()
+		}
+	}
+}
+
+// checkIdleConnectionsHealth 检查空闲连接健康状态
+func (p *EnhancedConnectionPool) checkIdleConnectionsHealth() {
+	for proto, pool := range p.pools {
+		pool.mu.RLock()
+		idleConnections := make([]*EnhancedPooledConnection, 0)
+		now := time.Now()
+
+		for _, conn := range pool.connections {
+			if !conn.inUse && now.Sub(conn.lastHealthCheck) > p.healthCheckTime/2 {
+				idleConnections = append(idleConnections, conn)
+			}
+		}
+		pool.mu.RUnlock()
+
+		// 并发检查空闲连接健康状态
+		for _, conn := range idleConnections {
+			go p.checkConnectionHealth(proto, conn)
+		}
+	}
 }
 
 // healthCheckTask 健康检查任务
@@ -610,18 +640,23 @@ func (p *EnhancedConnectionPool) checkConnectionHealth(proto Protocol, conn *Enh
 		conn.consecutiveFailures++
 		if conn.consecutiveFailures >= 3 {
 			conn.healthStatus = HealthStatusUnhealthy
+			conn.valid = false // 关键：标记为无效
+			ylog.Warnf("pool", "connection %s marked as invalid after %d failures", conn.id, conn.consecutiveFailures)
 		} else {
 			conn.healthStatus = HealthStatusDegraded
+			ylog.Debugf("pool", "connection %s degraded (%d/%d failures)", conn.id, conn.consecutiveFailures, 3)
 		}
 
 		p.collector.IncrementHealthCheckFailed(proto)
 		p.sendEvent(EventHealthCheckFailed, proto, map[string]interface{}{
 			"connection_id": conn.id,
 			"error":         err.Error(),
+			"failures":      conn.consecutiveFailures,
 		})
 	} else {
 		conn.consecutiveFailures = 0
 		conn.healthStatus = HealthStatusHealthy
+		conn.valid = true // 确保健康连接标记为有效
 		p.collector.IncrementHealthCheckSuccess(proto)
 	}
 
@@ -931,6 +966,45 @@ func (md *MonitoredDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, err
 }
 
 func (md *MonitoredDriver) Close() error {
-	defer md.pool.Release(md)
-	return nil // 实际的关闭由连接池管理
+	// 确保连接被正确释放
+	if md.pool != nil && md.conn != nil {
+		defer func() {
+			if err := md.pool.Release(md); err != nil {
+				ylog.Debugf("pool", "failed to release connection: %v", err)
+			}
+		}()
+	}
+
+	// 不实际关闭底层驱动，由连接池管理
+	return nil
+}
+
+// activateConnection 统一激活连接并返回监控包装器
+func (p *EnhancedConnectionPool) activateConnection(conn *EnhancedPooledConnection) ProtocolDriver {
+	conn.inUse = true
+	conn.lastUsed = time.Now()
+	atomic.AddInt64(&conn.usageCount, 1)
+
+	// 更新统计信息
+	pool := p.getDriverPool(conn.protocol)
+	if pool != nil {
+		atomic.AddInt64(&pool.stats.ActiveConnections, 1)
+		atomic.AddInt64(&pool.stats.ReuseCount, 1)
+	}
+
+	// 记录调试信息
+	if p.debugMode {
+		p.recordConnectionTrace(conn, "acquired")
+	}
+
+	// 发送事件
+	p.sendEvent(EventConnectionReused, conn.protocol, conn)
+
+	return &MonitoredDriver{
+		ProtocolDriver: conn.driver,
+		conn:           conn,
+		pool:           p,
+		protocol:       conn.protocol,
+		startTime:      time.Now(),
+	}
 }
