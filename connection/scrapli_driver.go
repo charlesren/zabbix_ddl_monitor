@@ -39,19 +39,24 @@ func (d *ScrapliDriver) ProtocolType() Protocol {
 
 // connection/scrapli_driver.go
 func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
-	ylog.Debugf("ScrapliDriver", "driver: %v, channel: %v", d.driver, d.channel)
-	if d == nil || d.driver == nil || d.channel == nil {
-		ylog.Errorf("ScrapliDriver", "driver or channel not initialized")
-		return nil, fmt.Errorf("driver or channel not initialized")
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// 全面检查关键字段
+	if d == nil || d.driver == nil || d.channel == nil || d.ctx == nil {
+		ylog.Errorf("ScrapliDriver", "critical field not initialized: driver=%v, channel=%v, ctx=%v",
+			d.driver, d.channel, d.ctx)
+		return nil, fmt.Errorf("driver not properly initialized")
+	}
+
+	// 检查上下文状态（已受锁保护）
+	if err := d.ctx.Err(); err != nil {
+		ylog.Warnf("ScrapliDriver", "context cancelled: %v", err)
+		return nil, err
 	}
 
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
-	}
-
-	// 检查上下文是否已取消
-	if err := d.ctx.Err(); err != nil {
-		return nil, err
 	}
 
 	switch req.CommandType {
@@ -129,11 +134,17 @@ func (d *ScrapliDriver) WithContext(ctx context.Context) *ScrapliDriver {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// 取消旧上下文（如果存在）
 	if d.cancel != nil {
-		d.cancel() // 取消旧的上下文
+		d.cancel()
 	}
 
-	d.ctx, d.cancel = context.WithCancel(ctx)
+	// 创建不可变的新上下文
+	newCtx, cancel := context.WithCancel(ctx)
+	d.ctx = newCtx
+	d.cancel = cancel
+
+	ylog.Debugf("ScrapliDriver", "context updated: %p (old cancel: %v)", newCtx, d.cancel != nil)
 	return d
 }
 
@@ -141,9 +152,15 @@ func (d *ScrapliDriver) WithContext(ctx context.Context) *ScrapliDriver {
 func (d *ScrapliDriver) Connect() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// 确保基础字段初始化
 	if d.ctx == nil {
 		d.ctx, d.cancel = context.WithTimeout(context.Background(), d.timeout)
+		ylog.Debugf("ScrapliDriver", "initialized default context: timeout=%v", d.timeout)
 	}
+
+	// 记录当前状态
+	ylog.Debugf("ScrapliDriver", "connecting with: platform=%s, host=%s, ctx=%p",
+		d.platform, d.host, d.ctx)
 	p, err := platform.NewPlatform(
 		d.platform,
 		d.host,
