@@ -132,6 +132,8 @@ func (e *AsyncExecutor) worker(id int) {
 
 // processTask 处理单个任务
 func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
+	ylog.Debugf("async_executor", "task context: platform=%s, protocol=%s",
+		req.Context.Platform, req.Context.Protocol)
 	start := time.Now()
 	ylog.Debugf("async_executor", "worker %d processing %s task for %s",
 		workerID, req.Context.TaskType, req.Context.Platform)

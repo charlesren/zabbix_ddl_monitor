@@ -191,7 +191,7 @@ func validateCapability(driver connection.ProtocolDriver, ctx TaskContext) error
 
 	// 检查平台支持
 	if !slices.Contains(caps.PlatformSupport, ctx.Platform) {
-		return fmt.Errorf("platform %s not supported", ctx.Platform)
+		return fmt.Errorf("platform %s not supported (supported: %v)", ctx.Platform, caps.PlatformSupport)
 	}
 
 	// 检查命令类型支持
