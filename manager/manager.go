@@ -44,31 +44,12 @@ func (m *Manager) Start() {
 		return
 	}
 	// 注册PingTask
-	pingMeta := task.TaskMeta{
-		Type:        "ping",
-		Description: "Ping task for line monitoring",
-		Platforms: []task.PlatformSupport{
-			{
-				Platform: "cisco_iosxe",
-				Protocols: []task.ProtocolSupport{
-					{
-						Protocol: "ssh",
-						CommandTypes: []task.CommandTypeSupport{
-							{
-								CommandType: "commands",
-								ImplFactory: func() task.Task { return &task.PingTask{} },
-								Params:      []task.ParamSpec{},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
+	pingMeta := (&task.PingTask{}).Meta()
 	if err := m.registry.Register(pingMeta); err != nil {
 		ylog.Errorf("manager", "failed to register PingTask: %v", err)
 		return
 	}
+	ylog.Infof("manager", "PingTask registered")
 
 	// 初始全量同步
 	m.fullSync()
