@@ -15,7 +15,25 @@ type ScrapliFactory struct{}
 func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error) {
 	ylog.Debugf("scrapli", "creating driver with config: %+v", config)
 
-	platformOS, _ := config.Metadata["platform"].(string)
+	// 1. 检查platform字段存在性
+	platformValue, exists := config.Metadata["platform"]
+	if !exists {
+		return nil, fmt.Errorf("metadata 'platform' field missing")
+	}
+
+	// 2. 类型断言
+	platformOS, ok := platformValue.(Platform)
+	if !ok {
+		return nil, fmt.Errorf(
+			"metadata 'platform' type is not a Platform (got %T, value: %v)",
+			platformValue, platformValue,
+		)
+	}
+
+	// 3. 空值检查
+	if string(platformOS) == "" {
+		return nil, fmt.Errorf("platform cannot be empty")
+	}
 	ylog.Debugf("scrapli", "platformOS: %s", platformOS)
 	ylog.Debugf("scrapli", "ip: %s", config.IP)
 	ylog.Debugf("scrapli", "username: %s", config.Username)
