@@ -2,6 +2,7 @@ package connection
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/charlesren/ylog"
 	"github.com/scrapli/scrapligo/driver/options"
@@ -25,6 +26,7 @@ func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error)
 		options.WithAuthNoStrictKey(),
 		options.WithAuthUsername(config.Username),
 		options.WithAuthPassword(config.Password),
+		options.WithTimeoutOps(30*time.Second),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create platform failed: %w", err)

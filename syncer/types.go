@@ -107,6 +107,8 @@ func (r *Router) ToConnectionConfig() connection.ConnectionConfig {
 		IP:       r.IP,
 		Username: r.Username,
 		Password: r.Password,
+		Port:     22,
+		Timeout:  30 * time.Second,
 		Metadata: map[string]interface{}{
 			"platform": r.Platform,
 			"protocol": r.Protocol,
