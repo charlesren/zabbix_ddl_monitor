@@ -25,8 +25,14 @@ var (
 
 	// Scrapli协议能力
 	ScrapliCapability = ProtocolCapability{
-		Protocol:        ProtocolScrapli,
-		PlatformSupport: []Platform{PlatformCiscoIOSXE, PlatformCiscoNXOS, PlatformHuaweiVRP},
+		Protocol: ProtocolScrapli,
+		PlatformSupport: []Platform{
+			PlatformCiscoIOSXE,
+			PlatformCiscoIOSXR,
+			PlatformCiscoNXOS,
+			PlatformH3CComware,
+			PlatformHuaweiVRP,
+		},
 		CommandTypesSupport: []CommandType{
 			CommandTypeCommands,
 			CommandTypeInteractiveEvent,

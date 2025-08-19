@@ -228,7 +228,5 @@ func (d *ScrapliDriver) ensureConnected() error {
 
 // connection/scrapli_driver.go
 func (d *ScrapliDriver) GetCapability() ProtocolCapability {
-	caps := ScrapliCapability
-	caps.PlatformSupport = []Platform{Platform(d.platform)} // 动态设置当前平台
-	return caps
+	return ScrapliCapability
 }
