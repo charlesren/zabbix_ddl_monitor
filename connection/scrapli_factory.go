@@ -21,16 +21,21 @@ func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error)
 		return nil, fmt.Errorf("metadata 'platform' field missing")
 	}
 
-	// 2. 类型断言
-	platformOS, ok := platformValue.(Platform)
-	if !ok {
-		return nil, fmt.Errorf(
-			"metadata 'platform' type is not a Platform (got %T, value: %v)",
-			platformValue, platformValue,
-		)
+	// 处理所有可能的输入类型
+	var platformOS string
+	switch v := platformValue.(type) {
+	case string:
+		platformOS = v
+	case Platform:
+		platformOS = string(v) // 显式类型转换
+	case []byte:
+		platformOS = string(v)
+	case fmt.Stringer:
+		platformOS = v.String()
+	default:
+		return nil, fmt.Errorf("unsupported platform type: %T", v)
 	}
-
-	// 3. 空值检查
+	//  空值检查
 	if string(platformOS) == "" {
 		return nil, fmt.Errorf("platform cannot be empty")
 	}
