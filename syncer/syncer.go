@@ -392,7 +392,7 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 		}
 		line.ComputeHash()
 		lines[line.IP] = line
-		ylog.Debugf("syncer", "get lines ip: %v, associated router: %v", len(hosts), line.Router.IP)
+		ylog.Debugf("syncer", "get lines ip: %v, associated router: %v", line.IP, line.Router.IP)
 	}
 	ylog.Infof("syncer", "processed %d/%d valid lines", len(lines), len(hosts))
 	return lines, nil

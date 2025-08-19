@@ -15,7 +15,10 @@ func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error)
 	ylog.Debugf("scrapli", "creating driver with config: %+v", config)
 
 	platformOS, _ := config.Metadata["platform"].(string)
-
+	ylog.Debugf("scrapli", "platformOS: %s", platformOS)
+	ylog.Debugf("scrapli", "ip: %s", config.IP)
+	ylog.Debugf("scrapli", "username: %s", config.Username)
+	ylog.Debugf("scrapli", "password: %s", config.Password)
 	p, err := platform.NewPlatform(
 		platformOS,
 		config.IP,
