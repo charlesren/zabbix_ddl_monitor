@@ -33,13 +33,29 @@ func (m *MockClient) HostGet(params zapix.HostGetParams) ([]zapix.HostObject, er
 	return args.Get(0).([]zapix.HostObject), args.Error(1)
 }
 
+func (m *MockClient) UsermacroGet(params zapix.UsermacroGetParams) ([]zapix.UsermacroObject, error) {
+	args := m.Called(params)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]zapix.UsermacroObject), args.Error(1)
+}
+
+func (m *MockClient) TemplateGet(params zapix.TemplateGetParams) ([]zapix.TemplateObject, error) {
+	args := m.Called(params)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]zapix.TemplateObject), args.Error(1)
+}
+
 // Test data helpers are now in test_helpers.go
 
 func TestNewConfigSyncer(t *testing.T) {
 	mockClient := &MockClient{}
 	interval := 30 * time.Second
 
-	syncer, err := NewConfigSyncer(nil, interval) // We'll set the client manually for testing
+	syncer, err := NewConfigSyncer(nil, interval, "test-proxy") // We'll set the client manually for testing
 	syncer.client = mockClient
 
 	assert.NoError(t, err)

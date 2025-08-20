@@ -23,6 +23,7 @@ func createTestSyncer(client Client, interval time.Duration) *ConfigSyncer {
 		stopOnce:     sync.Once{},
 		ctx:          ctx,
 		cancel:       cancel,
+		proxyName:    "10.10.10.10",
 	}
 	return syncer
 }

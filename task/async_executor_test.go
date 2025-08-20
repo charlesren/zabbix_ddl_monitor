@@ -45,7 +45,7 @@ func (m *mockTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error)
 }
 
 type mockProtocolDriver struct {
-	executeFunc func(*connection.ProtocolRequest) (*connection.ProtocolResponse, error)
+	executeFunc func(context.Context, *connection.ProtocolRequest) (*connection.ProtocolResponse, error)
 	capability  connection.ProtocolCapability
 }
 
@@ -57,9 +57,9 @@ func (m *mockProtocolDriver) Close() error {
 	return nil
 }
 
-func (m *mockProtocolDriver) Execute(req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
+func (m *mockProtocolDriver) Execute(ctx context.Context, req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
 	if m.executeFunc != nil {
-		return m.executeFunc(req)
+		return m.executeFunc(ctx, req)
 	}
 	return &connection.ProtocolResponse{
 		Success: true,
@@ -540,7 +540,7 @@ func TestAsyncExecutor_TaskExecutionError(t *testing.T) {
 
 	// Mock driver that returns error
 	mockDriver := &mockProtocolDriver{
-		executeFunc: func(req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
+		executeFunc: func(ctx context.Context, req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
 			return nil, errors.New("driver execution failed")
 		},
 	}

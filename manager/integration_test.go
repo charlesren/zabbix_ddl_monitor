@@ -176,7 +176,9 @@ func (tm *TestManager) createScheduler(router *syncer.Router, lines []syncer.Lin
 		tm.mockSchedulers[router.IP] = mockScheduler
 		return mockScheduler
 	}
-	return NewRouterScheduler(router, lines, nil)
+	ctx := context.Background()
+	scheduler, _ := NewRouterScheduler(ctx, router, lines, nil)
+	return scheduler
 }
 
 func (tm *TestManager) ensureScheduler(routerIP string, lines []syncer.Line) {
@@ -391,6 +393,18 @@ func (m *MockZabbixClient) RemoveHost(hostID string) {
 			break
 		}
 	}
+}
+
+func (m *MockZabbixClient) UsermacroGet(params zapix.UsermacroGetParams) ([]zapix.UsermacroObject, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return []zapix.UsermacroObject{}, nil
+}
+
+func (m *MockZabbixClient) TemplateGet(params zapix.TemplateGetParams) ([]zapix.TemplateObject, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return []zapix.TemplateObject{}, nil
 }
 
 // Helper to create test host objects

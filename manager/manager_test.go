@@ -345,7 +345,9 @@ func (tm *TestableManager) createScheduler(router *syncer.Router, lines []syncer
 		tm.mockSchedulers[router.IP] = mockScheduler
 		return mockScheduler
 	}
-	return NewRouterScheduler(router, lines, nil)
+	ctx := context.Background()
+	scheduler, _ := NewRouterScheduler(ctx, router, lines, nil)
+	return scheduler
 }
 
 func (tm *TestableManager) ensureScheduler(routerIP string, lines []syncer.Line) {
@@ -376,7 +378,8 @@ func createTestLine(id, ip, routerIP string, interval time.Duration) syncer.Line
 func createTestManager() (*Manager, *MockConfigSyncer, *MockRegistry) {
 	mockSyncer := &MockConfigSyncer{}
 	mockRegistry := &MockRegistry{}
-	manager := NewManager(mockSyncer, mockRegistry)
+	aggregator := task.NewAggregator(5, 500, 15*time.Second)
+	manager := NewManager(mockSyncer, mockRegistry, aggregator)
 	return manager, mockSyncer, mockRegistry
 }
 
@@ -407,7 +410,7 @@ func TestManager_Start_SuccessfulPingTaskRegistration(t *testing.T) {
 
 	// Verify PingTask was registered
 	mockRegistry.AssertCalled(t, "Register", mock.MatchedBy(func(meta task.TaskMeta) bool {
-		return string(meta.Type) == "ping" && meta.Description == "Ping task for line monitoring"
+		return string(meta.Type) == "ping" && meta.Description == "Ping task for network devices"
 	}))
 
 	// Verify initial sync was called

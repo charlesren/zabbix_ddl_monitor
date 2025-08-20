@@ -42,7 +42,7 @@ func (f *faultyDriver) Close() error {
 	return nil
 }
 
-func (f *faultyDriver) Execute(req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
+func (f *faultyDriver) Execute(ctx context.Context, req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
 	if f.panicOnCall {
 		panic("driver panic on execute")
 	}

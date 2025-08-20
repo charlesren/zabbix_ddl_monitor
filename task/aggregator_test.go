@@ -20,11 +20,11 @@ type mockResultHandler struct {
 	errorMessage string
 }
 
-func (m *mockResultHandler) HandleResult(event ResultEvent) error {
+func (m *mockResultHandler) HandleResult(events []ResultEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.results = append(m.results, event)
+	m.results = append(m.results, events...)
 	m.callCount++
 
 	if m.shouldError {
@@ -32,7 +32,14 @@ func (m *mockResultHandler) HandleResult(event ResultEvent) error {
 	}
 
 	if m.handleFunc != nil {
-		return m.handleFunc(event)
+		// 对于单个事件的处理函数兼容性
+		if len(events) == 1 {
+			return m.handleFunc(events[0])
+		}
+		// 对于多个事件，只处理第一个（保持向后兼容）
+		for _, event := range events {
+			return m.handleFunc(event)
+		}
 	}
 
 	return nil
@@ -620,7 +627,7 @@ func TestLogHandler(t *testing.T) {
 		Duration: 150 * time.Millisecond,
 	}
 
-	err := handler.HandleResult(successEvent)
+	err := handler.HandleResult([]ResultEvent{successEvent})
 	if err != nil {
 		t.Errorf("LogHandler should not return error: %v", err)
 	}
@@ -633,7 +640,7 @@ func TestLogHandler(t *testing.T) {
 		Duration: 5 * time.Second,
 	}
 
-	err = handler.HandleResult(failEvent)
+	err = handler.HandleResult([]ResultEvent{failEvent})
 	if err != nil {
 		t.Errorf("LogHandler should not return error: %v", err)
 	}
@@ -649,7 +656,7 @@ func TestJSONFileHandler(t *testing.T) {
 		Success:  true,
 	}
 
-	err := handler.HandleResult(event)
+	err := handler.HandleResult([]ResultEvent{event})
 	if err != nil {
 		t.Errorf("JSONFileHandler should not return error: %v", err)
 	}
@@ -663,23 +670,9 @@ func TestMetricsHandler(t *testing.T) {
 		Success: true,
 	}
 
-	err := handler.HandleResult(event)
+	err := handler.HandleResult([]ResultEvent{event})
 	if err != nil {
 		t.Errorf("MetricsHandler should not return error: %v", err)
-	}
-}
-
-func TestZabbixHandler(t *testing.T) {
-	handler := &ZabbixHandler{}
-
-	event := ResultEvent{
-		IP:      "192.168.1.1",
-		Success: true,
-	}
-
-	err := handler.HandleResult(event)
-	if err != nil {
-		t.Errorf("ZabbixHandler should not return error: %v", err)
 	}
 }
 

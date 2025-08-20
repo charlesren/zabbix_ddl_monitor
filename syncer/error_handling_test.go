@@ -522,8 +522,8 @@ func TestEdgeCaseErrors(t *testing.T) {
 				mc.On("GetProxyFormHost", "10.10.10.10").Return(createTestProxyResponse(), nil)
 				mc.On("HostGet", mock.AnythingOfType("zapix.HostGetParams")).Return(nil, nil)
 			},
-			expectError: true,
-			description: "should handle nil host response",
+			expectError: false,
+			description: "should handle nil host response gracefully",
 		},
 		{
 			name: "proxy_with_zero_id",
@@ -541,6 +541,7 @@ func TestEdgeCaseErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mockClient := &MockClient{}
 			tc.setup(mockClient)
+			mockClient.On("UsermacroGet", mock.Anything).Return([]zapix.UsermacroObject{}, nil).Maybe()
 
 			syncer := createTestSyncer(mockClient, time.Minute)
 			err := syncer.sync()

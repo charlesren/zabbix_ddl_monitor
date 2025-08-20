@@ -36,7 +36,7 @@ func (m *mockPerformanceDriver) Close() error {
 	return nil
 }
 
-func (m *mockPerformanceDriver) Execute(req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
+func (m *mockPerformanceDriver) Execute(ctx context.Context, req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
 	atomic.AddInt64(&m.callCount, 1)
 
 	if m.executionDelay > 0 {

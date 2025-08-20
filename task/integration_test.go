@@ -36,7 +36,7 @@ func (m *mockIntegrationDriver) Close() error {
 	return nil
 }
 
-func (m *mockIntegrationDriver) Execute(req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
+func (m *mockIntegrationDriver) Execute(ctx context.Context, req *connection.ProtocolRequest) (*connection.ProtocolResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -90,29 +90,29 @@ func (m *mockIntegrationDriver) reset() {
 }
 
 type integrationResultHandler struct {
-	events []ResultEvent
-	mu     sync.Mutex
+	results []ResultEvent
+	mu      sync.Mutex
 }
 
-func (h *integrationResultHandler) HandleResult(event ResultEvent) error {
+func (h *integrationResultHandler) HandleResult(events []ResultEvent) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.events = append(h.events, event)
+	h.results = append(h.results, events...)
 	return nil
 }
 
 func (h *integrationResultHandler) getEvents() []ResultEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	events := make([]ResultEvent, len(h.events))
-	copy(events, h.events)
+	events := make([]ResultEvent, len(h.results))
+	copy(events, h.results)
 	return events
 }
 
 func (h *integrationResultHandler) reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.events = nil
+	h.results = nil
 }
 
 func setupIntegrationTest() *integrationTestSetup {

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charlesren/zapix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
@@ -305,7 +306,12 @@ func (suite *ConcurrencyTestSuite) TestHighLoadSubscriptionManagement() {
 // TestConcurrentStartStop tests concurrent start and stop operations
 func (suite *ConcurrencyTestSuite) TestConcurrentStartStop() {
 	// Create a fresh syncer for this test
-	syncer := createTestSyncer(&MockClient{}, 10*time.Millisecond)
+	mockClient := &MockClient{}
+	mockClient.On("GetProxyFormHost", "10.10.10.10").Return(createTestProxyResponse(), nil).Maybe()
+	mockClient.On("HostGet", mock.AnythingOfType("zapix.HostGetParams")).Return([]zapix.HostObject{}, nil).Maybe()
+	mockClient.On("UsermacroGet", mock.Anything).Return([]zapix.UsermacroObject{}, nil).Maybe()
+	mockClient.On("TemplateGet", mock.AnythingOfType("zapix.TemplateGetParams")).Return([]zapix.TemplateObject{}, nil).Maybe()
+	syncer := createTestSyncer(mockClient, 10*time.Millisecond)
 
 	const numOperations = 50
 	var wg sync.WaitGroup
@@ -541,7 +547,11 @@ func TestGoroutineLeakDetection(t *testing.T) {
 	// Create and destroy multiple syncers
 	for i := 0; i < 10; i++ {
 		mockClient := &MockClient{}
-		syncer := createTestSyncer(mockClient, 100*time.Millisecond)
+		mockClient.On("GetProxyFormHost", "10.10.10.10").Return(createTestProxyResponse(), nil).Maybe()
+		mockClient.On("HostGet", mock.AnythingOfType("zapix.HostGetParams")).Return([]zapix.HostObject{}, nil).Maybe()
+		mockClient.On("UsermacroGet", mock.Anything).Return([]zapix.UsermacroObject{}, nil).Maybe()
+		mockClient.On("TemplateGet", mock.AnythingOfType("zapix.TemplateGetParams")).Return([]zapix.TemplateObject{}, nil).Maybe()
+		syncer := createTestSyncer(mockClient, 10*time.Millisecond)
 
 		// Create some subscribers
 		ctx := context.Background()
@@ -576,7 +586,11 @@ func TestGoroutineLeakDetection(t *testing.T) {
 // TestConcurrentNotificationOrdering tests event notification ordering under concurrency
 func TestConcurrentNotificationOrdering(t *testing.T) {
 	mockClient := &MockClient{}
-	syncer := createTestSyncer(mockClient, time.Minute)
+	mockClient.On("GetProxyFormHost", "10.10.10.10").Return(createTestProxyResponse(), nil).Maybe()
+	mockClient.On("HostGet", mock.AnythingOfType("zapix.HostGetParams")).Return([]zapix.HostObject{}, nil).Maybe()
+	mockClient.On("UsermacroGet", mock.Anything).Return([]zapix.UsermacroObject{}, nil).Maybe()
+	mockClient.On("TemplateGet", mock.AnythingOfType("zapix.TemplateGetParams")).Return([]zapix.TemplateObject{}, nil).Maybe()
+	syncer := createTestSyncer(mockClient, 10*time.Millisecond)
 
 	ctx := context.Background()
 	sub := syncer.Subscribe(ctx)

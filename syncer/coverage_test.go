@@ -47,7 +47,7 @@ func testConfigSyncerCoverage(t *testing.T) {
 	syncer := createTestSyncer(mockClient, time.Minute)
 
 	// Test NewConfigSyncer
-	newSyncer, err := NewConfigSyncer(nil, time.Minute)
+	newSyncer, err := NewConfigSyncer(nil, time.Minute, "test-proxy")
 	assert.NoError(t, err)
 	assert.NotNil(t, newSyncer)
 
