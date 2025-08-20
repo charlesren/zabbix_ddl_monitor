@@ -1,11 +1,14 @@
 package connection
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 type MockProtocolDriver struct {
 	ProtocolTypeFunc  func() Protocol
 	CloseFunc         func() error
-	ExecuteFunc       func(req *ProtocolRequest) (*ProtocolResponse, error)
+	ExecuteFunc       func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error)
 	GetCapabilityFunc func() ProtocolCapability
 }
 
@@ -23,9 +26,9 @@ func (m *MockProtocolDriver) Close() error {
 	return nil
 }
 
-func (m *MockProtocolDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
+func (m *MockProtocolDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 	if m.ExecuteFunc != nil {
-		return m.ExecuteFunc(req)
+		return m.ExecuteFunc(ctx, req)
 	}
 	return nil, errors.New("mock not implemented")
 }

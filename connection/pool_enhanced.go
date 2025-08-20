@@ -664,7 +664,7 @@ func (p *EnhancedConnectionPool) checkConnectionHealth(proto Protocol, conn *Enh
 
 // defaultHealthCheck 默认健康检查
 func (p *EnhancedConnectionPool) defaultHealthCheck(driver ProtocolDriver) error {
-	_, err := driver.Execute(&ProtocolRequest{
+	_, err := driver.Execute(context.Background(), &ProtocolRequest{
 		CommandType: CommandTypeCommands,
 		Payload:     []string{"echo healthcheck"},
 	})
@@ -939,10 +939,10 @@ type MonitoredDriver struct {
 	lastError error
 }
 
-func (md *MonitoredDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
+func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 	start := time.Now()
 
-	resp, err := md.ProtocolDriver.Execute(req)
+	resp, err := md.ProtocolDriver.Execute(ctx, req)
 
 	duration := time.Since(start)
 	md.lastError = err

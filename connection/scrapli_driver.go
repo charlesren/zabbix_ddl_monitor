@@ -38,19 +38,29 @@ func (d *ScrapliDriver) ProtocolType() Protocol {
 }
 
 // connection/scrapli_driver.go
-func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
+func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	// 全面检查关键字段
-	if d == nil || d.driver == nil || d.channel == nil || d.ctx == nil {
-		ylog.Errorf("ScrapliDriver", "critical field not initialized: driver=%v, channel=%v, ctx=%v",
-			d.driver, d.channel, d.ctx)
+	if d == nil || d.driver == nil || d.channel == nil {
+		ylog.Errorf("ScrapliDriver", "critical field not initialized: driver=%v, channel=%v",
+			d.driver, d.channel)
 		return nil, fmt.Errorf("driver not properly initialized")
 	}
 
+	// 使用传入的上下文，如果为nil则使用默认上下文
+	effectiveCtx := ctx
+	if effectiveCtx == nil {
+		if d.ctx == nil {
+			d.ctx, d.cancel = context.WithTimeout(context.Background(), d.timeout)
+			ylog.Debugf("ScrapliDriver", "initialized default context: timeout=%v", d.timeout)
+		}
+		effectiveCtx = d.ctx
+	}
+
 	// 检查上下文状态（已受锁保护）
-	if err := d.ctx.Err(); err != nil {
+	if err := effectiveCtx.Err(); err != nil {
 		ylog.Warnf("ScrapliDriver", "context cancelled: %v", err)
 		return nil, err
 	}
@@ -99,6 +109,9 @@ func (d *ScrapliDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error)
 
 // SendConfig 发送配置命令
 func (d *ScrapliDriver) SendConfig(config string) (string, error) {
+	if err := d.ensureConnected(); err != nil {
+		return "", err
+	}
 	r, err := d.driver.SendConfig(config)
 	if err != nil {
 		return "", err

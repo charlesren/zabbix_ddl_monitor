@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,7 +9,7 @@ import (
 
 func TestSSHDriver_Execute_Mock(t *testing.T) {
 	driver := &MockProtocolDriver{
-		ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+		ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 			if req.CommandType != CommandTypeCommands {
 				return nil, ErrUnsupportedCommandType
 			}
@@ -20,7 +21,7 @@ func TestSSHDriver_Execute_Mock(t *testing.T) {
 	}
 
 	t.Run("should execute commands via mock", func(t *testing.T) {
-		resp, err := driver.Execute(&ProtocolRequest{
+		resp, err := driver.Execute(context.Background(), &ProtocolRequest{
 			CommandType: CommandTypeCommands,
 			Payload:     []string{"echo test"},
 		})
@@ -30,7 +31,7 @@ func TestSSHDriver_Execute_Mock(t *testing.T) {
 	})
 
 	t.Run("should return error for invalid command type", func(t *testing.T) {
-		_, err := driver.Execute(&ProtocolRequest{
+		_, err := driver.Execute(context.Background(), &ProtocolRequest{
 			CommandType: "invalid",
 		})
 		assert.ErrorIs(t, err, ErrUnsupportedCommandType)

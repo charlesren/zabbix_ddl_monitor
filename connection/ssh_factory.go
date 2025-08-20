@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"context"
 	"fmt"
 
 	"golang.org/x/crypto/ssh"
@@ -43,7 +44,7 @@ func (f *SSHFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver, er
 }
 
 func (f *SSHFactory) HealthCheck(driver ProtocolDriver) bool {
-	_, err := driver.Execute(&ProtocolRequest{
+	_, err := driver.Execute(context.Background(), &ProtocolRequest{
 		CommandType: CommandTypeCommands,
 		Payload:     []string{"echo healthcheck"},
 	})

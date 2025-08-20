@@ -48,7 +48,7 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 		ylog.Errorf("executor", "unsupported payload type: %T", cmd.Payload)
 		return Result{Error: "unsupported payload type"}, nil
 	}
-	resp, err := conn.Execute(&connection.ProtocolRequest{
+	resp, err := conn.Execute(ctx.Ctx, &connection.ProtocolRequest{
 		CommandType: cmd.Type,
 		Payload:     payload,
 	})
@@ -90,7 +90,7 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 			return Result{Error: "unsupported payload type"}, fmt.Errorf("unsupported payload type")
 		}
 
-		resp, err := conn.Execute(&connection.ProtocolRequest{
+		resp, err := conn.Execute(ctx.Ctx, &connection.ProtocolRequest{
 			CommandType: cmd.Type,
 			Payload:     payload,
 		})

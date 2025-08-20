@@ -66,9 +66,16 @@ func (f *ScrapliFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver
 	ylog.Debugf("scrapli", "driver created with config: %+v", config)
 
 	return &ScrapliDriver{
-		driver:  driver,
-		channel: driver.Channel,
-		host:    config.Host,
+		driver:     driver,
+		channel:    driver.Channel,
+		host:       config.Host,
+		username:   config.Username,
+		password:   config.Password,
+		platform:   platformOS,
+		maxRetries: 3,
+		timeout:    config.ConnectTimeout,
+		ctx:        nil, // Will be initialized on first connect
+		cancel:     nil,
 	}, nil
 
 }

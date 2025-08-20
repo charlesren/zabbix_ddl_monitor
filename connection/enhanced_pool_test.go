@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,7 +39,7 @@ func TestEnhancedConnectionPool_BasicOperations(t *testing.T) {
 				return &MockProtocolDriver{
 					ProtocolTypeFunc: func() Protocol { return ProtocolSSH },
 					CloseFunc:        func() error { return nil },
-					ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+					ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 						return &ProtocolResponse{Success: true, RawData: []byte("ok")}, nil
 					},
 				}, nil
@@ -55,7 +56,7 @@ func TestEnhancedConnectionPool_BasicOperations(t *testing.T) {
 		assert.NotNil(t, conn)
 
 		// Test execution
-		resp, err := conn.Execute(&ProtocolRequest{
+		resp, err := conn.Execute(context.Background(), &ProtocolRequest{
 			CommandType: CommandTypeCommands,
 			Payload:     []string{"echo test"},
 		})
@@ -133,7 +134,7 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
-				ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+				ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 					atomic.AddInt32(&healthCheckCount, 1)
 					return &ProtocolResponse{Success: true, RawData: []byte("ok")}, nil
 				},
@@ -184,7 +185,7 @@ func TestEnhancedConnectionPool_Metrics(t *testing.T) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
-				ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+				ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 					return &ProtocolResponse{Success: true, RawData: []byte("ok")}, nil
 				},
 			}, nil
@@ -201,7 +202,7 @@ func TestEnhancedConnectionPool_Metrics(t *testing.T) {
 		assert.NotNil(t, conn)
 
 		// Execute operation
-		_, err = conn.Execute(&ProtocolRequest{
+		_, err = conn.Execute(context.Background(), &ProtocolRequest{
 			CommandType: CommandTypeCommands,
 			Payload:     []string{"test"},
 		})
@@ -317,7 +318,7 @@ func TestEnhancedConnectionPool_Concurrency(t *testing.T) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
-				ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+				ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 					time.Sleep(5 * time.Millisecond)
 					return &ProtocolResponse{Success: true, RawData: []byte("ok")}, nil
 				},
@@ -348,7 +349,7 @@ func TestEnhancedConnectionPool_Concurrency(t *testing.T) {
 					}
 
 					// Execute operation
-					_, err = conn.Execute(&ProtocolRequest{
+					_, err = conn.Execute(context.Background(), &ProtocolRequest{
 						CommandType: CommandTypeCommands,
 						Payload:     []string{"test"},
 					})
@@ -563,7 +564,7 @@ func TestMonitoredDriver(t *testing.T) {
 	defer pool.Close()
 
 	mockDriver := &MockProtocolDriver{
-		ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+		ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 			return &ProtocolResponse{Success: true, RawData: []byte("test")}, nil
 		},
 		CloseFunc: func() error { return nil },
@@ -589,7 +590,7 @@ func TestMonitoredDriver(t *testing.T) {
 	}
 
 	t.Run("should execute and track metrics", func(t *testing.T) {
-		resp, err := monitored.Execute(&ProtocolRequest{
+		resp, err := monitored.Execute(context.Background(), &ProtocolRequest{
 			CommandType: CommandTypeCommands,
 			Payload:     []string{"test"},
 		})
@@ -606,11 +607,11 @@ func TestMonitoredDriver(t *testing.T) {
 
 	t.Run("should handle errors and track them", func(t *testing.T) {
 		// Override execute function to return error
-		mockDriver.ExecuteFunc = func(req *ProtocolRequest) (*ProtocolResponse, error) {
+		mockDriver.ExecuteFunc = func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 			return nil, assert.AnError
 		}
 
-		_, err := monitored.Execute(&ProtocolRequest{
+		_, err := monitored.Execute(context.Background(), &ProtocolRequest{
 			CommandType: CommandTypeCommands,
 			Payload:     []string{"test"},
 		})
@@ -636,7 +637,7 @@ func TestHealthChecker(t *testing.T) {
 
 	t.Run("should detect healthy connections", func(t *testing.T) {
 		mockDriver := &MockProtocolDriver{
-			ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+			ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 				return &ProtocolResponse{Success: true}, nil
 			},
 		}
@@ -656,7 +657,7 @@ func TestHealthChecker(t *testing.T) {
 
 	t.Run("should detect unhealthy connections", func(t *testing.T) {
 		mockDriver := &MockProtocolDriver{
-			ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+			ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 				return nil, assert.AnError
 			},
 		}
@@ -692,7 +693,7 @@ func BenchmarkEnhancedConnectionPool_GetRelease(b *testing.B) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
-				ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+				ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 					return &ProtocolResponse{Success: true}, nil
 				},
 			}, nil
@@ -710,7 +711,7 @@ func BenchmarkEnhancedConnectionPool_GetRelease(b *testing.B) {
 				b.Fatal(err)
 			}
 
-			_, err = conn.Execute(&ProtocolRequest{
+			_, err = conn.Execute(context.Background(), &ProtocolRequest{
 				CommandType: CommandTypeCommands,
 				Payload:     []string{"test"},
 			})
@@ -743,7 +744,7 @@ func BenchmarkEnhancedConnectionPool_ConcurrentAccess(b *testing.B) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
-				ExecuteFunc: func(req *ProtocolRequest) (*ProtocolResponse, error) {
+				ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 					return &ProtocolResponse{Success: true}, nil
 				},
 			}, nil

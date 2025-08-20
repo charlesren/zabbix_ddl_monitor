@@ -15,7 +15,7 @@ import (
 type ProtocolDriver interface {
 	ProtocolType() Protocol
 	Close() error
-	Execute(req *ProtocolRequest) (*ProtocolResponse, error)
+	Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error)
 	GetCapability() ProtocolCapability
 }
 

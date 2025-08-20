@@ -2,6 +2,7 @@ package connection
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"time"
 
@@ -41,7 +42,7 @@ func (d *SSHDriver) Close() error {
 }
 
 // connection/ssh_driver.go
-func (d *SSHDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
+func (d *SSHDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 	if req.CommandType != CommandTypeCommands {
 		return nil, ErrUnsupportedCommandType
 	}
@@ -49,6 +50,15 @@ func (d *SSHDriver) Execute(req *ProtocolRequest) (*ProtocolResponse, error) {
 	cmds, ok := req.Payload.([]string)
 	if !ok {
 		return nil, fmt.Errorf("invalid commands payload")
+	}
+
+	// 检查上下文是否已取消
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 	}
 
 	output, err := d.SendCommands(cmds)

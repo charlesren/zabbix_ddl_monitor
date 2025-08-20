@@ -108,7 +108,7 @@ func TestConnectionSystemIntegration(t *testing.T) {
 		assert.NotNil(t, conn)
 
 		// 执行操作
-		resp, err := conn.Execute(&ProtocolRequest{
+		resp, err := conn.Execute(context.Background(), &ProtocolRequest{
 			CommandType: CommandTypeCommands,
 			Payload:     []string{"show version"},
 		})
@@ -302,7 +302,7 @@ func TestConnectionSystemIntegration(t *testing.T) {
 						continue
 					}
 
-					_, err = conn.Execute(&ProtocolRequest{
+					_, err = conn.Execute(context.Background(), &ProtocolRequest{
 						CommandType: CommandTypeCommands,
 						Payload:     []string{"test command"},
 					})
