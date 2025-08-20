@@ -38,6 +38,7 @@ type RouterScheduler struct {
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
 	mu             sync.Mutex
+	routerCtx      context.Context // 路由器级上下文
 }
 
 /*
@@ -90,7 +91,7 @@ type RouterScheduler struct {
 		return scheduler
 	}
 */
-func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manager *Manager) (*RouterScheduler, error) {
+func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initialLines []syncer.Line, manager *Manager) (*RouterScheduler, error) {
 	// 1. 使用Builder直接构造配置
 	config, err := connection.NewConfigBuilder().
 		WithBasicAuth(router.IP, router.Username, router.Password).
@@ -102,7 +103,7 @@ func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manag
 		return nil, fmt.Errorf("failed to build connection config: %w", err)
 	}
 
-	pool := connection.NewEnhancedConnectionPool(config)
+	pool := connection.NewEnhancedConnectionPool(parentCtx, config)
 
 	// 4. 创建调度器实例
 	scheduler := &RouterScheduler{
@@ -112,6 +113,7 @@ func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manag
 		manager:    manager,
 		queues:     make(map[time.Duration]*IntervalTaskQueue),
 		stopChan:   make(chan struct{}),
+		routerCtx:  parentCtx,
 	}
 
 	// 5. 预热连接池

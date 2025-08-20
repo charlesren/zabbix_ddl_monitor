@@ -21,8 +21,9 @@ type EnhancedConnectionPool struct {
 	pools     map[Protocol]*EnhancedDriverPool
 
 	// 生命周期管理
-	ctx    context.Context
-	cancel context.CancelFunc
+	parentCtx context.Context // 父级上下文，用于协调关闭
+	ctx       context.Context
+	cancel    context.CancelFunc
 
 	// 配置参数
 	idleTimeout     time.Duration
@@ -272,13 +273,17 @@ func (lcb *LeastConnectionsBalancer) UpdateConnectionMetrics(conn *EnhancedPoole
 }
 
 // NewEnhancedConnectionPool 创建增强的连接池
-func NewEnhancedConnectionPool(config *EnhancedConnectionConfig) *EnhancedConnectionPool {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewEnhancedConnectionPool(parentCtx context.Context, config *EnhancedConnectionConfig) *EnhancedConnectionPool {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parentCtx)
 
 	pool := &EnhancedConnectionPool{
 		config:            *config,
 		factories:         make(map[Protocol]ProtocolFactory),
 		pools:             make(map[Protocol]*EnhancedDriverPool),
+		parentCtx:         parentCtx,
 		ctx:               ctx,
 		cancel:            cancel,
 		idleTimeout:       config.IdleTimeout,
@@ -337,10 +342,21 @@ func (p *EnhancedConnectionPool) RegisterFactory(proto Protocol, factory Protoco
 	}
 }
 
-// Get 获取连接
-func (p *EnhancedConnectionPool) Get(proto Protocol) (ProtocolDriver, error) {
+// GetWithContext 上下文感知的连接获取
+func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Protocol) (ProtocolDriver, error) {
 	if atomic.LoadInt32(&p.isShuttingDown) != 0 {
 		return nil, fmt.Errorf("connection pool is shutting down")
+	}
+
+	// 合并上下文
+	mergedCtx := p.mergeContext(ctx)
+
+	// 检查上下文是否已取消
+	select {
+	case <-mergedCtx.Done():
+		return nil, mergedCtx.Err()
+	default:
+		// 上下文有效，继续获取连接
 	}
 
 	pool := p.getDriverPool(proto)
@@ -368,6 +384,11 @@ func (p *EnhancedConnectionPool) Get(proto Protocol) (ProtocolDriver, error) {
 	}
 
 	return p.activateConnection(conn), nil
+}
+
+// Get 获取连接（向后兼容版本）
+func (p *EnhancedConnectionPool) Get(proto Protocol) (ProtocolDriver, error) {
+	return p.GetWithContext(context.Background(), proto)
 }
 
 // getConnectionFromPool 从池中获取连接
@@ -600,6 +621,8 @@ func (p *EnhancedConnectionPool) healthCheckTask() {
 
 	for {
 		select {
+		case <-p.parentCtx.Done(): // 监听父级上下文
+			return
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
@@ -673,11 +696,13 @@ func (p *EnhancedConnectionPool) defaultHealthCheck(driver ProtocolDriver) error
 
 // cleanupTask 连接清理任务
 func (p *EnhancedConnectionPool) cleanupTask() {
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-p.parentCtx.Done(): // 监听父级上下文
+			return
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
@@ -754,6 +779,8 @@ func (p *EnhancedConnectionPool) metricsTask() {
 
 	for {
 		select {
+		case <-p.parentCtx.Done(): // 监听父级上下文
+			return
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
@@ -795,6 +822,8 @@ func (p *EnhancedConnectionPool) updateMetrics() {
 func (p *EnhancedConnectionPool) eventHandlerTask() {
 	for {
 		select {
+		case <-p.parentCtx.Done(): // 监听父级上下文
+			return
 		case <-p.ctx.Done():
 			return
 		case event := <-p.eventChan:
@@ -979,6 +1008,34 @@ func (md *MonitoredDriver) Close() error {
 }
 
 // activateConnection 统一激活连接并返回监控包装器
+// mergeContext 合并请求上下文和池上下文
+func (p *EnhancedConnectionPool) mergeContext(requestCtx context.Context) context.Context {
+	if requestCtx == nil {
+		return p.ctx
+	}
+
+	// 如果请求上下文有超时，优先使用请求上下文的超时
+	if deadline, ok := requestCtx.Deadline(); ok {
+		// 请求上下文有超时，创建新的合并上下文
+		mergedCtx, cancel := context.WithDeadline(p.ctx, deadline)
+
+		// 监听请求上下文的取消
+		go func() {
+			select {
+			case <-requestCtx.Done():
+				cancel() // 请求上下文取消，传播取消
+			case <-mergedCtx.Done():
+				// 合并上下文自然结束
+			}
+		}()
+
+		return mergedCtx
+	}
+
+	// 请求上下文没有超时，直接使用池上下文
+	return p.ctx
+}
+
 func (p *EnhancedConnectionPool) activateConnection(conn *EnhancedPooledConnection) ProtocolDriver {
 	conn.inUse = true
 	conn.lastUsed = time.Now()

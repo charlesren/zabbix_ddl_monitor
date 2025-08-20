@@ -17,6 +17,7 @@ type ConfigSyncerInterface interface {
 }
 
 type Manager struct {
+	appCtx       context.Context // 应用级上下文
 	configSyncer ConfigSyncerInterface
 	schedulers   map[string]Scheduler     // key: routerIP
 	routerLines  map[string][]syncer.Line // key: routerIP
@@ -29,6 +30,7 @@ type Manager struct {
 
 func NewManager(cs ConfigSyncerInterface, registry task.Registry, aggregator *task.Aggregator) *Manager {
 	return &Manager{
+		appCtx:       context.Background(), // 默认使用background上下文
 		configSyncer: cs,
 		schedulers:   make(map[string]Scheduler),
 		routerLines:  make(map[string][]syncer.Line),
@@ -242,7 +244,7 @@ func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 
 // 创建调度器的工厂方法，可以在测试中重写
 func (m *Manager) createScheduler(router *syncer.Router, lines []syncer.Line) Scheduler {
-	scheduler, err := NewRouterScheduler(router, lines, m)
+	scheduler, err := NewRouterScheduler(m.appCtx, router, lines, m)
 	if err != nil {
 		ylog.Errorf("manager", "failed to create scheduler for %s: %v", router.IP, err)
 		return nil
