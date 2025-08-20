@@ -118,9 +118,26 @@ func main() {
 		ylog.Errorf("Main", "创建zabbix sender失败:%v", err)
 		return
 	}
+
+	// 预暖连接池
+	if err := zabbixSender.WarmupPool(); err != nil {
+		ylog.Warnf("Main", "连接池预暖失败: %v", err)
+	}
+
+	// 记录连接池统计信息
+	stats := zabbixSender.GetStats()
+	ylog.Infof("Main", "Zabbix sender连接池统计: %+v", stats)
+
 	aggregator.AddHandler(zabbixSender)
 	aggregator.Start()
 	defer aggregator.Stop()
+	defer func() {
+		if err := zabbixSender.Close(); err != nil {
+			ylog.Errorf("Main", "关闭zabbix sender失败: %v", err)
+		} else {
+			ylog.Infof("Main", "Zabbix sender已关闭")
+		}
+	}()
 
 	// 创建管理器
 	mgr := manager.NewManager(syncer, registry, aggregator)
@@ -136,4 +153,8 @@ func main() {
 	// 等待终止信号
 	<-sigChan
 	ylog.Infof("Main", "接收到终止信号，开始优雅关闭...")
+
+	// 在关闭前记录最终统计信息
+	finalStats := zabbixSender.GetStats()
+	ylog.Infof("Main", "最终Zabbix sender连接池统计: %+v", finalStats)
 }
