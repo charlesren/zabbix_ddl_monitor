@@ -125,6 +125,23 @@ func WithTimeout(d time.Duration) Middleware {
 		}
 	}
 }
+func WithSmartTimeout(defaultTimeout time.Duration) Middleware {
+	return func(next ExecutorFunc) ExecutorFunc {
+		return func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
+			// 优先使用任务参数中的超时
+			var timeout time.Duration
+			if timeoutParam, ok := ctx.Params["timeout"].(time.Duration); ok {
+				timeout = timeoutParam
+			} else {
+				timeout = defaultTimeout
+			}
+
+			timeoutCtx, cancel := context.WithTimeout(ctx.Ctx, timeout)
+			defer cancel()
+			return next(task, conn, ctx.WithContext(timeoutCtx))
+		}
+	}
+}
 
 func WithRetry(maxRetries int, delay time.Duration) Middleware {
 	return func(next ExecutorFunc) ExecutorFunc {

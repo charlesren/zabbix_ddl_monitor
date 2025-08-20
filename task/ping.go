@@ -33,6 +33,17 @@ func (PingTask) Meta() TaskMeta {
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
 								},
 							},
+							{
+								CommandType: connection.CommandTypeCommands,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: false},
+									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+									{Name: "enable_password", Type: "string", Required: false, Default: ""},
+								},
+							},
 						},
 					},
 				},
@@ -45,6 +56,17 @@ func (PingTask) Meta() TaskMeta {
 						CommandTypes: []CommandTypeSupport{
 							{
 								CommandType: connection.CommandTypeInteractiveEvent,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: false},
+									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+									{Name: "enable_password", Type: "string", Required: false, Default: ""},
+								},
+							},
+							{
+								CommandType: connection.CommandTypeCommands,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
 									{Name: "target_ip", Type: "string", Required: false},
@@ -75,6 +97,17 @@ func (PingTask) Meta() TaskMeta {
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
 								},
 							},
+							{
+								CommandType: connection.CommandTypeCommands,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: false},
+									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+									{Name: "enable_password", Type: "string", Required: false, Default: ""},
+								},
+							},
 						},
 					},
 				},
@@ -87,6 +120,17 @@ func (PingTask) Meta() TaskMeta {
 						CommandTypes: []CommandTypeSupport{
 							{
 								CommandType: connection.CommandTypeInteractiveEvent,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: false},
+									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+									{Name: "enable_password", Type: "string", Required: false, Default: ""},
+								},
+							},
+							{
+								CommandType: connection.CommandTypeCommands,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
 									{Name: "target_ip", Type: "string", Required: false},
@@ -219,20 +263,53 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 		}
 	}
 
-	var events []*channel.SendInteractiveEvent
-	switch ctx.Platform {
-	case connection.PlatformCiscoIOSXE:
-		events = PingTask{}.buildCiscoEvents(targetIPs, repeat, timeout, enablePassword)
-	case connection.PlatformHuaweiVRP:
-		events = PingTask{}.buildHuaweiEvents(targetIPs, repeat, timeout)
-	default:
-		return Command{}, fmt.Errorf("unsupported platform: %s", ctx.Platform)
-	}
+	// 根据命令类型构建不同的命令
+	switch ctx.CommandType {
+	case connection.CommandTypeCommands:
+		// 构建非交互式命令
+		var commands []string
+		switch ctx.Platform {
+		case connection.PlatformCiscoIOSXE:
+			commands = PingTask{}.buildCiscoCommands(targetIPs, repeat, timeout, enablePassword)
+		case connection.PlatformCiscoIOSXR:
+			commands = PingTask{}.buildCiscoCommands(targetIPs, repeat, timeout, enablePassword)
+		case connection.PlatformCiscoNXOS:
+			commands = PingTask{}.buildCiscoCommands(targetIPs, repeat, timeout, enablePassword)
+		case connection.PlatformHuaweiVRP:
+			commands = PingTask{}.buildHuaweiCommands(targetIPs, repeat, timeout)
+		default:
+			return Command{}, fmt.Errorf("unsupported platform for commands: %s", ctx.Platform)
+		}
 
-	return Command{
-		Type:    connection.CommandTypeInteractiveEvent,
-		Payload: events,
-	}, nil
+		return Command{
+			Type:    connection.CommandTypeCommands,
+			Payload: commands,
+		}, nil
+
+	case connection.CommandTypeInteractiveEvent:
+		// 构建交互式事件
+		var events []*channel.SendInteractiveEvent
+		switch ctx.Platform {
+		case connection.PlatformCiscoIOSXE:
+			events = PingTask{}.buildCiscoEvents(targetIPs, repeat, timeout, enablePassword)
+		case connection.PlatformCiscoIOSXR:
+			events = PingTask{}.buildCiscoEvents(targetIPs, repeat, timeout, enablePassword)
+		case connection.PlatformCiscoNXOS:
+			events = PingTask{}.buildCiscoEvents(targetIPs, repeat, timeout, enablePassword)
+		case connection.PlatformHuaweiVRP:
+			events = PingTask{}.buildHuaweiEvents(targetIPs, repeat, timeout)
+		default:
+			return Command{}, fmt.Errorf("unsupported platform: %s", ctx.Platform)
+		}
+
+		return Command{
+			Type:    connection.CommandTypeInteractiveEvent,
+			Payload: events,
+		}, nil
+
+	default:
+		return Command{}, fmt.Errorf("unsupported command type: %s", ctx.CommandType)
+	}
 }
 
 // buildCiscoEvents 构建Cisco平台的批量ping命令
@@ -286,6 +363,37 @@ func (PingTask) buildHuaweiEvents(targetIPs []string, repeat int, timeout time.D
 	}
 
 	return events
+}
+
+// buildCiscoCommands 构建Cisco平台的批量ping命令（非交互式）
+func (PingTask) buildCiscoCommands(targetIPs []string, repeat int, timeout time.Duration, enablePassword string) []string {
+	var commands []string
+
+	// 只有提供了enable密码才进入特权模式
+	if enablePassword != "" {
+		commands = append(commands, "enable", enablePassword)
+	}
+
+	// 为每个IP创建ping命令
+	for _, ip := range targetIPs {
+		command := fmt.Sprintf("ping %s repeat %d timeout %d", ip, repeat, int(timeout.Seconds()))
+		commands = append(commands, command)
+	}
+
+	return commands
+}
+
+// buildHuaweiCommands 构建华为平台的批量ping命令（非交互式）
+func (PingTask) buildHuaweiCommands(targetIPs []string, repeat int, timeout time.Duration) []string {
+	var commands []string
+
+	// 为每个IP创建ping命令
+	for _, ip := range targetIPs {
+		command := fmt.Sprintf("ping -c %d -W %d %s", repeat, int(timeout.Seconds()), ip)
+		commands = append(commands, command)
+	}
+
+	return commands
 }
 
 //ping 命令输出示例

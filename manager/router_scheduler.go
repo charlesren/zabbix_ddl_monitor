@@ -148,7 +148,7 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 	// 7. 创建异步执行器
 	scheduler.asyncExecutor = task.NewAsyncExecutor(
 		2,
-		task.WithTimeout(30*time.Second),
+		task.WithSmartTimeout(30*time.Second),
 	)
 	// 可选：启用调试和事件监听
 	//scheduler.connection.EnableDebug()
@@ -232,20 +232,32 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	// 发现匹配的任务
 	var matchedTask task.Task
 	var matchedCmdType task.CommandType
-	for _, cmdType := range supportedCmdTypes {
-		t, err := s.manager.registry.Discover(
-			"ping",
-			s.router.Platform,
-			s.router.Protocol,
-			cmdType,
-		)
-		if err == nil {
-			matchedTask = t
-			matchedCmdType = cmdType
-			break
-		}
+	//当前为pingTask指定cmdType
+	t, err := s.manager.registry.Discover(
+		"ping",
+		s.router.Platform,
+		s.router.Protocol,
+		connection.CommandTypeCommands,
+	)
+	if err == nil {
+		matchedTask = t
+		matchedCmdType = connection.CommandTypeCommands
 	}
-
+	/*
+		for _, cmdType := range supportedCmdTypes {
+			t, err := s.manager.registry.Discover(
+				"ping",
+				s.router.Platform,
+				s.router.Protocol,
+				cmdType,
+			)
+			if err == nil {
+				matchedTask = t
+				matchedCmdType = cmdType
+				break
+			}
+		}
+	*/
 	if matchedTask == nil {
 		ylog.Errorf("scheduler", "no matching task for router=%s (supported=%v)",
 			s.router.IP, supportedCmdTypes)
@@ -276,7 +288,7 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 			"repeat":     5,
 			"timeout":    10 * time.Second,
 		},
-		Ctx: context.Background(),
+		Ctx: s.routerCtx,
 	}
 
 	// 记录开始时间

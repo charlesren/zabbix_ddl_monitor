@@ -222,8 +222,9 @@ func (d *ScrapliDriver) SendCommands(commands []string) (*response.MultiResponse
 // GetPrompt 获取设备提示符
 func (d *ScrapliDriver) GetPrompt() (string, error) {
 	if err := d.ensureConnected(); err != nil {
-		return "", err
+		return "driver connect failed", err
 	}
+	ylog.Debugf("scrapli", "GetPrompt...")
 	return d.driver.GetPrompt()
 }
 
