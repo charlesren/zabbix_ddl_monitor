@@ -73,7 +73,7 @@ func NewAggregator(workers int, bufferSize int, flushInterval time.Duration) *Ag
 // AddHandler 添加结果处理器
 func (a *Aggregator) AddHandler(handler ResultHandler) {
 	a.handlers = append(a.handlers, handler)
-	ylog.Infof("aggregator", "added handler: %T", handler)
+	ylog.Infof("aggregator", "added handler: %T (total handlers: %d)", handler, len(a.handlers))
 }
 
 // Start 启动聚合器
@@ -88,13 +88,15 @@ func (a *Aggregator) Start() {
 	a.wg.Add(1)
 	go a.bufferManager()
 
-	ylog.Infof("aggregator", "started with %d workers, buffer size %d, flush interval %v",
-		a.workers, a.bufferSize, a.flushInterval)
+	ylog.Infof("aggregator", "started with %d workers, buffer size %d, flush interval %v, %d handlers",
+		a.workers, a.bufferSize, a.flushInterval, len(a.handlers))
 }
 
 // Stop 停止聚合器
 func (a *Aggregator) Stop() {
-	ylog.Infof("aggregator", "stopping aggregator")
+	stats := a.GetStats()
+	ylog.Infof("aggregator", "stopping aggregator - total events: %d (success: %d, failed: %d)",
+		stats.TotalEvents, stats.SuccessEvents, stats.FailedEvents)
 
 	// 关闭停止通道
 	close(a.stopChan)
@@ -139,7 +141,8 @@ func (a *Aggregator) SubmitTaskResult(line syncer.Line, taskType TaskType, resul
 		Error:     result.Error,
 		Duration:  duration,
 	}
-	ylog.Debugf("aggregator", "submitting result for %s (success: %t)", line.IP, result.Success)
+	ylog.Debugf("aggregator", "submitting result for %s (line: %s, task: %s, success: %t, duration: %v)",
+		line.IP, line.ID, taskType, result.Success, duration)
 	return a.Submit(event)
 }
 
@@ -182,8 +185,8 @@ func (a *Aggregator) processEvent(workerID int, event ResultEvent) {
 		a.flush()
 	}
 
-	ylog.Debugf("aggregator", "worker %d: processed event for %s (success: %t)",
-		workerID, event.IP, event.Success)
+	ylog.Debugf("aggregator", "worker %d: processed event for %s (line: %s, task: %s, success: %t, duration: %v)",
+		workerID, event.IP, event.LineID, event.TaskType, event.Success, event.Duration)
 }
 
 // bufferManager 缓冲区管理goroutine
@@ -229,20 +232,30 @@ func (a *Aggregator) flush() {
 	a.stats.lastFlush = time.Now()
 	a.stats.Unlock()
 
-	ylog.Debugf("aggregator", "flushed %d events", len(events))
+	successCount := 0
+	for _, event := range events {
+		if event.Success {
+			successCount++
+		}
+	}
+	ylog.Infof("aggregator", "flushed %d events (success: %d, failed: %d)",
+		len(events), successCount, len(events)-successCount)
 }
 
 // handleEvents 处理事件批次
 func (a *Aggregator) handleEvents(events []ResultEvent) {
 	if len(a.handlers) == 0 {
-		ylog.Warnf("aggregator", "no handlers registered, dropping %d events", len(events))
+		ylog.Warnf("aggregator", "no handlers registered, dropping %d events (success: %d, failed: %d)",
+			len(events), countSuccessEvents(events), len(events)-countSuccessEvents(events))
 		return
 	}
 
 	for _, handler := range a.handlers {
-		ylog.Debugf("aggregator", "dispatching %d events to handler %T", len(events), handler)
+		successCount := countSuccessEvents(events)
+		ylog.Debugf("aggregator", "dispatching %d events to handler %T (success: %d, failed: %d)",
+			len(events), handler, successCount, len(events)-successCount)
 		if err := handler.HandleResult(events); err != nil {
-			ylog.Errorf("aggregator", "handler %T failed: %v", handler, err)
+			ylog.Errorf("aggregator", "handler %T failed to process %d events: %v", handler, len(events), err)
 		}
 	}
 }
@@ -285,17 +298,28 @@ type AggregatorStats struct {
 	BufferLength  int       `json:"buffer_length"`
 }
 
+// countSuccessEvents 计算成功事件数量
+func countSuccessEvents(events []ResultEvent) int {
+	count := 0
+	for _, event := range events {
+		if event.Success {
+			count++
+		}
+	}
+	return count
+}
+
 // LogHandler 日志处理器
 type LogHandler struct{}
 
 func (h *LogHandler) HandleResult(events []ResultEvent) error {
 	for _, event := range events {
 		if event.Success {
-			ylog.Infof("result", "✓ %s ping %s success (duration: %v)",
-				event.RouterIP, event.IP, event.Duration)
+			ylog.Infof("result", "✓ %s %s %s success (duration: %v, line: %s)",
+				event.RouterIP, event.TaskType, event.IP, event.Duration, event.LineID)
 		} else {
-			ylog.Warnf("result", "✗ %s ping %s failed: %s (duration: %v)",
-				event.RouterIP, event.IP, event.Error, event.Duration)
+			ylog.Warnf("result", "✗ %s %s %s failed: %s (duration: %v, line: %s)",
+				event.RouterIP, event.TaskType, event.IP, event.Error, event.Duration, event.LineID)
 		}
 	}
 	return nil

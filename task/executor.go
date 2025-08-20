@@ -11,6 +11,10 @@ import (
 	"github.com/scrapli/scrapligo/channel"
 )
 
+const (
+	logModule = "executor"
+)
+
 type (
 	ExecutorFunc func(Task, connection.ProtocolDriver, TaskContext) (Result, error)
 	Middleware   func(ExecutorFunc) ExecutorFunc
@@ -23,61 +27,84 @@ type Executor struct {
 
 // task/executor.go
 func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
-	ylog.Debugf("executor", "executing task %s on %s (%s)", ctx.TaskType, ctx.Platform, ctx.Protocol)
+	ylog.Infof(logModule, "starting task %s on %s (%s) with params: %+v", ctx.TaskType, ctx.Platform, ctx.Protocol, ctx.Params)
+	start := time.Now()
 	if conn == nil {
-		ylog.Errorf("executor", "connection driver is nil for task %s", ctx.TaskType)
+		ylog.Errorf(logModule, "connection driver is nil for task %s on %s", ctx.TaskType, ctx.Platform)
 		return Result{Error: "connection driver is nil"}, fmt.Errorf("connection driver is nil")
 	}
 
 	cmd, err := task.BuildCommand(ctx)
 	if err != nil {
-		ylog.Errorf("executor", "failed to build command for %s: %v", ctx.TaskType, err)
+		ylog.Errorf(logModule, "failed to build command for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
 		return Result{Error: err.Error()}, err
 	}
+	ylog.Debugf(logModule, "built command for %s: type=%s, payload=%T", ctx.TaskType, cmd.Type, cmd.Payload)
 
 	// 类型安全转换
 	var payload interface{}
 	switch v := cmd.Payload.(type) {
 	case []string:
-		ylog.Debugf("executor", "sending commands: %v", v)
+		ylog.Debugf(logModule, "sending %d commands to %s: %v", len(v), ctx.Platform, v)
 		payload = v
 	case []*channel.SendInteractiveEvent:
-		ylog.Debugf("executor", "sending interactive events: %d events", len(v))
+		ylog.Debugf(logModule, "sending %d interactive events to %s", len(v), ctx.Platform)
+		for i, event := range v {
+			ylog.Debugf(logModule, "interactive event %d: channelInput=%s", i, event.ChannelInput)
+		}
 		payload = v
 	default:
-		ylog.Errorf("executor", "unsupported payload type: %T", cmd.Payload)
+		ylog.Errorf(logModule, "unsupported payload type %T for task %s on %s", cmd.Payload, ctx.TaskType, ctx.Platform)
 		return Result{Error: "unsupported payload type"}, nil
 	}
+	ylog.Debugf(logModule, "executing %s command on %s", cmd.Type, ctx.Platform)
 	resp, err := conn.Execute(ctx.Ctx, &connection.ProtocolRequest{
 		CommandType: cmd.Type,
 		Payload:     payload,
 	})
 
 	if err != nil {
-		ylog.Errorf("executor", "execution failed for %s: %v", ctx.TaskType, err)
+		duration := time.Since(start)
+		ylog.Errorf(logModule, "execution failed for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
 		return Result{Error: err.Error()}, err
 	}
 
 	// 统一使用原始数据解析
-	ylog.Debugf("executor", "task %s completed, parsing output", ctx.TaskType)
-	return task.ParseOutput(ctx, resp.RawData)
+	ylog.Debugf(logModule, "task %s completed on %s, parsing %d bytes of output", ctx.TaskType, ctx.Platform, len(resp.RawData))
+	result, err := task.ParseOutput(ctx, resp.RawData)
+	duration := time.Since(start)
+
+	if err != nil {
+		ylog.Errorf(logModule, "failed to parse output for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
+	} else if !result.Success {
+		ylog.Warnf(logModule, "task %s on %s completed with failure after %v: %s", ctx.TaskType, ctx.Platform, duration, result.Error)
+	} else {
+		ylog.Infof(logModule, "task %s on %s completed successfully in %v", ctx.TaskType, ctx.Platform, duration)
+	}
+
+	return result, err
 }
 
 func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Executor {
+	ylog.Debugf(logModule, "creating new executor with %d middlewares", len(middlewares))
 	core := func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
 		if err := task.ValidateParams(ctx.Params); err != nil {
+			ylog.Errorf(logModule, "parameter validation failed for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
 			return Result{Error: err.Error()}, err
 		}
 
 		// 验证连接能力
 		if err := validateCapability(conn, ctx); err != nil {
+			ylog.Errorf(logModule, "capability validation failed for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
 			return Result{Error: err.Error()}, err
 		}
 
 		cmd, err := task.BuildCommand(ctx)
 		if err != nil {
+			ylog.Errorf(logModule, "failed to build command for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
 			return Result{Error: err.Error()}, err
 		}
+		ylog.Debugf(logModule, "built command for %s: type=%s", ctx.TaskType, cmd.Type)
 
 		// 使用标准的ProtocolDriver接口
 		var payload interface{}
@@ -90,26 +117,36 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 			return Result{Error: "unsupported payload type"}, fmt.Errorf("unsupported payload type")
 		}
 
+		ylog.Debugf(logModule, "executing %s command on %s", cmd.Type, ctx.Platform)
 		resp, err := conn.Execute(ctx.Ctx, &connection.ProtocolRequest{
 			CommandType: cmd.Type,
 			Payload:     payload,
 		})
 		if err != nil {
+			ylog.Errorf(logModule, "execution failed for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
 			return Result{Error: err.Error()}, err
 		}
+		ylog.Debugf(logModule, "received %d bytes of response from %s", len(resp.RawData), ctx.Platform)
 
-		return task.ParseOutput(ctx, resp.RawData)
+		result, err := task.ParseOutput(ctx, resp.RawData)
+		if err != nil {
+			ylog.Errorf(logModule, "failed to parse output for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
+		}
+		return result, err
 	}
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		core = middlewares[i](core)
+		ylog.Debugf(logModule, "applied middleware %d", i)
 	}
 
 	return &Executor{core: core, callback: callback}
 }
 
 func (e *Executor) Execute(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
+	ylog.Debugf(logModule, "executing task %s on %s via executor", ctx.TaskType, ctx.Platform)
 	res, err := e.core(task, conn, ctx)
 	if e.callback != nil {
+		ylog.Debugf(logModule, "invoking callback for task %s on %s", ctx.TaskType, ctx.Platform)
 		e.callback(res, err)
 	}
 	return res, err
@@ -210,15 +247,21 @@ func WithMetrics(collector func(taskType string, platform connection.Platform, s
 // task/executor.go
 func validateCapability(driver connection.ProtocolDriver, ctx TaskContext) error {
 	caps := driver.GetCapability()
+	ylog.Debugf(logModule, "validating capabilities for %s on %s: supported platforms=%v, command types=%v",
+		ctx.TaskType, ctx.Platform, caps.PlatformSupport, caps.CommandTypesSupport)
 
 	// 检查平台支持
 	if !slices.Contains(caps.PlatformSupport, ctx.Platform) {
-		return fmt.Errorf("platform %s not supported (supported: %v)", ctx.Platform, caps.PlatformSupport)
+		err := fmt.Errorf("platform %s not supported (supported: %v)", ctx.Platform, caps.PlatformSupport)
+		ylog.Errorf(logModule, "capability validation failed: %v", err)
+		return err
 	}
 
 	// 检查命令类型支持
 	if !caps.SupportsCommandType(ctx.CommandType) {
-		return fmt.Errorf("command type %s not supported", ctx.CommandType)
+		err := fmt.Errorf("command type %s not supported", ctx.CommandType)
+		ylog.Errorf(logModule, "capability validation failed: %v", err)
+		return err
 	}
 
 	return nil

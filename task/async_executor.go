@@ -10,6 +10,10 @@ import (
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
 )
 
+const (
+	asyncExecutorModule = "async_executor"
+)
+
 // AsyncTaskRequest 异步任务请求
 type AsyncTaskRequest struct {
 	Task     Task
@@ -47,16 +51,17 @@ func NewAsyncExecutor(workers int, middlewares ...Middleware) *AsyncExecutor {
 
 // Start 启动异步执行器
 func (e *AsyncExecutor) Start() {
+	ylog.Infof(asyncExecutorModule, "starting async executor with %d workers and buffer size %d", e.workers, cap(e.taskChan))
 	for i := 0; i < e.workers; i++ {
 		e.wg.Add(1)
 		go e.worker(i)
 	}
-	ylog.Infof("async_executor", "started %d workers", e.workers)
+	ylog.Infof(asyncExecutorModule, "started %d workers", e.workers)
 }
 
 // Stop 停止异步执行器
 func (e *AsyncExecutor) Stop() {
-	ylog.Infof("async_executor", "stopping async executor")
+	ylog.Infof(asyncExecutorModule, "stopping async executor with %d queued tasks", len(e.taskChan))
 
 	// 关闭停止通道
 	close(e.stopChan)
@@ -70,13 +75,13 @@ func (e *AsyncExecutor) Stop() {
 	// 关闭任务通道
 	close(e.taskChan)
 
-	ylog.Infof("async_executor", "async executor stopped")
+	ylog.Infof(asyncExecutorModule, "async executor stopped, all workers terminated")
 }
 
 // Submit 提交异步任务
 func (e *AsyncExecutor) Submit(task Task, conn connection.ProtocolDriver, ctx TaskContext, callback func(Result, error)) error {
 	if conn == nil {
-		ylog.Errorf("async_executor", "connection driver is nil for task %s", ctx.TaskType)
+		ylog.Errorf(asyncExecutorModule, "connection driver is nil for task %s on %s", ctx.TaskType, ctx.Platform)
 		return fmt.Errorf("connection driver is nil")
 	}
 
@@ -87,10 +92,13 @@ func (e *AsyncExecutor) Submit(task Task, conn connection.ProtocolDriver, ctx Ta
 		Context:  ctx,
 		Callback: callback,
 	}:
+		ylog.Debugf(asyncExecutorModule, "submitted task %s for %s to queue (queue length: %d)", ctx.TaskType, ctx.Platform, len(e.taskChan))
 		return nil
 	case <-e.ctx.Done():
+		ylog.Warnf(asyncExecutorModule, "failed to submit task %s for %s: executor context cancelled", ctx.TaskType, ctx.Platform)
 		return e.ctx.Err()
 	default:
+		ylog.Warnf(asyncExecutorModule, "failed to submit task %s for %s: queue full (capacity: %d, current: %d)", ctx.TaskType, ctx.Platform, cap(e.taskChan), len(e.taskChan))
 		return ErrQueueFull
 	}
 }
@@ -98,7 +106,7 @@ func (e *AsyncExecutor) Submit(task Task, conn connection.ProtocolDriver, ctx Ta
 // SubmitWithTimeout 提交异步任务，带超时
 func (e *AsyncExecutor) SubmitWithTimeout(task Task, conn connection.ProtocolDriver, ctx TaskContext, callback func(Result, error), timeout time.Duration) error {
 	if conn == nil {
-		ylog.Errorf("async_executor", "connection driver is nil for task %s", ctx.TaskType)
+		ylog.Errorf(asyncExecutorModule, "connection driver is nil for task %s on %s", ctx.TaskType, ctx.Platform)
 		return fmt.Errorf("connection driver is nil")
 	}
 	select {
@@ -108,10 +116,13 @@ func (e *AsyncExecutor) SubmitWithTimeout(task Task, conn connection.ProtocolDri
 		Context:  ctx,
 		Callback: callback,
 	}:
+		ylog.Debugf(asyncExecutorModule, "submitted task %s for %s with timeout %v (queue length: %d)", ctx.TaskType, ctx.Platform, timeout, len(e.taskChan))
 		return nil
 	case <-time.After(timeout):
+		ylog.Warnf(asyncExecutorModule, "submit timeout for task %s for %s after %v (queue length: %d)", ctx.TaskType, ctx.Platform, timeout, len(e.taskChan))
 		return ErrSubmitTimeout
 	case <-e.ctx.Done():
+		ylog.Warnf(asyncExecutorModule, "failed to submit task %s for %s: executor context cancelled", ctx.TaskType, ctx.Platform)
 		return e.ctx.Err()
 	}
 }
@@ -120,20 +131,22 @@ func (e *AsyncExecutor) SubmitWithTimeout(task Task, conn connection.ProtocolDri
 func (e *AsyncExecutor) worker(id int) {
 	defer e.wg.Done()
 
-	ylog.Debugf("async_executor", "worker %d started", id)
+	ylog.Infof(asyncExecutorModule, "worker %d started", id)
 
 	for {
 		select {
 		case req, ok := <-e.taskChan:
 			if !ok {
-				ylog.Debugf("async_executor", "worker %d: task channel closed", id)
+				ylog.Debugf(asyncExecutorModule, "worker %d: task channel closed", id)
 				return
 			}
 
+			ylog.Debugf(asyncExecutorModule, "worker %d received task %s for %s (remaining queue: %d)",
+				id, req.Context.TaskType, req.Context.Platform, len(e.taskChan))
 			e.processTask(id, req)
 
 		case <-e.stopChan:
-			ylog.Debugf("async_executor", "worker %d: received stop signal", id)
+			ylog.Debugf(asyncExecutorModule, "worker %d: received stop signal", id)
 			return
 		}
 	}
@@ -141,18 +154,19 @@ func (e *AsyncExecutor) worker(id int) {
 
 // processTask 处理单个任务
 func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
-	ylog.Debugf("async_executor", "task context: platform=%s, protocol=%s",
-		req.Context.Platform, req.Context.Protocol)
+	ylog.Debugf(asyncExecutorModule, "worker %d task context: platform=%s, protocol=%s, taskType=%s",
+		workerID, req.Context.Platform, req.Context.Protocol, req.Context.TaskType)
 	start := time.Now()
-	ylog.Debugf("async_executor", "worker %d processing %s task for %s",
+	ylog.Infof(asyncExecutorModule, "worker %d processing %s task for %s",
 		workerID, req.Context.TaskType, req.Context.Platform)
 	// 为任务添加超时上下文
 	taskCtx := req.Context
 	if taskCtx.Ctx == nil {
 		taskCtx.Ctx = e.ctx
+		ylog.Debugf(asyncExecutorModule, "worker %d: using executor context for task %s", workerID, req.Context.TaskType)
 	}
 
-	ylog.Debugf("async_executor", "worker %d: executing task %s", workerID, req.Context.TaskType)
+	ylog.Debugf(asyncExecutorModule, "worker %d: executing task %s via executor", workerID, req.Context.TaskType)
 
 	// 执行任务
 	result, err := e.executor.Execute(req.Task, req.Conn, taskCtx)
@@ -161,14 +175,14 @@ func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 
 	// 记录执行结果
 	if err != nil {
-		ylog.Errorf("async_executor", "worker %d task failed: %s (duration: %v, error: %v)",
-			workerID, req.Context.TaskType, duration, err)
+		ylog.Errorf(asyncExecutorModule, "worker %d task %s for %s failed after %v: %v",
+			workerID, req.Context.TaskType, req.Context.Platform, duration, err)
 	} else if !result.Success {
-		ylog.Warnf("async_executor", "worker %d task completed with failure: %s (duration: %v, error: %s)",
-			workerID, req.Context.TaskType, duration, result.Error)
+		ylog.Warnf(asyncExecutorModule, "worker %d task %s for %s completed with failure after %v: %s",
+			workerID, req.Context.TaskType, req.Context.Platform, duration, result.Error)
 	} else {
-		ylog.Debugf("async_executor", "worker %d task success: %s (duration: %v)",
-			workerID, req.Context.TaskType, duration)
+		ylog.Infof(asyncExecutorModule, "worker %d task %s for %s completed successfully in %v",
+			workerID, req.Context.TaskType, req.Context.Platform, duration)
 	}
 
 	// 调用回调函数
@@ -176,11 +190,14 @@ func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					ylog.Errorf("async_executor", "worker %d callback panic: %v", workerID, r)
+					ylog.Errorf(asyncExecutorModule, "worker %d callback panic for task %s: %v", workerID, req.Context.TaskType, r)
 				}
 			}()
+			ylog.Debugf(asyncExecutorModule, "worker %d invoking callback for task %s", workerID, req.Context.TaskType)
 			req.Callback(result, err)
 		}()
+	} else {
+		ylog.Debugf(asyncExecutorModule, "worker %d task %s completed with no callback", workerID, req.Context.TaskType)
 	}
 }
 

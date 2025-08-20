@@ -5,6 +5,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/charlesren/ylog"
 	"github.com/charlesren/zapix/sender"
 )
 
@@ -38,6 +39,10 @@ func NewZabbixSenderHandler(config ZabbixSenderConfig) (*ZabbixSenderHandler, er
 	config.SetDefaults()
 	serverAddr := net.JoinHostPort(config.ProxyIP, config.ProxyPort)
 
+	ylog.Infof("zabbix_sender", "creating zabbix sender handler for %s with pool size %d", serverAddr, config.PoolSize)
+	ylog.Debugf("zabbix_sender", "connection timeout: %v, read timeout: %v, write timeout: %v",
+		config.ConnectionTimeout, config.ReadTimeout, config.WriteTimeout)
+
 	zabbixSender := sender.NewSender(
 		serverAddr,
 		config.ConnectionTimeout,
@@ -46,19 +51,30 @@ func NewZabbixSenderHandler(config ZabbixSenderConfig) (*ZabbixSenderHandler, er
 		config.PoolSize,
 	)
 
+	ylog.Infof("zabbix_sender", "zabbix sender handler created successfully for %s", serverAddr)
 	return &ZabbixSenderHandler{
 		sender: zabbixSender,
 	}, nil
 }
 
 func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
+	if len(events) == 0 {
+		ylog.Warnf("zabbix_sender", "no events to send to zabbix")
+		return nil
+	}
+
+	ylog.Infof("zabbix_sender", "processing %d events for zabbix submission", len(events))
+
 	metrics := make([]*sender.Metric, 0, len(events))
+	validEvents := 0
 	for _, event := range events {
 		var value string
 		if v, ok := event.Data["value"].(string); ok {
 			value = v
+			validEvents++
 		} else {
 			value = ""
+			ylog.Warnf("zabbix_sender", "event for host %s has no valid value field", event.IP)
 		}
 		metrics = append(metrics, &sender.Metric{
 			Host:  event.IP,
@@ -68,9 +84,17 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 		})
 	}
 
+	ylog.Debugf("zabbix_sender", "prepared %d metrics (%d valid events) for zabbix", len(metrics), validEvents)
+
+	start := time.Now()
 	_, _, err := h.sender.SendMetrics(metrics)
+	duration := time.Since(start)
+
 	if err != nil {
+		ylog.Errorf("zabbix_sender", "failed to send %d metrics to zabbix after %v: %v", len(metrics), duration, err)
 		return fmt.Errorf("zabbix send failed: %w (events=%d)", err, len(events))
 	}
+
+	ylog.Infof("zabbix_sender", "successfully sent %d metrics to zabbix in %v", len(metrics), duration)
 	return nil
 }
