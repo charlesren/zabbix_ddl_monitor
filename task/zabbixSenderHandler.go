@@ -90,16 +90,44 @@ func (h *ZabbixSenderHandler) TestConnection() error {
 		Data:    []*sender.Metric{},
 	}
 
+	// 记录连接测试前的连接池状态
+	stats := h.GetStats()
+	testActive, _ := stats["active_connections"].(int)
+	testIdle, _ := stats["idle_connections"].(int)
+	testTotal, _ := stats["total_connections"].(int)
+	ylog.Debugf("zabbix_sender", "connection test starting for %s, pool stats: active=%d, idle=%d, total=%d",
+		h.serverAddr, testActive, testIdle, testTotal)
+
 	start := time.Now()
 	_, err := h.sender.Send(testPacket)
 	duration := time.Since(start)
 
 	if err != nil {
 		ylog.Errorf("zabbix_sender", "connection test failed for %s after %v: %v", h.serverAddr, duration, err)
+
+		// 记录失败时的详细连接池状态
+		failedStats := h.GetStats()
+		failedActive, _ := failedStats["active_connections"].(int)
+		failedIdle, _ := failedStats["idle_connections"].(int)
+		failedTotal, _ := failedStats["total_connections"].(int)
+		failedUtilization, _ := failedStats["utilization_percent"].(string)
+		ylog.Debugf("zabbix_sender", "connection test failed details - pool: active=%d, idle=%d, total=%d, utilization=%s",
+			failedActive, failedIdle, failedTotal, failedUtilization)
+
 		return fmt.Errorf("connection test failed: %w", err)
 	}
 
 	ylog.Infof("zabbix_sender", "connection test successful for %s in %v", h.serverAddr, duration)
+
+	// 记录成功时的连接池状态
+	successStats := h.GetStats()
+	successActive, _ := successStats["active_connections"].(int)
+	successIdle, _ := successStats["idle_connections"].(int)
+	successTotal, _ := successStats["total_connections"].(int)
+	successUtilization, _ := successStats["utilization_percent"].(string)
+	ylog.Debugf("zabbix_sender", "connection test successful - pool stats: active=%d, idle=%d, total=%d, utilization=%s",
+		successActive, successIdle, successTotal, successUtilization)
+
 	return nil
 }
 
@@ -136,6 +164,15 @@ func (h *ZabbixSenderHandler) StartHealthMonitor() {
 func (h *ZabbixSenderHandler) Close() error {
 	ylog.Infof("zabbix_sender", "closing zabbix sender handler for %s", h.serverAddr)
 
+	// 记录关闭前的连接池状态
+	stats := h.GetStats()
+	closeActive, _ := stats["active_connections"].(int)
+	closeIdle, _ := stats["idle_connections"].(int)
+	closeTotal, _ := stats["total_connections"].(int)
+	closeUtilization, _ := stats["utilization_percent"].(string)
+	ylog.Debugf("zabbix_sender", "closing handler - final pool stats: active=%d, idle=%d, total=%d, utilization=%s",
+		closeActive, closeIdle, closeTotal, closeUtilization)
+
 	// Stop health monitor
 	close(h.stopChan)
 
@@ -155,6 +192,16 @@ func (h *ZabbixSenderHandler) Close() error {
 func (h *ZabbixSenderHandler) GetStats() map[string]interface{} {
 	stats := h.sender.GetPoolStats()
 
+	// 计算连接池使用率
+	totalConnections, _ := stats["total_connections"].(int)
+	activeConnections, _ := stats["active_connections"].(int)
+	idleConnections, _ := stats["idle_connections"].(int)
+
+	var utilization float64
+	if totalConnections > 0 {
+		utilization = float64(activeConnections) / float64(totalConnections) * 100
+	}
+
 	// Add additional information to the stats
 	stats["server_address"] = h.serverAddr
 	stats["timeouts"] = map[string]time.Duration{
@@ -162,6 +209,12 @@ func (h *ZabbixSenderHandler) GetStats() map[string]interface{} {
 		"read":       h.config.ReadTimeout,
 		"write":      h.config.WriteTimeout,
 	}
+	stats["utilization_percent"] = fmt.Sprintf("%.1f%%", utilization)
+	stats["config_pool_size"] = h.config.PoolSize
+	stats["handler_status"] = "running" // 简单的状态标识
+
+	ylog.Debugf("zabbix_sender", "connection pool stats: active=%d, idle=%d, total=%d, utilization=%s",
+		activeConnections, idleConnections, totalConnections, stats["utilization_percent"])
 
 	return stats
 }
@@ -169,6 +222,14 @@ func (h *ZabbixSenderHandler) GetStats() map[string]interface{} {
 // WarmupPool pre-warms the connection pool by establishing initial connections
 func (h *ZabbixSenderHandler) WarmupPool() error {
 	ylog.Infof("zabbix_sender", "pre-warming connection pool for %s with %d connections", h.serverAddr, h.config.PoolSize)
+
+	// 记录预暖前的连接池状态
+	initialStats := h.GetStats()
+	initialActive, _ := initialStats["active_connections"].(int)
+	initialIdle, _ := initialStats["idle_connections"].(int)
+	initialTotal, _ := initialStats["total_connections"].(int)
+	ylog.Debugf("zabbix_sender", "pre-warm starting - initial pool stats: active=%d, idle=%d, total=%d",
+		initialActive, initialIdle, initialTotal)
 
 	connections := make([]net.Conn, 0, h.config.PoolSize)
 	defer func() {
@@ -178,6 +239,15 @@ func (h *ZabbixSenderHandler) WarmupPool() error {
 				conn.Close()
 			}
 		}
+
+		// 记录预暖完成后的连接池状态
+		finalStats := h.GetStats()
+		finalActive, _ := finalStats["active_connections"].(int)
+		finalIdle, _ := finalStats["idle_connections"].(int)
+		finalTotal, _ := finalStats["total_connections"].(int)
+		finalUtilization, _ := finalStats["utilization_percent"].(string)
+		ylog.Debugf("zabbix_sender", "pre-warm completed - final pool stats: active=%d, idle=%d, total=%d, utilization=%s",
+			finalActive, finalIdle, finalTotal, finalUtilization)
 	}()
 
 	for i := 0; i < h.config.PoolSize; i++ {
@@ -240,15 +310,50 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 
 	ylog.Debugf("zabbix_sender", "prepared %d metrics (%d valid events) for zabbix", len(metrics), validEvents)
 
+	// 详细记录metrics内容
+	if len(metrics) > 0 {
+		ylog.Debugf("zabbix_sender", "metrics details:")
+		for i, metric := range metrics {
+			ylog.Debugf("zabbix_sender", "  metric[%d]: host=%s, key=%s, value=%s, clock=%d",
+				i, metric.Host, metric.Key, metric.Value, metric.Clock)
+		}
+	}
+
 	start := time.Now()
+
+	// 记录发送前的连接池状态
+	stats := h.GetStats()
+	activeConnections, _ := stats["active_connections"].(int)
+	idleConnections, _ := stats["idle_connections"].(int)
+	totalConnections, _ := stats["total_connections"].(int)
+	ylog.Debugf("zabbix_sender", "connection pool stats before send: active=%d, idle=%d, total=%d",
+		activeConnections, idleConnections, totalConnections)
+
 	_, _, err := h.sender.SendMetrics(metrics)
 	duration := time.Since(start)
 
 	if err != nil {
 		ylog.Errorf("zabbix_sender", "failed to send %d metrics to zabbix after %v: %v", len(metrics), duration, err)
-		return fmt.Errorf("zabbix send failed: %w (events=%d)", err, len(events))
+
+		// 记录详细的错误信息和当前状态
+		currentStats := h.GetStats()
+		currentActive, _ := currentStats["active_connections"].(int)
+		currentIdle, _ := currentStats["idle_connections"].(int)
+		currentTotal, _ := currentStats["total_connections"].(int)
+		ylog.Debugf("zabbix_sender", "error details - connection pool: active=%d, idle=%d, total=%d, server=%s",
+			currentActive, currentIdle, currentTotal, h.serverAddr)
+
+		return fmt.Errorf("zabbix send failed: %w (events=%d, server=%s)", err, len(events), h.serverAddr)
 	}
 
 	ylog.Infof("zabbix_sender", "successfully sent %d metrics to zabbix in %v", len(metrics), duration)
+
+	// 记录发送后的连接池状态
+	postStats := h.GetStats()
+	postActive, _ := postStats["active_connections"].(int)
+	postIdle, _ := postStats["idle_connections"].(int)
+	postTotal, _ := postStats["total_connections"].(int)
+	ylog.Debugf("zabbix_sender", "connection pool stats after send: active=%d, idle=%d, total=%d",
+		postActive, postIdle, postTotal)
 	return nil
 }

@@ -167,6 +167,8 @@ func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 	}
 
 	ylog.Debugf(asyncExecutorModule, "worker %d: executing task %s via executor", workerID, req.Context.TaskType)
+	ylog.Debugf(asyncExecutorModule, "worker %d task details: platform=%s, protocol=%s, params=%+v",
+		workerID, req.Context.Platform, req.Context.Protocol, req.Context.Params)
 
 	// 执行任务
 	result, err := e.executor.Execute(req.Task, req.Conn, taskCtx)
@@ -177,12 +179,18 @@ func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 	if err != nil {
 		ylog.Errorf(asyncExecutorModule, "worker %d task %s for %s failed after %v: %v",
 			workerID, req.Context.TaskType, req.Context.Platform, duration, err)
+		ylog.Debugf(asyncExecutorModule, "worker %d task failure details: error=%v, result=%+v",
+			workerID, err, result)
 	} else if !result.Success {
 		ylog.Warnf(asyncExecutorModule, "worker %d task %s for %s completed with failure after %v: %s",
 			workerID, req.Context.TaskType, req.Context.Platform, duration, result.Error)
+		ylog.Debugf(asyncExecutorModule, "worker %d task failure result: data=%+v",
+			workerID, result.Data)
 	} else {
 		ylog.Infof(asyncExecutorModule, "worker %d task %s for %s completed successfully in %v",
 			workerID, req.Context.TaskType, req.Context.Platform, duration)
+		ylog.Debugf(asyncExecutorModule, "worker %d task success result: data=%+v",
+			workerID, result.Data)
 	}
 
 	// 调用回调函数

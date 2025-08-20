@@ -41,6 +41,17 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	}
 	ylog.Debugf(logModule, "built command for %s: type=%s, payload=%T", ctx.TaskType, cmd.Type, cmd.Payload)
 
+	// 详细记录命令内容
+	switch v := cmd.Payload.(type) {
+	case []string:
+		ylog.Debugf(logModule, "sending commands to %s: %v", ctx.Platform, v)
+	case []*channel.SendInteractiveEvent:
+		for i, event := range v {
+			ylog.Debugf(logModule, "interactive event %d to %s: input=%s, response=%s",
+				i, ctx.Platform, event.ChannelInput, event.ChannelResponse)
+		}
+	}
+
 	// 类型安全转换
 	var payload interface{}
 	switch v := cmd.Payload.(type) {
@@ -58,6 +69,7 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 		return Result{Error: "unsupported payload type"}, nil
 	}
 	ylog.Debugf(logModule, "executing %s command on %s", cmd.Type, ctx.Platform)
+	ylog.Debugf(logModule, "executing %s command on %s with payload: %+v", cmd.Type, ctx.Platform, payload)
 	resp, err := conn.Execute(ctx.Ctx, &connection.ProtocolRequest{
 		CommandType: cmd.Type,
 		Payload:     payload,
@@ -70,7 +82,16 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	}
 
 	// 统一使用原始数据解析
-	ylog.Debugf(logModule, "task %s completed on %s, parsing %d bytes of output", ctx.TaskType, ctx.Platform, len(resp.RawData))
+	ylog.Debugf(logModule, "task %s completed on %s, received %d bytes of raw output", ctx.TaskType, ctx.Platform, len(resp.RawData))
+
+	// 记录原始输出内容（截断过长的输出）
+	if len(resp.RawData) > 0 {
+		outputPreview := string(resp.RawData)
+		if len(outputPreview) > 500 {
+			outputPreview = outputPreview[:500] + "...[truncated]"
+		}
+		ylog.Debugf(logModule, "raw output from %s: %s", ctx.Platform, outputPreview)
+	}
 	result, err := task.ParseOutput(ctx, resp.RawData)
 	duration := time.Since(start)
 
@@ -117,7 +138,7 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 			return Result{Error: "unsupported payload type"}, fmt.Errorf("unsupported payload type")
 		}
 
-		ylog.Debugf(logModule, "executing %s command on %s", cmd.Type, ctx.Platform)
+		ylog.Debugf(logModule, "executing %s command on %s with payload: %+v", cmd.Type, ctx.Platform, payload)
 		resp, err := conn.Execute(ctx.Ctx, &connection.ProtocolRequest{
 			CommandType: cmd.Type,
 			Payload:     payload,
@@ -127,6 +148,15 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 			return Result{Error: err.Error()}, err
 		}
 		ylog.Debugf(logModule, "received %d bytes of response from %s", len(resp.RawData), ctx.Platform)
+
+		// 记录响应内容详情
+		if len(resp.RawData) > 0 {
+			outputPreview := string(resp.RawData)
+			if len(outputPreview) > 500 {
+				outputPreview = outputPreview[:500] + "...[truncated]"
+			}
+			ylog.Debugf(logModule, "response content from %s: %s", ctx.Platform, outputPreview)
+		}
 
 		result, err := task.ParseOutput(ctx, resp.RawData)
 		if err != nil {
