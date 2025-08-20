@@ -4,8 +4,8 @@ github.com/charlesren/userconfig v0.1.0 h1:IN9g4siUJNik023IoA6hiVVBPAILZf8V+6y+A
 github.com/charlesren/userconfig v0.1.0/go.mod h1:0q7exumpM7H+Ffi9NxezAUZ9CYD6oemYQIv3COYoFP0=
 github.com/charlesren/ylog v0.1.0 h1:QnkBAU4YiU/9ULTGnTHMj7KFzTEceLWSvoWYNczKV2k=
 github.com/charlesren/ylog v0.1.0/go.mod h1:PH0W41IeY9QwgrbrnEIcwQOS1CrhI5xiQNseGiX9Mo0=
-github.com/charlesren/zapix v0.1.1 h1:YWFTmuwdyd9iguoSQLYFyuYDoIoHB564Bexp94PBLVg=
-github.com/charlesren/zapix v0.1.1/go.mod h1:BIXZuGwDRpCUWkql00xwQ1XoNkbb9lvVdRtilKvav+U=
+github.com/charlesren/zapix v0.1.2 h1:vvw9gRRBMBL7rlf7ieLHvIXywm2tUs/qHI6y+B3UQng=
+github.com/charlesren/zapix v0.1.2/go.mod h1:BIXZuGwDRpCUWkql00xwQ1XoNkbb9lvVdRtilKvav+U=
 github.com/cloudflare/circl v1.6.1 h1:zqIqSPIndyBh1bjLVVDHMPpVKqp8Su/V+6MeDzzQBQ0=
 github.com/cloudflare/circl v1.6.1/go.mod h1:uddAzsPgqdMAYatqJ0lsjX1oECcQLIlRpzZh3pJrofs=
 github.com/creack/pty v1.1.23 h1:4M6+isWdcStXEf15G/RbrMPOQj1dZ7HPZCGwE4kOeP0=

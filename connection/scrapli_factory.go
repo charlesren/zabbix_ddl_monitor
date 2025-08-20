@@ -12,7 +12,7 @@ import (
 // connection/scrapli_factory.go
 type ScrapliFactory struct{}
 
-func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error) {
+func (f *ScrapliFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 	ylog.Debugf("scrapli", "creating driver with config: %+v", config)
 
 	// 1. 检查platform字段存在性
@@ -40,12 +40,12 @@ func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error)
 		return nil, fmt.Errorf("platform cannot be empty")
 	}
 	ylog.Debugf("scrapli", "platformOS: %s", platformOS)
-	ylog.Debugf("scrapli", "ip: %s", config.IP)
+	ylog.Debugf("scrapli", "ip: %s", config.Host)
 	ylog.Debugf("scrapli", "username: %s", config.Username)
 	ylog.Debugf("scrapli", "password: %s", config.Password)
 	p, err := platform.NewPlatform(
 		platformOS,
-		config.IP,
+		config.Host,
 		options.WithAuthNoStrictKey(),
 		options.WithAuthUsername(config.Username),
 		options.WithAuthPassword(config.Password),
@@ -68,7 +68,7 @@ func (f *ScrapliFactory) Create(config ConnectionConfig) (ProtocolDriver, error)
 	return &ScrapliDriver{
 		driver:  driver,
 		channel: driver.Channel,
-		host:    config.IP,
+		host:    config.Host,
 	}, nil
 
 }

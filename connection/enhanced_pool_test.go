@@ -21,7 +21,7 @@ func TestEnhancedConnectionPool_BasicOperations(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	t.Run("should register factories", func(t *testing.T) {
@@ -34,7 +34,7 @@ func TestEnhancedConnectionPool_BasicOperations(t *testing.T) {
 	t.Run("should get and release connection", func(t *testing.T) {
 		// Mock factory for testing
 		mockFactory := &MockProtocolFactory{
-			CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+			CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 				return &MockProtocolDriver{
 					ProtocolTypeFunc: func() Protocol { return ProtocolSSH },
 					CloseFunc:        func() error { return nil },
@@ -78,12 +78,12 @@ func TestEnhancedConnectionPool_WarmUp(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	// Mock factory
 	mockFactory := &MockProtocolFactory{
-		CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+		CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
@@ -124,12 +124,12 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	var healthCheckCount int32
 	mockFactory := &MockProtocolFactory{
-		CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+		CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
@@ -173,14 +173,14 @@ func TestEnhancedConnectionPool_Metrics(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	// Enable debug mode
 	pool.EnableDebug()
 
 	mockFactory := &MockProtocolFactory{
-		CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+		CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
@@ -307,11 +307,11 @@ func TestEnhancedConnectionPool_Concurrency(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
-		CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+		CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			// Simulate some creation delay
 			time.Sleep(10 * time.Millisecond)
 			return &MockProtocolDriver{
@@ -397,12 +397,12 @@ func TestEnhancedConnectionPool_ErrorHandling(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	t.Run("should handle factory errors", func(t *testing.T) {
 		failingFactory := &MockProtocolFactory{
-			CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+			CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 				return nil, assert.AnError
 			},
 		}
@@ -430,7 +430,7 @@ func TestEnhancedConnectionPool_ErrorHandling(t *testing.T) {
 
 		require.NoError(t, err)
 
-		shutdownPool := NewEnhancedConnectionPool(*shutdownConfig)
+		shutdownPool := NewEnhancedConnectionPool(shutdownConfig)
 
 		// Close the pool
 		closeErr := shutdownPool.Close()
@@ -455,11 +455,11 @@ func TestEnhancedConnectionPool_ConnectionLifecycle(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
-		CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+		CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
@@ -505,11 +505,11 @@ func TestEnhancedConnectionPool_Events(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
-		CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+		CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
@@ -559,7 +559,7 @@ func TestMonitoredDriver(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	mockDriver := &MockProtocolDriver{
@@ -631,7 +631,7 @@ func TestHealthChecker(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	t.Run("should detect healthy connections", func(t *testing.T) {
@@ -684,11 +684,11 @@ func BenchmarkEnhancedConnectionPool_GetRelease(b *testing.B) {
 
 	require.NoError(b, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
-		CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+		CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
@@ -735,11 +735,11 @@ func BenchmarkEnhancedConnectionPool_ConcurrentAccess(b *testing.B) {
 
 	require.NoError(b, err)
 
-	pool := NewEnhancedConnectionPool(*config)
+	pool := NewEnhancedConnectionPool(config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
-		CreateFunc: func(config ConnectionConfig) (ProtocolDriver, error) {
+		CreateFunc: func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			return &MockProtocolDriver{
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },

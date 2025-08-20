@@ -30,7 +30,7 @@ type RouterScheduler struct {
 	manager        *Manager
 	router         *syncer.Router
 	lines          []syncer.Line
-	connection     *connection.EnhancedConnectionPool
+	connection     connection.ConnectionPoolInterface
 	connCapability *connection.ProtocolCapability //预加载的连接能力信息
 	capabilityMu   sync.RWMutex                   // 能力信息的读写锁
 	queues         map[time.Duration]*IntervalTaskQueue
@@ -95,32 +95,13 @@ func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manag
 	config, err := connection.NewConfigBuilder().
 		WithBasicAuth(router.IP, router.Username, router.Password).
 		WithProtocol(router.Protocol, router.Platform).
-		WithTimeouts(
-			30*time.Second, // ConnectTimeout
-			30*time.Second, // ReadTimeout
-			10*time.Second, // WriteTimeout
-			5*time.Minute,  // IdleTimeout
-		).
-		WithRetryPolicy(
-			3,             // MaxRetries
-			1*time.Second, // RetryInterval
-			2.0,           // BackoffFactor
-		).
-		WithConnectionPool(
-			10,             // MaxConnections
-			2,              // MinConnections
-			10*time.Minute, // MaxIdleTime
-			30*time.Second, // HealthCheckTime
-		).
+		WithMetadata("platform", router.Platform).
+		WithMetadata("protocol", router.Protocol).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build connection config: %w", err)
 	}
 
-	// 2. 设置特定端口（覆盖默认值22）
-	config.Port = 22
-
-	// 3. 初始化连接池
 	pool := connection.NewEnhancedConnectionPool(config)
 
 	// 4. 创建调度器实例

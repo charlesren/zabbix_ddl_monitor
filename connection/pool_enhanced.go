@@ -419,8 +419,7 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 
 // createConnection 创建新连接
 func (p *EnhancedConnectionPool) createConnection(pool *EnhancedDriverPool) (*EnhancedPooledConnection, error) {
-	legacyConfig := p.config.ToLegacyConfig()
-	driver, err := pool.factory.Create(legacyConfig)
+	driver, err := pool.factory.Create(p.config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection: %w", err)
 	}

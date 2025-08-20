@@ -8,7 +8,7 @@ import (
 
 type SSHFactory struct{}
 
-func (f *SSHFactory) Create(config ConnectionConfig) (ProtocolDriver, error) {
+func (f *SSHFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 	// 设置默认值
 	// 创建临时副本避免修改原始配置
 	configCopy := config
@@ -22,12 +22,12 @@ func (f *SSHFactory) Create(config ConnectionConfig) (ProtocolDriver, error) {
 	}
 
 	// 单步建立SSH会话
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", config.IP, config.Port),
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", config.Host, config.Port),
 		&ssh.ClientConfig{
 			User:            config.Username,
 			Auth:            []ssh.AuthMethod{ssh.Password(config.Password)},
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-			Timeout:         config.Timeout,
+			Timeout:         config.ConnectTimeout,
 		})
 	if err != nil {
 		return nil, fmt.Errorf("SSH连接失败: %v", err)

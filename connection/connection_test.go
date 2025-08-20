@@ -50,7 +50,7 @@ func TestConnectionPool_GetRelease(t *testing.T) {
 	pool.RegisterFactory("test", mockFactory)
 
 	t.Run("should get and release connection", func(t *testing.T) {
-		mockFactory.CreateFunc = func(config ConnectionConfig) (ProtocolDriver, error) {
+		mockFactory.CreateFunc = func(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 			return mockDriver, nil
 		}
 		mockDriver.ProtocolTypeFunc = func() Protocol { return "test" }

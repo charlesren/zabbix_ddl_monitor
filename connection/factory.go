@@ -1,6 +1,6 @@
 package connection
 
 type ProtocolFactory interface {
-	Create(config ConnectionConfig) (ProtocolDriver, error)
+	Create(config EnhancedConnectionConfig) (ProtocolDriver, error)
 	HealthCheck(driver ProtocolDriver) bool
 }

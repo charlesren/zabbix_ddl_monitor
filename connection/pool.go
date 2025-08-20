@@ -306,13 +306,13 @@ func (p *ConnectionPool) activateConnection(conn *pooledConnection) ProtocolDriv
 }
 
 func (p *ConnectionPool) createConnection(pool *DriverPool, proto Protocol) (*pooledConnection, error) {
-	driver, err := pool.factory.Create(p.config)
-	if err != nil {
-		return nil, err
-	}
+	//	driver, err := pool.factory.Create(p.config)
+	//if err != nil {
+	//return nil, err
+	//}
 
 	return &pooledConnection{
-		driver:    driver,
+		//		driver:    driver,
 		createdAt: time.Now(),
 		lastUsed:  time.Now(),
 		valid:     true,

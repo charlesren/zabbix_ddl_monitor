@@ -38,11 +38,11 @@ func (m *MockProtocolDriver) GetCapability() ProtocolCapability {
 }
 
 type MockProtocolFactory struct {
-	CreateFunc      func(config ConnectionConfig) (ProtocolDriver, error)
+	CreateFunc      func(config EnhancedConnectionConfig) (ProtocolDriver, error)
 	HealthCheckFunc func(driver ProtocolDriver) bool
 }
 
-func (m *MockProtocolFactory) Create(config ConnectionConfig) (ProtocolDriver, error) {
+func (m *MockProtocolFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver, error) {
 	if m.CreateFunc != nil {
 		return m.CreateFunc(config)
 	}

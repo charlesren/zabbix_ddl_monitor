@@ -119,15 +119,10 @@ func (d *ScrapliDriver) SupportedPlatforms() []string {
 }
 
 // NewScrapliDriver 创建驱动实例
+// 已弃用：请使用工厂模式（ScrapliFactory）替代直接构造函数
+// 该函数将在未来版本中移除，推荐使用 connection.NewScrapliFactory().Create(config)
 func NewScrapliDriver(platformOS, host, username, password string) *ScrapliDriver {
-	return &ScrapliDriver{
-		platform:   platformOS,
-		host:       host,
-		username:   username,
-		password:   password,
-		timeout:    30 * time.Second, // 默认超时时间
-		maxRetries: 3,                // 默认重试次数
-	}
+	panic("NewScrapliDriver is deprecated, use factory pattern instead")
 }
 
 func (d *ScrapliDriver) WithContext(ctx context.Context) *ScrapliDriver {

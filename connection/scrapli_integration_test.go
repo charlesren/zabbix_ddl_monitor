@@ -13,8 +13,15 @@ import (
 func TestScrapliDriver_RealDevice(t *testing.T) {
 	t.Skip("需要配置真实设备进行测试")
 
-	driver := NewScrapliDriver("cisco_iosxe", "192.168.1.1", "admin", "password")
-	err := driver.Connect()
+	// 使用工厂模式创建驱动实例
+	factory := &ScrapliFactory{}
+	config := ConnectionConfig{
+		IP:       "192.168.1.1",
+		Username: "admin",
+		Password: "password",
+		Metadata: map[string]interface{}{"platform": "cisco_iosxe"},
+	}
+	driver, err := factory.Create(config)
 	require.NoError(t, err)
 	defer driver.Close()
 
