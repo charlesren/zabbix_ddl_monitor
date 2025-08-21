@@ -31,11 +31,40 @@ func (a *CiscoIOSXEAdapter) ConvertOutput(raw string) map[string]interface{} {
 		if strings.Contains(raw, "100 percent") {
 			result["success"] = true
 			result["success_rate"] = "100%"
+			fmt.Printf("CiscoIOSXEAdapter debug - 100%% success, setting success=true\n")
 		} else if strings.Contains(raw, "0 percent") {
-			result["success"] = false
-			result["success_rate"] = "0%"
+			// 检查是否是确切的 "0 percent" 而不是其他包含 "0 percent" 的字符串
+			if strings.Contains(raw, "Success rate is 0 percent") {
+				result["success"] = false
+				result["success_rate"] = "0%"
+				fmt.Printf("CiscoIOSXEAdapter debug - 0%% success, setting success=false\n")
+			} else {
+				result["success"] = true // 部分成功
+				// 提取具体的成功率
+				if strings.Contains(raw, "percent") {
+					parts := strings.Fields(raw)
+					for i, part := range parts {
+						if part == "percent" && i > 0 {
+							result["success_rate"] = parts[i-1] + "%"
+							break
+						}
+					}
+				}
+				fmt.Printf("CiscoIOSXEAdapter debug - partial success, setting success=true\n")
+			}
 		} else {
 			result["success"] = true // 部分成功
+			// 提取具体的成功率
+			if strings.Contains(raw, "percent") {
+				parts := strings.Fields(raw)
+				for i, part := range parts {
+					if part == "percent" && i > 0 {
+						result["success_rate"] = parts[i-1] + "%"
+						break
+					}
+				}
+			}
+			fmt.Printf("CiscoIOSXEAdapter debug - partial success, setting success=true\n")
 		}
 	} else {
 		result["success"] = !strings.Contains(strings.ToLower(raw), "failed")

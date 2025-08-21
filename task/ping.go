@@ -592,14 +592,14 @@ func (PingTask) parseCiscoOutput(output string, result *Result) bool {
 		// 查找成功率行，如 "Success rate is 100 percent (5/5)"
 		if strings.Contains(line, "Success rate is") {
 			if strings.Contains(line, "100 percent") {
-				result.Data["success_rate"] = "100%"
-				result.Data["packet_loss"] = "0%"
+				result.Data["success_rate"] = 100
+				result.Data["packet_loss"] = 0
 				result.Data["status"] = "success"
 				ylog.Debugf("PingTask", "Cisco parsing: 100%% success rate, 0%% packet loss")
 				return true
 			} else if strings.Contains(line, "0 percent") {
-				result.Data["success_rate"] = "0%"
-				result.Data["packet_loss"] = "100%"
+				result.Data["success_rate"] = 0
+				result.Data["packet_loss"] = 100
 				result.Data["status"] = "failed"
 				ylog.Debugf("PingTask", "Cisco parsing: 0%% success rate, 100%% packet loss")
 				return false
@@ -608,18 +608,19 @@ func (PingTask) parseCiscoOutput(output string, result *Result) bool {
 				parts := strings.Fields(line)
 				for i, part := range parts {
 					if part == "percent" && i > 0 {
-						result.Data["success_rate"] = parts[i-1] + "%"
-						// 计算丢包率
+						// 计算成功率和丢包率
 						if successRate, err := strconv.Atoi(parts[i-1]); err == nil {
-							result.Data["packet_loss"] = fmt.Sprintf("%d%%", 100-successRate)
+							result.Data["success_rate"] = successRate
+							result.Data["packet_loss"] = 100 - successRate
 						} else {
+							result.Data["success_rate"] = "unknown"
 							result.Data["packet_loss"] = "unknown"
 						}
 						break
 					}
 				}
 				result.Data["status"] = "partial"
-				ylog.Debugf("PingTask", "Cisco parsing: partial success rate: %s, packet loss: %s", result.Data["success_rate"], result.Data["packet_loss"])
+				ylog.Debugf("PingTask", "Cisco parsing: partial success rate: %v, packet loss: %v", result.Data["success_rate"], result.Data["packet_loss"])
 				return true
 			}
 		}
@@ -647,26 +648,37 @@ func (PingTask) parseCiscoNxosOutput(output string, result *Result) bool {
 		// 查找包丢失率，如 "0.00% packet loss"
 		if strings.Contains(line, "packet loss") {
 			if strings.Contains(line, "0.00% packet loss") {
-				result.Data["packet_loss"] = "0%"
+				result.Data["packet_loss"] = 0
+				result.Data["success_rate"] = 100
 				result.Data["status"] = "success"
-				ylog.Debugf("PingTask", "Cisco NXOS parsing: 0%% packet loss")
+				ylog.Debugf("PingTask", "Cisco NXOS parsing: 0%% packet loss, 100%% success rate")
 				return true
 			} else if strings.Contains(line, "100.00% packet loss") {
-				result.Data["packet_loss"] = "100%"
+				result.Data["packet_loss"] = 100
+				result.Data["success_rate"] = 0
 				result.Data["status"] = "failed"
-				ylog.Debugf("PingTask", "Cisco NXOS parsing: 100%% packet loss")
+				ylog.Debugf("PingTask", "Cisco NXOS parsing: 100%% packet loss, 0%% success rate")
 				return false
 			} else {
 				// 提取丢包率
 				parts := strings.Fields(line)
 				for _, part := range parts {
 					if strings.HasSuffix(part, "%") && strings.Contains(part, "packet") {
-						result.Data["packet_loss"] = part
+						// 提取数字部分并转换为整数
+						if packetLossStr := strings.TrimSuffix(part, "%"); packetLossStr != "" {
+							if packetLoss, err := strconv.Atoi(strings.TrimSuffix(packetLossStr, ".00")); err == nil {
+								result.Data["packet_loss"] = packetLoss
+								result.Data["success_rate"] = 100 - packetLoss
+							} else {
+								result.Data["packet_loss"] = "unknown"
+								result.Data["success_rate"] = "unknown"
+							}
+						}
 						break
 					}
 				}
 				result.Data["status"] = "partial"
-				ylog.Debugf("PingTask", "Cisco NXOS parsing: partial packet loss: %s", result.Data["packet_loss"])
+				ylog.Debugf("PingTask", "Cisco NXOS parsing: partial packet loss: %v, success rate: %v", result.Data["packet_loss"], result.Data["success_rate"])
 				return true
 			}
 		}
@@ -700,26 +712,37 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 		// 查找包丢失率，如 "0% packet loss"
 		if strings.Contains(line, "packet loss") {
 			if strings.Contains(line, "0% packet loss") {
-				result.Data["packet_loss"] = "0%"
+				result.Data["packet_loss"] = 0
+				result.Data["success_rate"] = 100
 				result.Data["status"] = "success"
-				ylog.Debugf("PingTask", "Huawei parsing: 0%% packet loss")
+				ylog.Debugf("PingTask", "Huawei parsing: 0%% packet loss, 100%% success rate")
 				return true
 			} else if strings.Contains(line, "100% packet loss") {
-				result.Data["packet_loss"] = "100%"
+				result.Data["packet_loss"] = 100
+				result.Data["success_rate"] = 0
 				result.Data["status"] = "failed"
-				ylog.Debugf("PingTask", "Huawei parsing: 100%% packet loss")
+				ylog.Debugf("PingTask", "Huawei parsing: 100%% packet loss, 0%% success rate")
 				return false
 			} else {
 				// 提取丢包率
 				parts := strings.Fields(line)
 				for _, part := range parts {
 					if strings.HasSuffix(part, "%") {
-						result.Data["packet_loss"] = part
+						// 提取数字部分并转换为整数
+						if packetLossStr := strings.TrimSuffix(part, "%"); packetLossStr != "" {
+							if packetLoss, err := strconv.Atoi(packetLossStr); err == nil {
+								result.Data["packet_loss"] = packetLoss
+								result.Data["success_rate"] = 100 - packetLoss
+							} else {
+								result.Data["packet_loss"] = "unknown"
+								result.Data["success_rate"] = "unknown"
+							}
+						}
 						break
 					}
 				}
 				result.Data["status"] = "partial"
-				ylog.Debugf("PingTask", "Huawei parsing: partial packet loss: %s", result.Data["packet_loss"])
+				ylog.Debugf("PingTask", "Huawei parsing: partial packet loss: %v, success rate: %v", result.Data["packet_loss"], result.Data["success_rate"])
 				return true
 			}
 		}
@@ -751,7 +774,8 @@ func (PingTask) parseGenericOutput(output string, result *Result) bool {
 	for _, pattern := range successPatterns {
 		if strings.Contains(output, pattern) {
 			result.Data["status"] = "success"
-			result.Data["packet_loss"] = "0%"
+			result.Data["success_rate"] = 100
+			result.Data["packet_loss"] = 0
 			ylog.Debugf("PingTask", "通用解析: 匹配成功模式: %s", pattern)
 			return true
 		}
@@ -770,7 +794,8 @@ func (PingTask) parseGenericOutput(output string, result *Result) bool {
 	for _, pattern := range failPatterns {
 		if strings.Contains(output, pattern) {
 			result.Data["status"] = "failed"
-			result.Data["packet_loss"] = "100%"
+			result.Data["success_rate"] = 0
+			result.Data["packet_loss"] = 100
 			ylog.Debugf("PingTask", "通用解析: 匹配失败模式: %s", pattern)
 			return false
 		}
@@ -779,12 +804,14 @@ func (PingTask) parseGenericOutput(output string, result *Result) bool {
 	// 如果包含ping相关输出但无法确定结果
 	if strings.Contains(output, "ping") || strings.Contains(output, "icmp") {
 		result.Data["status"] = "unknown"
+		result.Data["success_rate"] = "unknown"
 		result.Data["packet_loss"] = "unknown"
 		ylog.Debugf("PingTask", "通用解析: 包含ping/icmp但无法确定结果")
 		return true
 	}
 
 	result.Data["status"] = "error"
+	result.Data["success_rate"] = "unknown"
 	result.Data["packet_loss"] = "unknown"
 	ylog.Debugf("PingTask", "通用解析: 无法识别输出内容")
 	return false

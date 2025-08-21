@@ -293,7 +293,10 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	validEvents := 0
 	for _, event := range events {
 		var value string
-		if v, ok := event.Data["packet_loss"].(string); ok {
+		if v, ok := event.Data["packet_loss"].(int); ok {
+			value = fmt.Sprintf("%d", v)
+			validEvents++
+		} else if v, ok := event.Data["packet_loss"].(string); ok {
 			value = v
 			validEvents++
 		} else {
