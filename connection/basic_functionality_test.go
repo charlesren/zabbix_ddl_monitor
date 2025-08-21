@@ -24,7 +24,7 @@ func TestBasicConnectionPoolFunctionality(t *testing.T) {
 	assert.Equal(t, PlatformCiscoIOSXE, config.Platform)
 
 	// Test enhanced connection pool creation
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	// Verify pool is created with default factories

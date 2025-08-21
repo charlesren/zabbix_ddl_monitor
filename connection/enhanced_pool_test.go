@@ -22,7 +22,7 @@ func TestEnhancedConnectionPool_BasicOperations(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	t.Run("should register factories", func(t *testing.T) {
@@ -79,7 +79,7 @@ func TestEnhancedConnectionPool_WarmUp(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	// Mock factory
@@ -125,7 +125,7 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	var healthCheckCount int32
@@ -174,7 +174,7 @@ func TestEnhancedConnectionPool_Metrics(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	// Enable debug mode
@@ -308,7 +308,7 @@ func TestEnhancedConnectionPool_Concurrency(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
@@ -398,7 +398,7 @@ func TestEnhancedConnectionPool_ErrorHandling(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	t.Run("should handle factory errors", func(t *testing.T) {
@@ -431,7 +431,7 @@ func TestEnhancedConnectionPool_ErrorHandling(t *testing.T) {
 
 		require.NoError(t, err)
 
-		shutdownPool := NewEnhancedConnectionPool(shutdownConfig)
+		shutdownPool := NewEnhancedConnectionPool(context.Background(), shutdownConfig)
 
 		// Close the pool
 		closeErr := shutdownPool.Close()
@@ -456,7 +456,7 @@ func TestEnhancedConnectionPool_ConnectionLifecycle(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
@@ -506,7 +506,7 @@ func TestEnhancedConnectionPool_Events(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
@@ -560,7 +560,7 @@ func TestMonitoredDriver(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	mockDriver := &MockProtocolDriver{
@@ -632,7 +632,7 @@ func TestHealthChecker(t *testing.T) {
 
 	require.NoError(t, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	t.Run("should detect healthy connections", func(t *testing.T) {
@@ -685,7 +685,7 @@ func BenchmarkEnhancedConnectionPool_GetRelease(b *testing.B) {
 
 	require.NoError(b, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
@@ -736,7 +736,7 @@ func BenchmarkEnhancedConnectionPool_ConcurrentAccess(b *testing.B) {
 
 	require.NoError(b, err)
 
-	pool := NewEnhancedConnectionPool(config)
+	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
 	mockFactory := &MockProtocolFactory{
