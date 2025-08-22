@@ -543,6 +543,8 @@ func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
 		switch ctx.Platform {
 		case connection.PlatformCiscoIOSXE:
 			result.Success = PingTask{}.parseCiscoOutput(output, &result)
+		case connection.PlatformCiscoIOSXR:
+			result.Success = PingTask{}.parseCiscoOutput(output, &result)
 		case connection.PlatformCiscoNXOS:
 			result.Success = PingTask{}.parseCiscoNxosOutput(output, &result)
 		case connection.PlatformHuaweiVRP:
@@ -846,7 +848,8 @@ func (PingTask) parseBatchOutput(output string, targetIPs []string, platform con
 		// 检查是否是新的ping命令行
 		for _, ip := range targetIPs {
 			if strings.Contains(line, fmt.Sprintf("ping %s", ip)) ||
-				strings.Contains(line, fmt.Sprintf("PING %s", ip)) {
+				strings.Contains(line, fmt.Sprintf("PING %s", ip)) ||
+				(strings.Contains(line, "Sending") && strings.Contains(line, ip) && strings.Contains(line, "ICMP Echos")) {
 				// 如果有之前的IP结果，先处理它
 				if currentIP != "" {
 					ylog.Debugf("PingTask", "处理IP %s 的结果, 输出行数: %d", currentIP, len(currentLines))
@@ -890,6 +893,8 @@ func (PingTask) parseIPResult(ip string, lines []string, platform connection.Pla
 
 	switch platform {
 	case connection.PlatformCiscoIOSXE:
+		result.Success = PingTask{}.parseCiscoOutput(output, &result)
+	case connection.PlatformCiscoIOSXR:
 		result.Success = PingTask{}.parseCiscoOutput(output, &result)
 	case connection.PlatformCiscoNXOS:
 		result.Success = PingTask{}.parseCiscoNxosOutput(output, &result)

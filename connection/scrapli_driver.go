@@ -79,10 +79,14 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 		if err != nil {
 			return nil, err
 		}
-		// 提取所有Response的结果并拼接为RawData
+		// 提取所有Response的结果并拼接为RawData，每个命令结果之间添加分隔符
 		var rawData strings.Builder
-		for _, r := range resp.Responses {
+		for i, r := range resp.Responses {
 			rawData.WriteString(r.Result)
+			// 在命令结果之间添加分隔符（除了最后一个）
+			if i < len(resp.Responses)-1 {
+				rawData.WriteString("\n")
+			}
 		}
 		return &ProtocolResponse{
 			Success:    err == nil,

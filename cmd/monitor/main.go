@@ -90,7 +90,7 @@ func main() {
 	proxyPort := UserConfig.GetString("zabbix.proxyport")
 	ylog.Infof("Main", "using proxyPort: %s", proxyPort)
 
-	syncer, err := syncer.NewConfigSyncer(zc, 30*time.Minute, proxyname)
+	syncer, err := syncer.NewConfigSyncer(zc, 120*time.Minute, proxyname)
 	if err != nil {
 		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
 		return
