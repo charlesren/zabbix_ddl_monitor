@@ -315,7 +315,7 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 
 	// 详细记录metrics内容
 	if len(metrics) > 0 {
-		ylog.Debugf("zabbix_sender", "metrics details:")
+		ylog.Debugf("zabbix_sender", "record metrics details")
 		for i, metric := range metrics {
 			ylog.Debugf("zabbix_sender", "  metric[%d]: host=%s, key=%s, value=%s, clock=%d",
 				i, metric.Host, metric.Key, metric.Value, metric.Clock)
