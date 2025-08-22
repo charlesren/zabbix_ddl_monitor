@@ -58,7 +58,7 @@ func (m *Manager) Start() {
 
 	// 启动周期性全量同步（1小时）
 	m.wg.Add(1)
-	go m.periodicSync(1 * time.Hour)
+	go m.periodicSync(4 * time.Hour)
 
 	// 订阅变更通知
 	sub := m.configSyncer.Subscribe(context.Background())
