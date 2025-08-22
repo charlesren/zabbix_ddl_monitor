@@ -332,11 +332,22 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	ylog.Debugf("zabbix_sender", "connection pool stats before send: active=%d, idle=%d, total=%d",
 		activeConnections, idleConnections, totalConnections)
 
-	_, _, err := h.sender.SendMetrics(metrics)
+	// 记录发送前的详细metrics信息
+	for i, metric := range metrics {
+		ylog.Debugf("zabbix_sender", "sending metric[%d]: host=%s, key=%s, value=%s, clock=%d",
+			i, metric.Host, metric.Key, metric.Value, metric.Clock)
+	}
+
+	resActive, resTrapper, err := h.sender.SendMetrics(metrics)
 	duration := time.Since(start)
 
 	if err != nil {
-		ylog.Errorf("zabbix_sender", "failed to send %d metrics to zabbix after %v: %v", len(metrics), duration, err)
+		// 记录详细的错误信息，包括响应内容
+		activeResponse := fmt.Sprintf("active_response=%s, active_info=%s", resActive.Response, resActive.Info)
+		trapperResponse := fmt.Sprintf("trapper_response=%s, trapper_info=%s", resTrapper.Response, resTrapper.Info)
+
+		ylog.Errorf("zabbix_sender", "failed to send %d metrics to zabbix after %v: %v [%s %s]",
+			len(metrics), duration, err, activeResponse, trapperResponse)
 
 		// 记录详细的错误信息和当前状态
 		currentStats := h.GetStats()
@@ -349,14 +360,44 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 		return fmt.Errorf("zabbix send failed: %w (events=%d, server=%s)", err, len(events), h.serverAddr)
 	}
 
-	ylog.Infof("zabbix_sender", "successfully sent %d metrics to zabbix in %v", len(metrics), duration)
+	// 检查是否有metrics处理失败（即使没有网络错误，服务器可能返回部分失败）
+	if resActive.Response != "success" || resTrapper.Response != "success" {
+		var failedDetails []string
+		if resActive.Response != "success" {
+			failedDetails = append(failedDetails, fmt.Sprintf("active: %s - %s", resActive.Response, resActive.Info))
+		}
+		if resTrapper.Response != "success" {
+			failedDetails = append(failedDetails, fmt.Sprintf("trapper: %s - %s", resTrapper.Response, resTrapper.Info))
+		}
 
-	// 记录发送后的连接池状态
+		ylog.Warnf("zabbix_sender", "zabbix server reported partial failure: %v", failedDetails)
+		return fmt.Errorf("zabbix server reported failures: %v", failedDetails)
+	}
+
+	// 检查连接池统计数据的合理性
 	postStats := h.GetStats()
 	postActive, _ := postStats["active_connections"].(int)
 	postIdle, _ := postStats["idle_connections"].(int)
 	postTotal, _ := postStats["total_connections"].(int)
+
+	if postTotal == 0 && (postActive > 0 || postIdle > 0) {
+		ylog.Warnf("zabbix_sender", "inconsistent connection pool stats after send: active=%d, idle=%d, total=%d - this may indicate underlying library issues",
+			postActive, postIdle, postTotal)
+	}
+
+	ylog.Infof("zabbix_sender", "successfully sent %d metrics to zabbix in %v", len(metrics), duration)
+
+	// 记录发送后的连接池状态
 	ylog.Debugf("zabbix_sender", "connection pool stats after send: active=%d, idle=%d, total=%d",
 		postActive, postIdle, postTotal)
+
+	// 记录发送结果的详细信息
+	if len(metrics) > 0 {
+		ylog.Debugf("zabbix_sender", "sent metrics summary:")
+		for _, metric := range metrics {
+			ylog.Debugf("zabbix_sender", "  - host=%s, value=%s", metric.Host, metric.Value)
+		}
+	}
+
 	return nil
 }
