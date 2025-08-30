@@ -162,7 +162,13 @@ func (s *RouterScheduler) initializeQueues() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	ylog.Infof("scheduler", "initializing queues for router %s with %d lines",
+		s.router.IP, len(s.lines))
+
 	for _, line := range s.lines {
+		ylog.Debugf("scheduler", "processing line: id=%s, ip=%s, interval=%v",
+			line.ID, line.IP, line.Interval)
+
 		// 创建间隔队列（如果不存在）
 		if _, exists := s.queues[line.Interval]; !exists {
 			s.queues[line.Interval] = NewIntervalTaskQueue(line.Interval)
@@ -171,10 +177,25 @@ func (s *RouterScheduler) initializeQueues() {
 		}
 		// 添加任务
 		s.queues[line.Interval].Add(line)
+		ylog.Debugf("scheduler", "added line %s to queue %v", line.ID, line.Interval)
 	}
 
-	ylog.Infof("scheduler", "router %s initialized with %d queues (total lines=%d)",
-		s.router.IP, len(s.queues), len(s.lines))
+	// 验证队列分布
+	totalQueued := 0
+	for interval, queue := range s.queues {
+		lines := queue.GetTasksSnapshot()
+		totalQueued += len(lines)
+		ylog.Infof("scheduler", "queue %v has %d lines (router=%s)",
+			interval, len(lines), s.router.IP)
+	}
+
+	if totalQueued != len(s.lines) {
+		ylog.Errorf("scheduler", "queue distribution mismatch: expected %d lines, got %d in queues (router=%s)",
+			len(s.lines), totalQueued, s.router.IP)
+	}
+
+	ylog.Infof("scheduler", "router %s initialized with %d queues (total lines=%d, queued=%d)",
+		s.router.IP, len(s.queues), len(s.lines), totalQueued)
 }
 
 // 启动调度循环
@@ -182,6 +203,17 @@ func (s *RouterScheduler) Start() {
 	// 启动异步执行器和聚合器
 	ylog.Infof("scheduler", "starting router scheduler (router=%s, queues=%d)", s.router.IP, len(s.queues))
 	s.asyncExecutor.Start()
+
+	// 记录每个队列的详细信息
+	for interval, q := range s.queues {
+		lines := q.GetTasksSnapshot()
+		ylog.Infof("scheduler", "queue details: router=%s, interval=%v, lines=%d",
+			s.router.IP, interval, len(lines))
+		for _, line := range lines {
+			ylog.Debugf("scheduler", "  line: id=%s, ip=%s, interval=%v",
+				line.ID, line.IP, line.Interval)
+		}
+	}
 
 	for _, q := range s.queues {
 		s.wg.Add(1)
@@ -205,10 +237,21 @@ func (s *RouterScheduler) Start() {
 func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	// 获取任务快照
 	lines := q.GetTasksSnapshot()
+	ylog.Infof("scheduler", "executeTasksAsync called: router=%s, interval=%v, lines=%d",
+		s.router.IP, q.interval, len(lines))
+
 	if len(lines) == 0 {
-		ylog.Debugf("scheduler", "no tasks to execute (router=%s)", s.router.IP)
+		ylog.Debugf("scheduler", "no tasks to execute (router=%s, interval=%v)", s.router.IP, q.interval)
 		return
 	}
+
+	// 记录此次执行的所有IP
+	var ips []string
+	for _, line := range lines {
+		ips = append(ips, line.IP)
+	}
+	ylog.Infof("scheduler", "executing batch for IPs: %v (router=%s, interval=%v)",
+		ips, s.router.IP, q.interval)
 
 	// 获取预加载的能力信息（带降级逻辑）
 	var supportedCmdTypes []connection.CommandType
@@ -545,4 +588,43 @@ func (s *RouterScheduler) OnLineReset(newLines []syncer.Line) {
 
 	ylog.Infof("scheduler", "reset all queues for router %s (total_lines=%d, queues=%d)",
 		s.router.IP, len(newLines), len(s.queues))
+}
+
+// GetSchedulerHealth 获取调度器健康状态（用于调试）
+func (s *RouterScheduler) GetSchedulerHealth() map[string]interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	health := map[string]interface{}{
+		"router_ip":    s.router.IP,
+		"total_lines":  len(s.lines),
+		"total_queues": len(s.queues),
+		"queues":       make(map[string]interface{}),
+	}
+
+	for interval, queue := range s.queues {
+		lines := queue.GetTasksSnapshot()
+		queueHealth := map[string]interface{}{
+			"interval":     interval.String(),
+			"line_count":   len(lines),
+			"is_empty":     queue.IsEmpty(),
+			"line_details": make([]map[string]string, 0),
+		}
+
+		for _, line := range lines {
+			lineDetail := map[string]string{
+				"id":       line.ID,
+				"ip":       line.IP,
+				"interval": line.Interval.String(),
+			}
+			queueHealth["line_details"] = append(
+				queueHealth["line_details"].([]map[string]string),
+				lineDetail,
+			)
+		}
+
+		health["queues"].(map[string]interface{})[interval.String()] = queueHealth
+	}
+
+	return health
 }

@@ -41,12 +41,15 @@ func (q *IntervalTaskQueue) schedule() {
 	for {
 		select {
 		case <-q.ticker.C:
+			ylog.Debugf("queue", "ticker fired for interval %v", q.interval)
 			select {
 			case q.execNotify <- struct{}{}: // 非阻塞发送信号
 				ylog.Debugf("queue", "sent exec signal (interval=%v)", q.interval)
 			default:
+				ylog.Warnf("queue", "exec signal dropped - channel blocked (interval=%v)", q.interval)
 			}
 		case <-q.stopChan:
+			ylog.Debugf("queue", "scheduler stopping (interval=%v)", q.interval)
 			return
 		}
 	}
@@ -99,6 +102,11 @@ func (q *IntervalTaskQueue) Stop() {
 	case <-q.stopChan:
 	default:
 		close(q.stopChan)
+	}
+	// 停止ticker防止资源泄露
+	if q.ticker != nil {
+		q.ticker.Stop()
+		ylog.Debugf("queue", "ticker stopped for interval %v", q.interval)
 	}
 }
 
