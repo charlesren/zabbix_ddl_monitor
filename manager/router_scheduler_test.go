@@ -512,33 +512,8 @@ func TestRouterScheduler_Stop(t *testing.T) {
 	})
 }
 
-func TestRouterScheduler_MergeLinesIP(t *testing.T) {
-	lines := []syncer.Line{
-		{IP: "10.0.0.1"},
-		{IP: "10.0.0.2"},
-		{IP: "10.0.0.3"},
-	}
-
-	result := mergeLinesIP(lines)
-	expected := "10.0.0.1,10.0.0.2,10.0.0.3"
-
-	assert.Equal(t, expected, result)
-}
-
-func TestRouterScheduler_MergeLinesIP_Empty(t *testing.T) {
-	lines := []syncer.Line{}
-	result := mergeLinesIP(lines)
-	assert.Equal(t, "", result)
-}
-
-func TestRouterScheduler_MergeLinesIP_SingleLine(t *testing.T) {
-	lines := []syncer.Line{
-		{IP: "10.0.0.1"},
-	}
-
-	result := mergeLinesIP(lines)
-	assert.Equal(t, "10.0.0.1", result)
-}
+// Note: mergeLinesIP tests removed as batch processing has been simplified to individual ping execution
+// Refer to memory: "Batch Processing Simplification and Optimization" for details
 
 // Concurrent access tests
 func TestRouterScheduler_ConcurrentLineOperations(t *testing.T) {

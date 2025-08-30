@@ -3,7 +3,6 @@ package manager
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -200,7 +199,7 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	for _, line := range lines {
 		ips = append(ips, line.IP)
 	}
-	ylog.Infof("scheduler", "executing batch for IPs: %v (router=%s, interval=%v)",
+	ylog.Infof("scheduler", "executing individual ping tasks for IPs: %v (router=%s, interval=%v)",
 		ips, s.router.IP, q.interval)
 
 	// 获取预加载的能力信息（带降级逻辑）
@@ -236,50 +235,38 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 		matchedTask = t
 		matchedCmdType = connection.CommandTypeCommands
 	}
-	/*
-		for _, cmdType := range supportedCmdTypes {
-			t, err := s.manager.registry.Discover(
-				"ping",
-				s.router.Platform,
-				s.router.Protocol,
-				cmdType,
-			)
-			if err == nil {
-				matchedTask = t
-				matchedCmdType = cmdType
-				break
-			}
-		}
-	*/
+
 	if matchedTask == nil {
 		ylog.Errorf("scheduler", "no matching task for router=%s (supported=%v)",
 			s.router.IP, supportedCmdTypes)
 		return
 	}
 
-	// 合并所有专线IP为批量ping任务
-	targetIPs := make([]string, len(lines))
-	for i, line := range lines {
-		targetIPs[i] = line.IP
+	// 为每个专线执行单独的ping任务
+	for _, line := range lines {
+		s.executeIndividualPing(line, matchedTask, matchedCmdType)
 	}
+}
 
+// executeIndividualPing 执行单个专线的ping任务
+func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask task.Task, matchedCmdType task.CommandType) {
 	// 获取连接
 	conn, err := s.connection.Get(s.router.Protocol)
 	if err != nil {
-		ylog.Errorf("scheduler", "router=%s get connection failed: %v", s.router.IP, err)
+		ylog.Errorf("scheduler", "router=%s get connection failed for line %s: %v", s.router.IP, line.IP, err)
 		return
 	}
 
-	// 创建批量任务上下文
+	// 创建单个任务上下文
 	taskCtx := task.TaskContext{
 		TaskType:    "ping",
 		Platform:    s.router.Platform,
 		Protocol:    s.router.Protocol,
 		CommandType: matchedCmdType,
 		Params: map[string]interface{}{
-			"target_ips": targetIPs, // 使用复数形式表示批量IP
-			"repeat":     5,
-			"timeout":    10 * time.Second,
+			"target_ip": line.IP, // 单个IP
+			"repeat":    5,
+			"timeout":   10 * time.Second,
 		},
 		Ctx: s.routerCtx,
 	}
@@ -287,96 +274,43 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	// 记录开始时间
 	startTime := time.Now()
 
-	ylog.Infof("scheduler", "submitting batch ping task for %d IPs on router %s", len(targetIPs), s.router.IP)
+	ylog.Debugf("scheduler", "submitting ping task for IP %s on router %s", line.IP, s.router.IP)
 
-	// 异步提交批量任务
+	// 异步提交任务
 	err = s.asyncExecutor.Submit(matchedTask, conn, taskCtx, func(result task.Result, err error) {
 		duration := time.Since(startTime)
 
 		// 释放连接
 		s.connection.Release(conn)
 
-		// 处理结果错误
+		// 处理结果
 		if err != nil {
-			ylog.Errorf("scheduler", "batch ping task execution failed for router %s: %v", s.router.IP, err)
-			// 为所有专线创建失败结果
-			for _, line := range lines {
-				failedResult := task.Result{
-					Success: false,
-					Error:   err.Error(),
-					Data:    make(map[string]interface{}),
-				}
-				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", failedResult, duration); aggErr != nil {
-					ylog.Errorf("scheduler", "failed to submit failed result to aggregator for %s: %v", line.IP, aggErr)
-				}
+			ylog.Errorf("scheduler", "ping task execution failed for line %s on router %s: %v", line.IP, s.router.IP, err)
+			// 创建失败结果
+			failedResult := task.Result{
+				Success: false,
+				Error:   err.Error(),
+				Data: map[string]interface{}{
+					"target_ip": line.IP,
+				},
+			}
+			if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", failedResult, duration); aggErr != nil {
+				ylog.Errorf("scheduler", "failed to submit failed result to aggregator for %s: %v", line.IP, aggErr)
 			}
 			return
 		}
 
-		// 解析批量结果并分发到各个专线
-		s.distributeBatchResult(lines, result, duration)
+		// 提交成功结果
+		ylog.Debugf("scheduler", "ping task completed for line %s on router %s: success=%v", line.IP, s.router.IP, result.Success)
+		if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
+			ylog.Errorf("scheduler", "failed to submit result to aggregator for %s: %v", line.IP, aggErr)
+		}
 	})
 
 	if err != nil {
-		ylog.Errorf("scheduler", "failed to submit batch ping task for router %s: %v", s.router.IP, err)
+		ylog.Errorf("scheduler", "failed to submit ping task for line %s on router %s: %v", line.IP, s.router.IP, err)
 		s.connection.Release(conn)
 	}
-}
-
-// distributeBatchResult 分发批量ping结果到各个专线
-func (s *RouterScheduler) distributeBatchResult(lines []syncer.Line, batchResult task.Result, duration time.Duration) {
-	// 检查批量结果中是否包含每个IP的详细结果
-	if batchResults, ok := batchResult.Data["batch_results"].(map[string]task.Result); ok {
-		// 如果有详细的批量结果，按IP分发
-		for _, line := range lines {
-			if ipResult, exists := batchResults[line.IP]; exists {
-				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", ipResult, duration); aggErr != nil {
-					ylog.Errorf("scheduler", "failed to submit result to aggregator for %s: %v", line.IP, aggErr)
-				}
-			} else {
-				// 如果某个IP没有结果，创建未知状态结果
-				unknownResult := task.Result{
-					Success: false,
-					Error:   "no result found in batch response",
-					Data:    map[string]interface{}{"status": "unknown"},
-				}
-				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", unknownResult, duration); aggErr != nil {
-					ylog.Errorf("scheduler", "failed to submit unknown result to aggregator for %s: %v", line.IP, aggErr)
-				}
-			}
-		}
-	} else {
-		// 如果没有详细结果，所有专线共享同一个结果
-		ylog.Warnf("scheduler", "batch result does not contain per-IP details, using overall result for all lines")
-		for _, line := range lines {
-			// 为每个专线创建单独的结果副本
-			lineResult := task.Result{
-				Success: batchResult.Success,
-				Error:   batchResult.Error,
-				Data:    make(map[string]interface{}),
-			}
-
-			// 复制数据，添加专线特定信息
-			for k, v := range batchResult.Data {
-				lineResult.Data[k] = v
-			}
-			lineResult.Data["line_ip"] = line.IP
-			lineResult.Data["batch_mode"] = true
-
-			if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", lineResult, duration); aggErr != nil {
-				ylog.Errorf("scheduler", "failed to submit result to aggregator for %s: %v", line.IP, aggErr)
-			}
-		}
-	}
-}
-
-// mergeLinesIP 合并所有line的IP
-func mergeLinesIP(lines []syncer.Line) string {
-	ips := make([]string, len(lines))
-	for i, line := range lines {
-		ips[i] = line.IP
-	}
-	return strings.Join(ips, ",")
 }
 
 // 停止调度器（阻塞等待所有任务完成）

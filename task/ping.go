@@ -28,8 +28,7 @@ func (PingTask) Meta() TaskMeta {
 								CommandType: connection.CommandTypeInteractiveEvent,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
-									{Name: "target_ip", Type: "string", Required: false},
-									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "target_ip", Type: "string", Required: true},
 									{Name: "repeat", Type: "int", Required: false, Default: 5},
 									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
@@ -39,8 +38,7 @@ func (PingTask) Meta() TaskMeta {
 								CommandType: connection.CommandTypeCommands,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
-									{Name: "target_ip", Type: "string", Required: false},
-									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "target_ip", Type: "string", Required: true},
 									{Name: "repeat", Type: "int", Required: false, Default: 5},
 									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
@@ -60,8 +58,7 @@ func (PingTask) Meta() TaskMeta {
 								CommandType: connection.CommandTypeInteractiveEvent,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
-									{Name: "target_ip", Type: "string", Required: false},
-									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "target_ip", Type: "string", Required: true},
 									{Name: "repeat", Type: "int", Required: false, Default: 5},
 									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
@@ -71,8 +68,7 @@ func (PingTask) Meta() TaskMeta {
 								CommandType: connection.CommandTypeCommands,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
-									{Name: "target_ip", Type: "string", Required: false},
-									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "target_ip", Type: "string", Required: true},
 									{Name: "repeat", Type: "int", Required: false, Default: 5},
 									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
@@ -92,8 +88,7 @@ func (PingTask) Meta() TaskMeta {
 								CommandType: connection.CommandTypeInteractiveEvent,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
-									{Name: "target_ip", Type: "string", Required: false},
-									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "target_ip", Type: "string", Required: true},
 									{Name: "repeat", Type: "int", Required: false, Default: 5},
 									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
@@ -103,8 +98,7 @@ func (PingTask) Meta() TaskMeta {
 								CommandType: connection.CommandTypeCommands,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
-									{Name: "target_ip", Type: "string", Required: false},
-									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "target_ip", Type: "string", Required: true},
 									{Name: "repeat", Type: "int", Required: false, Default: 5},
 									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
@@ -124,8 +118,7 @@ func (PingTask) Meta() TaskMeta {
 								CommandType: connection.CommandTypeInteractiveEvent,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
-									{Name: "target_ip", Type: "string", Required: false},
-									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "target_ip", Type: "string", Required: true},
 									{Name: "repeat", Type: "int", Required: false, Default: 5},
 									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
@@ -135,8 +128,7 @@ func (PingTask) Meta() TaskMeta {
 								CommandType: connection.CommandTypeCommands,
 								ImplFactory: func() Task { return &PingTask{} },
 								Params: []ParamSpec{
-									{Name: "target_ip", Type: "string", Required: false},
-									{Name: "target_ips", Type: "[]string", Required: false},
+									{Name: "target_ip", Type: "string", Required: true},
 									{Name: "repeat", Type: "int", Required: false, Default: 5},
 									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
 									{Name: "enable_password", Type: "string", Required: false, Default: ""},
@@ -153,47 +145,24 @@ func (PingTask) Meta() TaskMeta {
 func (PingTask) ValidateParams(params map[string]interface{}) error {
 	ylog.Debugf("PingTask", "开始验证参数: %+v", params)
 
-	// 验证必需参数 - target_ip 或 target_ips 至少有一个
+	// 验证必需参数 - 只支持单个target_ip
 	targetIP, hasTargetIP := params["target_ip"]
-	targetIPs, hasTargetIPs := params["target_ips"]
 
-	if !hasTargetIP && !hasTargetIPs {
-		ylog.Errorf("PingTask", "参数验证失败: target_ip 或 target_ips 至少需要一个")
-		return fmt.Errorf("either target_ip or target_ips parameter is required")
+	if !hasTargetIP {
+		ylog.Errorf("PingTask", "参数验证失败: target_ip 参数是必需的")
+		return fmt.Errorf("target_ip parameter is required")
 	}
 
-	// 验证单个IP参数
-	if hasTargetIP {
-		if targetIPStr, ok := targetIP.(string); ok {
-			if targetIPStr == "" {
-				ylog.Errorf("PingTask", "参数验证失败: target_ip 不能为空")
-				return fmt.Errorf("target_ip cannot be empty")
-			}
-			ylog.Debugf("PingTask", "验证单个IP参数: %s", targetIPStr)
-		} else {
-			ylog.Errorf("PingTask", "参数验证失败: target_ip 必须是字符串类型")
-			return fmt.Errorf("target_ip must be a string")
+	// 验证IP参数
+	if targetIPStr, ok := targetIP.(string); ok {
+		if targetIPStr == "" {
+			ylog.Errorf("PingTask", "参数验证失败: target_ip 不能为空")
+			return fmt.Errorf("target_ip cannot be empty")
 		}
-	}
-
-	// 验证批量IP参数
-	if hasTargetIPs {
-		if targetIPSlice, ok := targetIPs.([]string); ok {
-			if len(targetIPSlice) == 0 {
-				ylog.Errorf("PingTask", "参数验证失败: target_ips 不能为空数组")
-				return fmt.Errorf("target_ips cannot be empty")
-			}
-			ylog.Debugf("PingTask", "验证批量IP参数: %d 个IP地址", len(targetIPSlice))
-			for i, ip := range targetIPSlice {
-				if ip == "" {
-					ylog.Errorf("PingTask", "参数验证失败: target_ips[%d] 不能为空", i)
-					return fmt.Errorf("target_ips[%d] cannot be empty", i)
-				}
-			}
-		} else {
-			ylog.Errorf("PingTask", "参数验证失败: target_ips 必须是字符串切片类型")
-			return fmt.Errorf("target_ips must be a []string")
-		}
+		ylog.Debugf("PingTask", "验证IP参数: %s", targetIPStr)
+	} else {
+		ylog.Errorf("PingTask", "参数验证失败: target_ip 必须是字符串类型")
+		return fmt.Errorf("target_ip must be a string")
 	}
 
 	// 验证可选参数
@@ -239,31 +208,20 @@ func (PingTask) ValidateParams(params map[string]interface{}) error {
 func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 	ylog.Infof("PingTask", "开始构建命令, 平台: %s, 命令类型: %s", ctx.Platform, ctx.CommandType)
 
-	// 获取目标IP列表
-	var targetIPs []string
-
-	// 检查是否有单个IP
-	if targetIPRaw, ok := ctx.Params["target_ip"]; ok {
-		if targetIP, ok := targetIPRaw.(string); ok {
-			targetIPs = []string{targetIP}
-			ylog.Debugf("PingTask", "使用单个IP: %s", targetIP)
-		} else {
-			ylog.Errorf("PingTask", "构建命令失败: target_ip 必须是字符串类型")
-			return Command{}, fmt.Errorf("target_ip must be string")
-		}
-	} else if targetIPsRaw, ok := ctx.Params["target_ips"]; ok {
-		// 检查是否有批量IP
-		if targetIPSlice, ok := targetIPsRaw.([]string); ok {
-			targetIPs = targetIPSlice
-			ylog.Debugf("PingTask", "使用批量IP: %d 个目标地址", len(targetIPSlice))
-		} else {
-			ylog.Errorf("PingTask", "构建命令失败: target_ips 必须是字符串切片类型")
-			return Command{}, fmt.Errorf("target_ips must be []string")
-		}
-	} else {
-		ylog.Errorf("PingTask", "构建命令失败: target_ip 或 target_ips 参数缺失")
-		return Command{}, fmt.Errorf("either target_ip or target_ips parameter is required")
+	// 获取目标IP
+	targetIPRaw, ok := ctx.Params["target_ip"]
+	if !ok {
+		ylog.Errorf("PingTask", "构建命令失败: target_ip 参数缺失")
+		return Command{}, fmt.Errorf("target_ip parameter is required")
 	}
+
+	targetIP, ok := targetIPRaw.(string)
+	if !ok {
+		ylog.Errorf("PingTask", "构建命令失败: target_ip 必须是字符串类型")
+		return Command{}, fmt.Errorf("target_ip must be string")
+	}
+
+	ylog.Debugf("PingTask", "目标IP: %s", targetIP)
 
 	repeat := 5
 	if r, ok := ctx.Params["repeat"]; ok {
@@ -303,13 +261,13 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 		var commands []string
 		switch ctx.Platform {
 		case connection.PlatformCiscoIOSXE:
-			commands = PingTask{}.buildCiscoCommands(targetIPs, repeat, timeout, enablePassword)
+			commands = PingTask{}.buildCiscoCommand(targetIP, repeat, timeout, enablePassword)
 		case connection.PlatformCiscoIOSXR:
-			commands = PingTask{}.buildCiscoCommands(targetIPs, repeat, timeout, enablePassword)
+			commands = PingTask{}.buildCiscoCommand(targetIP, repeat, timeout, enablePassword)
 		case connection.PlatformCiscoNXOS:
-			commands = PingTask{}.buildCiscoCommands(targetIPs, repeat, timeout, enablePassword)
+			commands = PingTask{}.buildCiscoCommand(targetIP, repeat, timeout, enablePassword)
 		case connection.PlatformHuaweiVRP:
-			commands = PingTask{}.buildHuaweiCommands(targetIPs, repeat, timeout)
+			commands = PingTask{}.buildHuaweiCommand(targetIP, repeat, timeout)
 		default:
 			ylog.Errorf("PingTask", "不支持的平台类型: %s", ctx.Platform)
 			return Command{}, fmt.Errorf("unsupported platform for commands: %s", ctx.Platform)
@@ -326,13 +284,13 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 		var events []*channel.SendInteractiveEvent
 		switch ctx.Platform {
 		case connection.PlatformCiscoIOSXE:
-			events = PingTask{}.buildCiscoEvents(targetIPs, repeat, timeout, enablePassword)
+			events = PingTask{}.buildCiscoEvent(targetIP, repeat, timeout, enablePassword)
 		case connection.PlatformCiscoIOSXR:
-			events = PingTask{}.buildCiscoEvents(targetIPs, repeat, timeout, enablePassword)
+			events = PingTask{}.buildCiscoEvent(targetIP, repeat, timeout, enablePassword)
 		case connection.PlatformCiscoNXOS:
-			events = PingTask{}.buildCiscoEvents(targetIPs, repeat, timeout, enablePassword)
+			events = PingTask{}.buildCiscoEvent(targetIP, repeat, timeout, enablePassword)
 		case connection.PlatformHuaweiVRP:
-			events = PingTask{}.buildHuaweiEvents(targetIPs, repeat, timeout)
+			events = PingTask{}.buildHuaweiEvent(targetIP, repeat, timeout)
 		default:
 			ylog.Errorf("PingTask", "不支持的平台类型: %s", ctx.Platform)
 			return Command{}, fmt.Errorf("unsupported platform: %s", ctx.Platform)
@@ -350,74 +308,55 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 	}
 }
 
-// buildCiscoEvents 构建Cisco平台的批量ping命令
-func (PingTask) buildCiscoEvents(targetIPs []string, repeat int, timeout time.Duration, enablePassword string) []*channel.SendInteractiveEvent {
-	ylog.Debugf("PingTask", "构建Cisco交互式事件, 目标IP数量: %d", len(targetIPs))
+// buildCiscoEvent 构建Cisco平台的单个ping命令
+func (PingTask) buildCiscoEvent(targetIP string, repeat int, timeout time.Duration, enablePassword string) []*channel.SendInteractiveEvent {
+	ylog.Debugf("PingTask", "构建Cisco交互式事件, 目标IP: %s", targetIP)
 
 	var events []*channel.SendInteractiveEvent
-	/*
-		// 只有提供了enable密码才尝试进入特权模式
-		if enablePassword != "" {
-			events = append(events,
-				&channel.SendInteractiveEvent{
-					ChannelInput:    "enable",
-					ChannelResponse: "Password:",
-					HideInput:       false,
-				},
-				&channel.SendInteractiveEvent{
-					ChannelInput:    enablePassword,
-					ChannelResponse: "#",
-					HideInput:       true,
-				})
-		}
-	*/
 
-	// 为每个IP创建ping命令
-	for _, ip := range targetIPs {
-		prompt := ">"
-		if enablePassword != "" {
-			prompt = "#"
-		}
-
-		pingCommand := fmt.Sprintf("ping %s repeat %d timeout %d", ip, repeat, int(timeout.Seconds()))
-		ylog.Debugf("PingTask", "添加Cisco ping命令: %s", pingCommand)
-
-		events = append(events, &channel.SendInteractiveEvent{
-			ChannelInput:    pingCommand,
-			ChannelResponse: prompt,
-			HideInput:       false,
-		})
+	// 确定命令提示符
+	prompt := ">"
+	if enablePassword != "" {
+		prompt = "#"
 	}
+
+	// 创建ping命令
+	pingCommand := fmt.Sprintf("ping %s repeat %d timeout %d", targetIP, repeat, int(timeout.Seconds()))
+	ylog.Debugf("PingTask", "添加Cisco ping命令: %s", pingCommand)
+
+	events = append(events, &channel.SendInteractiveEvent{
+		ChannelInput:    pingCommand,
+		ChannelResponse: prompt,
+		HideInput:       false,
+	})
 
 	ylog.Debugf("PingTask", "Cisco交互式事件构建完成, 事件总数: %d", len(events))
 	return events
 }
 
-// buildHuaweiEvents 构建华为平台的批量ping命令
-func (PingTask) buildHuaweiEvents(targetIPs []string, repeat int, timeout time.Duration) []*channel.SendInteractiveEvent {
-	ylog.Debugf("PingTask", "构建华为交互式事件, 目标IP数量: %d", len(targetIPs))
+// buildHuaweiEvent 构建华为平台的单个ping命令
+func (PingTask) buildHuaweiEvent(targetIP string, repeat int, timeout time.Duration) []*channel.SendInteractiveEvent {
+	ylog.Debugf("PingTask", "构建华为交互式事件, 目标IP: %s", targetIP)
 
 	var events []*channel.SendInteractiveEvent
 
-	// 为每个IP创建ping命令
-	for _, ip := range targetIPs {
-		pingCommand := fmt.Sprintf("ping -c %d -W %d %s", repeat, int(timeout.Seconds()), ip)
-		ylog.Debugf("PingTask", "添加华为 ping命令: %s", pingCommand)
+	// 创建ping命令
+	pingCommand := fmt.Sprintf("ping -c %d -W %d %s", repeat, int(timeout.Seconds()), targetIP)
+	ylog.Debugf("PingTask", "添加华为ping命令: %s", pingCommand)
 
-		events = append(events, &channel.SendInteractiveEvent{
-			ChannelInput:    pingCommand,
-			ChannelResponse: ">",
-			HideInput:       false,
-		})
-	}
+	events = append(events, &channel.SendInteractiveEvent{
+		ChannelInput:    pingCommand,
+		ChannelResponse: ">",
+		HideInput:       false,
+	})
 
 	ylog.Debugf("PingTask", "华为交互式事件构建完成, 事件总数: %d", len(events))
 	return events
 }
 
-// buildCiscoCommands 构建Cisco平台的批量ping命令（非交互式）
-func (PingTask) buildCiscoCommands(targetIPs []string, repeat int, timeout time.Duration, enablePassword string) []string {
-	ylog.Debugf("PingTask", "构建Cisco非交互式命令, 目标IP数量: %d", len(targetIPs))
+// buildCiscoCommand 构建Cisco平台的单个ping命令（非交互式）
+func (PingTask) buildCiscoCommand(targetIP string, repeat int, timeout time.Duration, enablePassword string) []string {
+	ylog.Debugf("PingTask", "构建Cisco非交互式命令, 目标IP: %s", targetIP)
 
 	var commands []string
 
@@ -427,29 +366,25 @@ func (PingTask) buildCiscoCommands(targetIPs []string, repeat int, timeout time.
 		ylog.Debugf("PingTask", "添加enable命令和密码")
 	}
 
-	// 为每个IP创建ping命令
-	for _, ip := range targetIPs {
-		command := fmt.Sprintf("ping %s  timeout %d", ip, int(timeout.Seconds()))
-		ylog.Debugf("PingTask", "添加Cisco ping命令: %s", command)
-		commands = append(commands, command)
-	}
+	// 创建ping命令
+	command := fmt.Sprintf("ping %s timeout %d", targetIP, int(timeout.Seconds()))
+	ylog.Debugf("PingTask", "添加Cisco ping命令: %s", command)
+	commands = append(commands, command)
 
 	ylog.Debugf("PingTask", "Cisco非交互式命令构建完成, 命令总数: %d", len(commands))
 	return commands
 }
 
-// buildHuaweiCommands 构建华为平台的批量ping命令（非交互式）
-func (PingTask) buildHuaweiCommands(targetIPs []string, repeat int, timeout time.Duration) []string {
-	ylog.Debugf("PingTask", "构建华为非交互式命令, 目标IP数量: %d", len(targetIPs))
+// buildHuaweiCommand 构建华为平台的单个ping命令（非交互式）
+func (PingTask) buildHuaweiCommand(targetIP string, repeat int, timeout time.Duration) []string {
+	ylog.Debugf("PingTask", "构建华为非交互式命令, 目标IP: %s", targetIP)
 
 	var commands []string
 
-	// 为每个IP创建ping命令
-	for _, ip := range targetIPs {
-		command := fmt.Sprintf("ping -c %d -W %d %s", repeat, int(timeout.Seconds()), ip)
-		ylog.Debugf("PingTask", "添加华为 ping命令: %s", command)
-		commands = append(commands, command)
-	}
+	// 创建ping命令
+	command := fmt.Sprintf("ping -c %d -W %d %s", repeat, int(timeout.Seconds()), targetIP)
+	ylog.Debugf("PingTask", "添加华为ping命令: %s", command)
+	commands = append(commands, command)
 
 	ylog.Debugf("PingTask", "华为非交互式命令构建完成, 命令总数: %d", len(commands))
 	return commands
@@ -520,64 +455,40 @@ func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
 		}, fmt.Errorf("unsupported output type: %T", raw)
 	}
 
-	// 检查是否为批量处理
-	var targetIPs []string
-	if targetIPRaw, ok := ctx.Params["target_ip"]; ok {
-		targetIPs = []string{targetIPRaw.(string)}
-		ylog.Debugf("PingTask", "单IP模式, 目标IP: %s", targetIPs[0])
-	} else if targetIPsRaw, ok := ctx.Params["target_ips"]; ok {
-		targetIPs = targetIPsRaw.([]string)
-		ylog.Debugf("PingTask", "批量IP模式, 目标IP数量: %d", len(targetIPs))
+	// 获取目标IP
+	targetIP, ok := ctx.Params["target_ip"].(string)
+	if !ok {
+		ylog.Errorf("PingTask", "解析输出失败: target_ip 参数缺失或类型错误")
+		return Result{
+			Success: false,
+			Error:   "target_ip parameter missing or invalid",
+		}, fmt.Errorf("target_ip parameter missing or invalid")
 	}
+
+	ylog.Debugf("PingTask", "解析目标IP: %s", targetIP)
 
 	result := Result{
 		Data: map[string]interface{}{
+			"target_ip":  targetIP,
 			"raw_output": output,
-			"batch_mode": len(targetIPs) > 1,
 		},
 	}
 
-	if len(targetIPs) == 1 {
-		// 单IP处理
-		ylog.Debugf("PingTask", "开始单IP输出解析")
-		switch ctx.Platform {
-		case connection.PlatformCiscoIOSXE:
-			result.Success = PingTask{}.parseCiscoOutput(output, &result)
-		case connection.PlatformCiscoIOSXR:
-			result.Success = PingTask{}.parseCiscoOutput(output, &result)
-		case connection.PlatformCiscoNXOS:
-			result.Success = PingTask{}.parseCiscoNxosOutput(output, &result)
-		case connection.PlatformHuaweiVRP:
-			result.Success = PingTask{}.parseHuaweiOutput(output, &result)
-		default:
-			result.Success = PingTask{}.parseGenericOutput(output, &result)
-		}
-		ylog.Infof("PingTask", "单IP解析完成, 结果: %v", result.Success)
-	} else {
-		// 批量IP处理
-		ylog.Debugf("PingTask", "开始批量IP输出解析")
-		batchResults := PingTask{}.parseBatchOutput(output, targetIPs, ctx.Platform)
-		result.Data["batch_results"] = batchResults
-
-		// 计算整体成功率
-		successCount := 0
-		for ip, ipResult := range batchResults {
-			if ipResult.Success {
-				successCount++
-				ylog.Debugf("PingTask", "IP %s ping成功", ip)
-			} else {
-				ylog.Debugf("PingTask", "IP %s ping失败", ip)
-			}
-		}
-		result.Success = successCount > 0
-		result.Data["success_count"] = successCount
-		result.Data["total_count"] = len(targetIPs)
-		result.Data["success_rate"] = fmt.Sprintf("%.1f%%", float64(successCount)/float64(len(targetIPs))*100)
-
-		ylog.Infof("PingTask", "批量IP解析完成, 成功率: %s (%d/%d)",
-			result.Data["success_rate"], successCount, len(targetIPs))
+	// 根据平台解析输出
+	switch ctx.Platform {
+	case connection.PlatformCiscoIOSXE:
+		result.Success = PingTask{}.parseCiscoOutput(output, &result)
+	case connection.PlatformCiscoIOSXR:
+		result.Success = PingTask{}.parseCiscoOutput(output, &result)
+	case connection.PlatformCiscoNXOS:
+		result.Success = PingTask{}.parseCiscoNxosOutput(output, &result)
+	case connection.PlatformHuaweiVRP:
+		result.Success = PingTask{}.parseHuaweiOutput(output, &result)
+	default:
+		result.Success = PingTask{}.parseGenericOutput(output, &result)
 	}
 
+	ylog.Infof("PingTask", "解析完成, IP: %s, 结果: %v", targetIP, result.Success)
 	ylog.Debugf("PingTask", "输出解析完成, 最终结果: %+v", result)
 	return result, nil
 }
@@ -711,20 +622,21 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
-		// 查找包丢失率，如 "0% packet loss"
+		// 查找packet loss行
 		if strings.Contains(line, "packet loss") {
-			if strings.Contains(line, "0% packet loss") {
-				result.Data["packet_loss"] = 0
-				result.Data["success_rate"] = 100
-				result.Data["status"] = "success"
-				ylog.Debugf("PingTask", "Huawei parsing: 0%% packet loss, 100%% success rate")
-				return true
-			} else if strings.Contains(line, "100% packet loss") {
+			// 首先检查100%（最具体的）
+			if strings.Contains(line, "100% packet loss") {
 				result.Data["packet_loss"] = 100
 				result.Data["success_rate"] = 0
 				result.Data["status"] = "failed"
 				ylog.Debugf("PingTask", "Huawei parsing: 100%% packet loss, 0%% success rate")
 				return false
+			} else if strings.Contains(line, "0% packet loss") {
+				result.Data["packet_loss"] = 0
+				result.Data["success_rate"] = 100
+				result.Data["status"] = "success"
+				ylog.Debugf("PingTask", "Huawei parsing: 0%% packet loss, 100%% success rate")
+				return true
 			} else {
 				// 提取丢包率
 				parts := strings.Fields(line)
@@ -735,6 +647,16 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 							if packetLoss, err := strconv.Atoi(packetLossStr); err == nil {
 								result.Data["packet_loss"] = packetLoss
 								result.Data["success_rate"] = 100 - packetLoss
+								if packetLoss == 0 {
+									result.Data["status"] = "success"
+									return true
+								} else if packetLoss == 100 {
+									result.Data["status"] = "failed"
+									return false
+								} else {
+									result.Data["status"] = "partial"
+									return true
+								}
 							} else {
 								result.Data["packet_loss"] = "unknown"
 								result.Data["success_rate"] = "unknown"
@@ -817,93 +739,4 @@ func (PingTask) parseGenericOutput(output string, result *Result) bool {
 	result.Data["packet_loss"] = "unknown"
 	ylog.Debugf("PingTask", "通用解析: 无法识别输出内容")
 	return false
-}
-
-// parseBatchOutput 解析批量ping输出
-func (PingTask) parseBatchOutput(output string, targetIPs []string, platform connection.Platform) map[string]Result {
-	ylog.Debugf("PingTask", "开始批量输出解析, 目标IP数量: %d", len(targetIPs))
-	results := make(map[string]Result)
-
-	// 按行分割输出
-	lines := strings.Split(output, "\n")
-
-	// 为每个IP初始化结果
-	for _, ip := range targetIPs {
-		results[ip] = Result{
-			Success: false,
-			Data:    map[string]interface{}{"target_ip": ip, "status": "no_result"},
-		}
-	}
-
-	// 解析输出，查找每个IP的结果
-	currentIP := ""
-	var currentLines []string
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// 检查是否是新的ping命令行
-		for _, ip := range targetIPs {
-			if strings.Contains(line, fmt.Sprintf("ping %s", ip)) ||
-				strings.Contains(line, fmt.Sprintf("PING %s", ip)) ||
-				(strings.Contains(line, "Sending") && strings.Contains(line, ip) && strings.Contains(line, "ICMP Echos")) {
-				// 如果有之前的IP结果，先处理它
-				if currentIP != "" {
-					ylog.Debugf("PingTask", "处理IP %s 的结果, 输出行数: %d", currentIP, len(currentLines))
-					PingTask{}.parseIPResult(currentIP, currentLines, platform, results)
-				}
-				// 开始新IP的结果收集
-				currentIP = ip
-				currentLines = []string{line}
-				ylog.Debugf("PingTask", "开始收集IP %s 的输出", ip)
-				continue
-			}
-		}
-
-		// 收集当前IP的输出行
-		if currentIP != "" {
-			currentLines = append(currentLines, line)
-		}
-	}
-
-	// 处理最后一个IP的结果
-	if currentIP != "" {
-		ylog.Debugf("PingTask", "处理最后一个IP %s 的结果, 输出行数: %d", currentIP, len(currentLines))
-		PingTask{}.parseIPResult(currentIP, currentLines, platform, results)
-	}
-
-	ylog.Debugf("PingTask", "批量输出解析完成, 结果数量: %d", len(results))
-	return results
-}
-
-// parseIPResult 解析单个IP的ping结果
-func (PingTask) parseIPResult(ip string, lines []string, platform connection.Platform, results map[string]Result) {
-	ylog.Debugf("PingTask", "解析IP %s 的结果, 平台: %s", ip, platform)
-	output := strings.Join(lines, "\n")
-
-	result := Result{
-		Data: map[string]interface{}{
-			"target_ip":  ip,
-			"raw_output": output,
-		},
-	}
-
-	switch platform {
-	case connection.PlatformCiscoIOSXE:
-		result.Success = PingTask{}.parseCiscoOutput(output, &result)
-	case connection.PlatformCiscoIOSXR:
-		result.Success = PingTask{}.parseCiscoOutput(output, &result)
-	case connection.PlatformCiscoNXOS:
-		result.Success = PingTask{}.parseCiscoNxosOutput(output, &result)
-	case connection.PlatformHuaweiVRP:
-		result.Success = PingTask{}.parseHuaweiOutput(output, &result)
-	default:
-		result.Success = PingTask{}.parseGenericOutput(output, &result)
-	}
-
-	ylog.Debugf("PingTask", "IP %s 解析结果: 成功=%v", ip, result.Success)
-	results[ip] = result
 }
