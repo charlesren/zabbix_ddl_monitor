@@ -892,6 +892,31 @@ func (p *EnhancedConnectionPool) EnableDebug() {
 	p.debugMode = true
 }
 
+// GetFactory 获取协议工厂（用于测试）
+func (p *EnhancedConnectionPool) GetFactory(proto Protocol) ProtocolFactory {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.factories[proto]
+}
+
+// CheckLeaks 检查连接泄漏（用于测试和调试）
+func (p *EnhancedConnectionPool) CheckLeaks() []string {
+	if !p.debugMode {
+		return nil
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var leaks []string
+	for id, trace := range p.activeConns {
+		leaks = append(leaks, fmt.Sprintf("LEAK: connection %s created at %v, last used %v, usage count %d",
+			id, trace.CreatedAt, trace.LastUsed, trace.UsageCount))
+	}
+
+	return leaks
+}
+
 // DisableDebug 关闭调试模式
 func (p *EnhancedConnectionPool) DisableDebug() {
 	p.debugMode = false

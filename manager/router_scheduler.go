@@ -41,56 +41,6 @@ type RouterScheduler struct {
 	routerCtx      context.Context // 路由器级上下文
 }
 
-/*
-	func NewRouterScheduler(router *syncer.Router, initialLines []syncer.Line, manager *Manager) *RouterScheduler {
-		scheduler := &RouterScheduler{
-			router:     router,
-			lines:      initialLines,
-			connection: connection.NewConnectionPool(router.ToConnectionConfig()),
-			queues:     make(map[time.Duration]*IntervalTaskQueue),
-			manager:    manager,
-			stopChan:   make(chan struct{}),
-		}
-		ylog.Debugf("scheduler", "connection config: %+v", router.ToConnectionConfig())
-
-		//  预热连接池
-		if err := scheduler.connection.WarmUp(scheduler.router.Protocol, warmUpConnectionCount); err != nil {
-			ylog.Warnf("scheduler", "connection pool warm-up failed: %v (router=%s)",
-				err, scheduler.router.IP)
-		} else {
-			ylog.Infof("scheduler", "successfully warmed up %d connections (router=%s)",
-				warmUpConnectionCount, scheduler.router.IP)
-		}
-		// 同步预加载Connection能力
-		conn, err := scheduler.connection.Get(scheduler.router.Protocol)
-		if err != nil {
-			ylog.Warnf("scheduler", "preload capability failed: %v", err)
-			// 设置默认能力以防止nil指针
-			defaultCapability := connection.ProtocolCapability{
-				CommandTypesSupport: []connection.CommandType{"commands"},
-			}
-			scheduler.capabilityMu.Lock()
-			scheduler.connCapability = &defaultCapability
-			scheduler.capabilityMu.Unlock()
-		} else {
-			capability := conn.GetCapability()
-			scheduler.capabilityMu.Lock()
-			scheduler.connCapability = &capability
-			scheduler.capabilityMu.Unlock()
-			scheduler.connection.Release(conn)
-			ylog.Debugf("scheduler", "preloaded capabilities for %s", scheduler.router.IP)
-		}
-
-		scheduler.initializeQueues()
-
-		// 创建异步执行器
-		scheduler.asyncExecutor = task.NewAsyncExecutor(3, // 3个工作goroutine
-			task.WithTimeout(30*time.Second), // 30秒超时
-		)
-
-		return scheduler
-	}
-*/
 func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initialLines []syncer.Line, manager *Manager) (*RouterScheduler, error) {
 	// 1. 使用Builder直接构造配置
 	config, err := connection.NewConfigBuilder().
