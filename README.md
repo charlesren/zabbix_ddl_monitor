@@ -18,7 +18,7 @@ The Zabbix DDL Monitor is a comprehensive network monitoring solution that autom
 - **Plugin Architecture**: Extensible task system supporting multiple monitoring types
 - **Platform Agnostic**: Supports multiple router platforms (Cisco IOSXE, Huawei VRP, H3C Comware, etc.)
 - **Protocol Flexibility**: Dual protocol support (SSH and Scrapli) for different use cases
-- **Batch Processing**: Efficient batch ping operations for multiple target IPs
+- **Efficient Execution**: Individual ping task execution for better error isolation and connection reuse
 
 ### 🔗 Advanced Connection Management
 - **Connection Pooling**: Efficient resource management with automatic cleanup and health checks
@@ -131,14 +131,7 @@ params := map[string]interface{}{
 }
 ```
 
-#### Batch IP Ping
-```go
-params := map[string]interface{}{
-    "target_ips": []string{"8.8.8.8", "1.1.1.1", "208.67.222.222"},
-    "repeat": 3,
-    "timeout": 1 * time.Second,
-}
-```
+> **Note**: Current system implementation uses individual IP processing mode, where each dedicated line executes ping tasks independently for better error isolation and connection reuse efficiency.
 
 ## API Reference
 
@@ -244,3 +237,40 @@ For issues and questions:
 - Create an issue in the GitHub repository
 - Check the documentation in the `/docs` directory
 - Review test files for usage examples
+
+## Architecture Design Notes
+
+### 🔄 **Evolution from Batch to Individual Processing**
+
+The system has undergone architectural optimization, evolving from the original batch processing mode to a more stable and efficient individual IP processing mode:
+
+**Challenges with Previous Batch Processing**:
+- Most network devices don't support native batch ping commands
+- Complex batch output parsing was error-prone
+- Single point of failure affecting entire batch tasks
+- Difficult debugging and error localization
+
+**Current Individual IP Processing Advantages**:
+- ✅ **Error Isolation**: Each dedicated line ping task executes independently, single failures don't affect others
+- ✅ **Connection Reuse**: Maintains resource efficiency through advanced connection pool management
+- ✅ **Simplified Architecture**: Removed complex batch parsing logic, more reliable code
+- ✅ **Easy to Scale**: Supports independent parameter configuration and error handling for each line
+
+### 🏗️ **Implementation Details**
+```go
+// Execution logic in RouterScheduler
+for _, line := range lines {
+    // Create independent ping task for each dedicated line
+    taskCtx := task.TaskContext{
+        TaskType: "ping",
+        Params: map[string]interface{}{
+            "target_ip": line.IP, // Single IP
+            "repeat":    5,
+            "timeout":   10 * time.Second,
+        },
+    }
+    
+    // Submit task asynchronously, maintaining high-efficiency concurrency
+    s.asyncExecutor.Submit(pingTask, conn, taskCtx, callback)
+}
+```

@@ -1,10 +1,10 @@
 # 专线监控系统设计文档
 
 ## 1. 概述
-本系统通过Zabbix实现网络专线通断监控，通过动态管理专线配置和路由器连接，实现多平台任务执行与批量结果上报的核心流程：
+本系统通过Zabbix实现网络专线通断监控，通过动态管理专线配置和路由器连接，实现多平台任务执行与高效结果上报的核心流程：
 1. **配置同步**：从Zabbix API拉取专线列表。
-2. **任务调度**：按专线间隔执行路由器Ping检测，复用路由器连接。
-3. **结果上报**：批量汇总检测结果回传Zabbix。
+2. **任务调度**：按专线间隔执行路由器Ping检测，每个专线独立处理，复用路由器连接。
+3. **结果上报**：汇总检测结果回传Zabbix。
 
 ## 2. 系统架构与关键流程
 ### 2.1 架构图
@@ -20,7 +20,7 @@ graph TD
        F -->|触发task| D[RouterScheduler1]
       D -->|发送任务、连接、任务信息| J[Executor]
        J --> O[Aggregator]
-    O -->|批量上报| P[Zabbix]
+    O -->|结果上报| P[Zabbix]
 ```
 
 ### 2.2 核心模块
@@ -47,6 +47,7 @@ graph TD
 - 收到任务信号分发至 `Executor`。
 - 拥有connectPool
 - 调度PingTask类型的任务，任务的触发时机由IntervalQueue决定
+- 为每个专线创建独立的ping任务，避免批量处理的复杂性
 - 从ConnectionPool申请连接、用完释放
 - 根据Router里Protocol信息，申请相应的协议的连接
 - Router里自带platform信息，用于匹配task实现的平台类型
@@ -105,8 +106,9 @@ Task 仅定义参数规范，实际工作由适配器完成
 
 ##### 监控任务实现 （ping_task）
 - 支持多平台（`cisco_iosxe`、`cisco_iosxr`、`cisco_nxos`、`h3c_comware`、`huawei_vrp`)
-- 支持scrapligo和channel
-- 支持多条专线的IP合并为一个参数，一次性检查
+- 支持scrapligo和SSH协议
+- 每个专线独立执行ping检测，提供更好的错误隔离和调试能力
+- 简化的输出解析，避免复杂的批量解析逻辑
 
 ##### 平台适配器（PlatformAdapter）
 - 将通用任务参数转换为设备特定的协议指令
@@ -137,10 +139,11 @@ Task 仅定义参数规范，实际工作由适配器完成
 
 
 #### 结果上报 （aggregator）
-- 合并结果并上报
+- 收集和聚合单个ping任务的结果
 - 触发上报条件
   - 缓冲区达到 100 条结果，或
   - 最近一次上报后超过 5 秒。
+- 每个专线的结果独立处理，便于错误定位和状态追踪
 
 
 ### 2.3 关键时序流程
@@ -179,7 +182,7 @@ sequenceDiagram
     Queue->>Registry: 生成任务命令（PingTask）
     Registry->>Queue: 返回命令（"ping 10.0.0.1"）
     Queue->>Executor: 提交任务（Task）
-    Queue-->>Executor: 提供合并后的任务列表
+    Queue-->>Executor: 提供独立的任务列表
     Executor->>Executor: 申请连接（GetConn）
 
     Executor->>scrapligo.Channel: 执行命令
@@ -647,3 +650,101 @@ type TaskError struct {
 1. 实现Task接口。
 2. 定义参数规范。
 3. 注册任务实现。
+
+## 7. 架构演进说明
+
+### 7.1 设计演进历程
+
+#### 原始设计：批量处理架构
+最初的设计采用批量处理模式，支持在单个任务中处理多个专线IP：
+- 支持 `target_ips` 参数传入多个IP地址
+- 批量生成ping命令
+- 复杂的批量输出解析逻辑
+- 批量结果聚合和上报
+
+#### 当前设计：个体处理架构
+经过重构，系统简化为个体处理模式：
+- 仅支持 `target_ip` 参数（单个IP）
+- 每个专线独立创建ping任务
+- 简化的输出解析逻辑
+- 独立的错误处理和状态追踪
+
+### 7.2 架构变更的技术原因
+
+#### 错误隔离改进
+```
+批量模式：一个IP解析失败可能影响整批结果
+个体模式：每个IP独立处理，错误不会相互影响
+```
+
+#### 调试能力增强
+```
+批量模式：难以定位具体哪个IP出现问题
+个体模式：每个任务有独立的上下文和日志
+```
+
+#### 代码复杂性降低
+```
+批量模式：需要复杂的字符串合并和拆分逻辑
+个体模式：单一IP处理逻辑，代码更简洁
+```
+
+### 7.3 性能对比分析
+
+#### 连接效率
+- **批量模式**：单次连接处理多个IP，连接开销较低
+- **个体模式**：连接池复用机制，实际连接开销可控
+
+#### 并发处理
+- **批量模式**：批内串行处理，整体并发度有限
+- **个体模式**：任务级并行，更好的资源利用
+
+#### 内存使用
+- **批量模式**：大批量数据需要更多内存缓存
+- **个体模式**：内存使用更均匀，避免峰值
+
+### 7.4 当前实现的技术优势
+
+1. **简化的任务模型**
+   ```go
+   // 当前实现 - 清晰的单IP处理
+   func (p *PingTask) buildCiscoEvent(targetIP string, params map[string]interface{}) (*Event, error)
+   
+   // 原批量实现 - 复杂的多IP处理
+   // func (p *PingTask) buildCiscoEvents(targetIPs []string, params map[string]interface{}) ([]*Event, error)
+   ```
+
+2. **精确的错误处理**
+   ```go
+   // 每个IP有独立的Result结构
+   type Result struct {
+       Success bool
+       Data    map[string]interface{} // 包含target_ip字段
+       Error   string
+   }
+   ```
+
+3. **清晰的解析逻辑**
+   ```go
+   // 华为输出解析 - 修复了字符串匹配顺序bug
+   if strings.Contains(line, "100% packet loss") {
+       // 先检查100%丢包
+   } else if strings.Contains(line, "0% packet loss") {
+       // 再检查0%丢包
+   }
+   ```
+
+### 7.5 迁移影响说明
+
+#### 测试更新
+- 移除所有 `target_ips` 相关测试用例
+- 更新方法签名从 `buildCiscoEvents` 到 `buildCiscoEvent`
+- 简化测试预期结果结构
+
+#### 文档同步
+- README文件移除批量处理示例
+- 设计文档更新架构描述
+- API文档反映当前参数规范
+
+#### 向后兼容性
+**注意**：此架构变更不保持向后兼容性，所有使用 `target_ips` 参数的配置需要迁移到 `target_ip`。

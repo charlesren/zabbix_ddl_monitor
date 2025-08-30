@@ -38,7 +38,7 @@
 │  ┌─────────────────┐    ┌─────────────────┐    ┌──────────────┐ │
 │  │  ProtocolDriver │    │   PingTask      │    │  Aggregator  │ │
 │  │                 │    │                 │    │              │ │
-│  │ • SSH Driver    │    │ • 单/批量Ping   │    │ • 结果收集   │ │
+│  │ • SSH Driver    │    │ • 单IP Ping     │    │ • 结果收集   │ │
 │  │ • Scrapli Driver│    │ • 平台适配      │    │ • 状态上报   │ │
 │  │ • 能力系统      │    │ • 输出解析      │    │ • 指标统计   │ │
 │  └─────────────────┘    └─────────────────┘    └──────────────┘ │
@@ -170,10 +170,11 @@ type Task interface {
 ```
 
 **PingTask实现：**
-- 支持单IP和批量IP ping
+- 支持单IP ping（每个专线独立执行）
 - 平台特定的命令生成（Cisco、华为）
 - 智能输出解析和结果聚合
 - 参数验证和错误处理
+- 连接复用以提高效率
 
 **任务上下文：**
 ```go
@@ -286,14 +287,15 @@ type Result struct {
 ### 4.3 任务执行流程
 ```
 1. 调度器触发任务
-2. 从连接池获取协议驱动
-3. 验证任务能力匹配
-4. 构建执行上下文
-5. 执行中间件链
-6. 协议驱动执行命令
-7. 解析输出生成结果
-8. 释放连接回池
-9. 聚合结果并上报
+2. 为每个专线创建独立的ping任务上下文
+3. 从连接池获取协议驱动
+4. 验证任务能力匹配
+5. 构建单个IP的执行上下文
+6. 执行中间件链
+7. 协议驱动执行单个ping命令
+8. 解析输出生成结果
+9. 释放连接回池
+10. 聚合结果并上报
 ```
 
 ## 5. 平台支持
@@ -390,10 +392,12 @@ type TaskError struct {
 - 自动清理避免资源泄漏
 - 并发控制防止过载
 
-### 8.2 批量处理优化
-- 批量ping减少连接开销
+### 8.2 单IP处理优化
+- 每个专线独立ping任务执行，提供更好的错误隔离
+- 连接复用减少连接开销
 - 异步执行提高并发能力
-- 结果聚合减少通信次数
+- 简化的输出解析避免复杂的批量解析逻辑
+- 独立的任务上下文便于调试和错误定位
 
 ### 8.3 内存优化
 - 配置缓存减少API调用
@@ -456,7 +460,94 @@ go build -o ddl_monitor ./cmd/monitor
 - 协议驱动集成
 - Zabbix API集成
 
-### 11.3 性能测试
-- 连接池压力测试
-- 批量任务性能
-- 内存泄漏检测
+## 12. 架构演进说明
+
+### 12.1 从批量处理到单IP处理的演进
+
+系统架构经过优化，从原始的批量处理模式演进为更加稳定和高效的单IP处理模式：
+
+**原批量处理模式的挑战**：
+- 大多数网络设备不支持原生批量ping命令
+- 复杂的批量输出解析容易出错
+- 单点故障影响整批任务
+- 调试和错误定位困难
+
+**当前单IP处理模式的优势**：
+- ✅ **错误隔离**: 每个专线ping任务独立执行，单个失败不影响其他
+- ✅ **连接复用**: 通过高效连接池管理，仍然保持资源效率
+- ✅ **简化架构**: 移除复杂的批量解析逻辑，代码更可靠
+- ✅ **易于扩展**: 支持每个专线独立的参数配置和错误处理
+
+### 12.2 实现细节
+
+**RouterScheduler中的执行逻辑**：
+```go
+// 为每个专线执行单独的ping任务
+for _, line := range lines {
+    s.executeIndividualPing(line, matchedTask, matchedCmdType)
+}
+
+// executeIndividualPing 执行单个专线的ping任务
+func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask task.Task, matchedCmdType task.CommandType) {
+    // 创建单个任务上下文
+    taskCtx := task.TaskContext{
+        TaskType: "ping",
+        Params: map[string]interface{}{
+            "target_ip": line.IP, // 单个IP
+            "repeat":    5,
+            "timeout":   10 * time.Second,
+        },
+    }
+    
+    // 异步提交任务，保持高效并发
+    s.asyncExecutor.Submit(matchedTask, conn, taskCtx, callback)
+}
+```
+
+**PingTask参数验证**：
+```go
+func (PingTask) ValidateParams(params map[string]interface{}) error {
+    // 验证必需参数 - 只支持单个target_ip
+    targetIP, hasTargetIP := params["target_ip"]
+    
+    if !hasTargetIP {
+        return fmt.Errorf("target_ip parameter is required")
+    }
+    
+    // 验证IP参数类型和格式
+    if targetIPStr, ok := targetIP.(string); ok {
+        if targetIPStr == "" {
+            return fmt.Errorf("target_ip cannot be empty")
+        }
+    } else {
+        return fmt.Errorf("target_ip must be a string")
+    }
+    
+    // 其他参数验证...
+}
+```
+
+### 12.3 性能优化效果
+
+**连接效率对比**：
+- 传统模式: 多个专线 = 多次连接建立/销毁
+- 现在模式: 多个专线 = 单个连接复用 + 独立任务执行
+
+**错误处理效果**：
+- 专线A失败不会影响专线B/C/D的执行
+- 每个专线有独立的错误上下文和日志
+- 支持每个专线的个性化参数设置
+
+### 12.4 代码简化效果
+
+**移除的复杂功能**：
+- 批量输出解析逻辑（~150行代码）
+- target_ips参数支持和验证
+- 批量结果分发和聚合逻辑
+- 复杂的错误传播机制
+
+**保留的核心功能**：
+- 连接池管理和复用
+- 异步任务执行
+- 平台适配和协议支持
+- 结果聚合和上报机制
