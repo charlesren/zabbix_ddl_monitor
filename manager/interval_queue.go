@@ -27,7 +27,7 @@ func NewIntervalTaskQueue(interval time.Duration) *IntervalTaskQueue {
 	ylog.Debugf("queue", "creating new task queue (interval=%v)", interval)
 	q := &IntervalTaskQueue{
 		interval:   interval,
-		execNotify: make(chan struct{}, 1), // 缓冲防止阻塞
+		execNotify: make(chan struct{}, 200), // 缓冲防止阻塞
 		ticker:     time.NewTicker(interval),
 		stopChan:   make(chan struct{}),
 	}
