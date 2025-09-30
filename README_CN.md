@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-Zabbix 专线监控系统是一个全面的网络监控解决方案，通过 Zabbix 基础设施自动发现和监控专用线路（DDL）。系统通过在边缘路由器上执行 ping 任务并将结果报告给监控系统，提供实时的连通性监控。
+Zabbix 专线监控系统是一个全面的网络监控解决方案，通过 Zabbix 基础设施自动发现和监控专用线路（DDL）。系统通过在边缘路由器上执行独立的 ping 任务并将结果通过 Zabbix 代理基础设施报告给监控系统，提供实时的连通性监控。
 
 ## 核心特性
 
@@ -18,7 +18,7 @@ Zabbix 专线监控系统是一个全面的网络监控解决方案，通过 Zab
 - **插件架构**：支持多种监控类型的可扩展任务系统
 - **平台无关**：支持多种路由器平台（思科 IOSXE、华为 VRP、H3C Comware 等）
 - **协议灵活性**：双协议支持（SSH 和 Scrapli）适用于不同使用场景
-- **高效执行**：单独执行ping任务以实现更好的错误隔离和连接复用
+- **单IP处理模式**：每个专线独立执行ping任务，以获得更好的错误隔离和连接复用效果
 
 ### 🔗 高级连接管理
 - **连接池**：自动清理和健康检查的高效资源管理
@@ -28,11 +28,24 @@ Zabbix 专线监控系统是一个全面的网络监控解决方案，通过 Zab
 
 ### 📊 健壮执行框架
 - **中间件支持**：可配置的超时、重试、日志和指标收集
-- **异步执行**：工作池的非阻塞任务执行
+- **异步执行**：带智能超时管理和工作池的非阻塞任务执行
 - **结果聚合**：全面的结果收集和报告
 - **错误处理**：详细的错误跟踪和恢复机制
 
 ## 系统架构组件
+
+### 项目结构
+```
+zabbix_ddl_monitor/
+├── cmd/              # 主应用程序入口
+├── conf/             # 配置文件
+├── connection/       # 连接管理和协议驱动
+├── docs/             # 文档
+├── manager/          # 中央编排和调度
+├── spec/             # 技术规范
+├── syncer/           # 从Zabbix同步配置
+└── task/             # 任务框架和实现
+```
 
 ### 核心模块
 
@@ -55,10 +68,11 @@ Zabbix 专线监控系统是一个全面的网络监控解决方案，通过 Zab
 - **能力系统**：验证平台和协议兼容性
 
 #### 任务框架
-- **任务接口（Task Interface）**：不同监控类型的插件系统
-- **Ping 任务（PingTask）**：连通性监控的主要实现
-- **任务注册表（TaskRegistry）**：可用任务的中央注册表
-- **执行器（Executor）**：基于中间件的任务执行引擎
+- **任务接口（Task Interface）**：不同监控类型的插件系统，支持平台特定实现
+- **Ping 任务（PingTask）**：连通性监控的主要实现，具备自适应命令生成
+- **任务注册表（TaskRegistry）**：可用任务的中央注册表，支持自动发现功能
+- **异步执行器（AsyncExecutor）**：基于中间件的异步任务执行引擎，支持智能超时管理
+- **结果聚合器（ResultAggregator）**：批量结果收集并提交到监控系统
 
 ## 支持的平台和协议
 
@@ -86,7 +100,7 @@ Zabbix 专线监控系统是一个全面的网络监控解决方案，通过 Zab
 # 专线主机上必需的宏
 {$LINE_ID}: "unique-line-identifier"      # 唯一专线标识符
 {$LINE_CHECK_INTERVAL}: "180"             # 检查间隔（秒）
-{$LINE_ROUTER_IP}: "192.168.1.1"         # 路由器 IP
+{$LINE_ROUTER_IP}: "192.168.1.1"         # 路由器 IP 地址
 {$LINE_ROUTER_USERNAME}: "admin"          # 路由器用户名
 {$LINE_ROUTER_PASSWORD}: "password"       # 路由器密码
 {$LINE_ROUTER_PLATFORM}: "cisco_iosxe"   # 路由器平台
@@ -99,25 +113,40 @@ Zabbix 专线监控系统是一个全面的网络监控解决方案，通过 Zab
 server:
   log:
     applog:
-      loglevel: 1
-  ip: 192.168.1.100
+      loglevel: 1                 # 日志级别: 0=调试, 1=信息, 2=警告, 3=错误
+  ip: xx.xx.xx.xx
 
 zabbix:
-  username: "monitor_user"
-  password: "password"
-  serverip: "zabbix.example.com"
+  username: "aoms"
+  password: "your_password"
+  serverip: "10.194.75.135"
   serverport: "80"
+  proxyname: "zabbix-proxy-01"    # 必需：用于主机发现的代理名称
+  proxyip: "10.194.75.134"        # 必需：用于数据提交的代理IP
+  proxyport: "10051"              # 必需：用于数据提交的代理端口（可配置）
 ```
+
+**注意**: 日志文件路径硬编码为 `../logs/ddl_monitor.log`（相对于可执行文件）。请确保在运行应用程序的父目录中存在 `logs` 目录。
 
 ## 使用说明
 
 ### 启动服务
 ```bash
-# 使用默认配置
-./cmd/monitor/main
+# 首先构建应用程序
+go mod download
+go build -o ddl_monitor ./cmd/monitor
+
+# 创建日志目录
+mkdir -p logs
+
+# 使用默认配置（相对于可执行文件使用 ../conf/svr.yml）
+./ddl_monitor
 
 # 使用自定义配置路径
-./cmd/monitor/main -c /path/to/config.yml
+./ddl_monitor -c /path/to/config.yml
+
+# 或者：直接运行
+go run ./cmd/monitor/main.go -c conf/svr.yml
 ```
 
 ### 任务示例
@@ -179,8 +208,14 @@ type ProtocolDriver interface {
 
 ### 构建项目
 ```bash
+# 下载依赖
 go mod download
+
+# 构建应用程序
 go build -o ddl_monitor ./cmd/monitor
+
+# 或者构建到指定目录
+go build -o bin/ddl_monitor ./cmd/monitor
 ```
 
 ### 运行测试
@@ -210,14 +245,15 @@ go test ./task -tags=integration
 ## 依赖关系
 
 ### 核心依赖
-- **scrapligo**：高级网络设备自动化
-- **zapix**：Zabbix API 客户端库
-- **ylog**：结构化日志框架
-- **viper**：配置管理
+- **github.com/scrapli/scrapligo**：高级网络设备自动化和协议驱动
+- **github.com/charlesren/zapix**：增强功能的自定义 Zabbix API 客户端库
+- **github.com/charlesren/ylog**：支持日志轮转的结构化日志框架
+- **github.com/charlesren/userconfig**：支持多种格式的配置管理
+- **github.com/spf13/viper**：配置文件解析和管理
 
 ### 协议库
-- **golang.org/x/crypto/ssh**：SSH 协议实现
-- **scrapli/scrapligo**：网络设备自动化框架
+- **golang.org/x/crypto/ssh**：基础路由器连接的 SSH 协议实现
+- **github.com/scrapli/scrapligo**：支持交互式功能的高级网络设备自动化
 
 ## 平台特定实现
 
@@ -430,37 +466,62 @@ type Result struct {
 
 ## 架构设计说明
 
-### 🔄 **从批量处理到单IP处理的演进**
+### 🔄 **单IP处理架构**
 
-系统经过架构优化，从原始的批量处理模式演进为更加稳定和高效的单IP处理模式：
+系统采用单IP处理模式以获得最佳的稳定性和效率：
 
-**原批量处理模式的挑战**:
-- 大多数网络设备不支持原生批量ping命令
-- 复杂的批量输出解析容易出错
-- 单点故障影响整批任务
-- 调试和错误定位困难
+**设计优势**:
+- ✅ **错误隔离**: 每个专线ping任务独立执行，防止级联故障
+- ✅ **连接高效**: 高级连接池管理，支持协议特定优化
+- ✅ **简化解析**: 直接命令-响应映射，消除复杂的批量输出解析
+- ✅ **可扩展设计**: 每条专线独立的参数配置和错误处理
+- ✅ **调试友好**: 每个任务都有隔离的执行上下文和详细日志
 
-**当前单IP处理模式的优势**:
-- ✅ **错误隔离**: 每个专线ping任务独立执行，单个失败不影响其他
-- ✅ **连接复用**: 通过高效连接池管理，仍然保持资源效率
-- ✅ **简化架构**: 移除复杂的批量解析逻辑，代码更可靠
-- ✅ **易于扩展**: 支持每个专线独立的参数配置和错误处理
+**选择单IP处理而非批量处理的原因**:
+- 大多数网络设备缺乏原生批量ping命令支持
+- 简化的错误处理和恢复机制
+- 通过智能连接池实现更好的资源利用率
+- 跨不同路由器类型的平台无关实现
 
-### 🏗️ **实现细节**
+### 🏗️ **实现架构**
 ```go
-// RouterScheduler中的执行逻辑
-for _, line := range lines {
-    // 为每个专线创建独立的ping任务
+// RouterScheduler.executeIndividualPing()中的当前执行逻辑
+func (s *RouterScheduler) executeIndividualPing(line syncer.Line, task task.Task, cmdType task.CommandType) {
+    // 从连接池获取连接
+    conn, err := s.connection.Get(s.router.Protocol)
+    if err != nil {
+        // 处理连接失败
+        return
+    }
+    
+    // 为单个IP创建隔离的任务上下文
     taskCtx := task.TaskContext{
         TaskType: "ping",
+        Platform: s.router.Platform,
+        Protocol: s.router.Protocol,
+        CommandType: cmdType,
         Params: map[string]interface{}{
-            "target_ip": line.IP, // 单个IP
+            "target_ip": line.IP,    // 单个目标IP
             "repeat":    5,
             "timeout":   10 * time.Second,
         },
+        Ctx: s.routerCtx,
     }
     
-    // 异步提交任务，保持高效并发
-    s.asyncExecutor.Submit(pingTask, conn, taskCtx, callback)
+    // 提交到异步执行器，带回调处理
+    err = s.asyncExecutor.Submit(task, conn, taskCtx, func(result task.Result, err error) {
+        // 将连接释放回池
+        s.connection.Release(conn)
+        
+        // 将结果提交到聚合器进行批量上报
+        s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration)
+    })
 }
 ```
+
+### 🔧 **配置管理**
+系统支持动态配置更新，实现零停机时间重新加载：
+- **热重载**：通过Zabbix API轮询检测配置变更
+- **版本控制**：单调递增版本号用于变更跟踪
+- **事件驱动**：配置变更通知的订阅者模式
+- **优雅更新**：现有任务完成后再应用新配置

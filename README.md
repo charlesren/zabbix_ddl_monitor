@@ -4,7 +4,7 @@ A Go-based service that monitors dedicated line connectivity via Zabbix API inte
 
 ## Overview
 
-The Zabbix DDL Monitor is a comprehensive network monitoring solution that automatically discovers and monitors dedicated lines (DDL) through Zabbix infrastructure. It provides real-time connectivity monitoring by executing ping tasks on edge routers and reporting results back to monitoring systems.
+The Zabbix DDL Monitor is a comprehensive network monitoring solution that automatically discovers and monitors dedicated lines (DDL) through Zabbix infrastructure. It provides real-time connectivity monitoring by executing individual ping tasks on edge routers and reporting results back to monitoring systems through the Zabbix proxy infrastructure.
 
 ## Key Features
 
@@ -18,7 +18,7 @@ The Zabbix DDL Monitor is a comprehensive network monitoring solution that autom
 - **Plugin Architecture**: Extensible task system supporting multiple monitoring types
 - **Platform Agnostic**: Supports multiple router platforms (Cisco IOSXE, Huawei VRP, H3C Comware, etc.)
 - **Protocol Flexibility**: Dual protocol support (SSH and Scrapli) for different use cases
-- **Efficient Execution**: Individual ping task execution for better error isolation and connection reuse
+- **Individual IP Processing**: Each dedicated line executes ping tasks independently for better error isolation and connection reuse efficiency
 
 ### 🔗 Advanced Connection Management
 - **Connection Pooling**: Efficient resource management with automatic cleanup and health checks
@@ -28,11 +28,24 @@ The Zabbix DDL Monitor is a comprehensive network monitoring solution that autom
 
 ### 📊 Robust Execution Framework
 - **Middleware Support**: Configurable timeout, retry, logging, and metrics collection
-- **Async Execution**: Non-blocking task execution with worker pools
+- **Async Execution**: Non-blocking task execution with smart timeout management and worker pools
 - **Result Aggregation**: Comprehensive result collection and reporting
 - **Error Handling**: Detailed error tracking and recovery mechanisms
 
 ## Architecture Components
+
+### Project Structure
+```
+zabbix_ddl_monitor/
+├── cmd/              # Main application entry points
+├── conf/             # Configuration files
+├── connection/       # Connection management and protocol drivers
+├── docs/             # Documentation
+├── manager/          # Central orchestration and scheduling
+├── spec/             # Technical specifications
+├── syncer/           # Configuration synchronization from Zabbix
+└── task/             # Task framework and implementations
+```
 
 ### Core Modules
 
@@ -55,10 +68,11 @@ The Zabbix DDL Monitor is a comprehensive network monitoring solution that autom
 - **Capability System**: Validates platform and protocol compatibility
 
 #### Task Framework
-- **Task Interface**: Plugin system for different monitoring types
-- **PingTask**: Primary implementation for connectivity monitoring
-- **TaskRegistry**: Central registry for available tasks
-- **Executor**: Middleware-based task execution engine
+- **Task Interface**: Plugin system for different monitoring types with platform-specific implementations
+- **PingTask**: Primary implementation for connectivity monitoring with adaptive command generation
+- **TaskRegistry**: Central registry for available tasks with auto-discovery capabilities
+- **AsyncExecutor**: Middleware-based async task execution engine with smart timeout management
+- **ResultAggregator**: Batch result collection and submission to monitoring systems
 
 ## Supported Platforms & Protocols
 
@@ -84,13 +98,13 @@ The system requires specific Zabbix host macros for line configuration:
 
 ```yaml
 # Required macros on dedicated line hosts
-{$LINE_ID}: "unique-line-identifier"
-{$LINE_CHECK_INTERVAL}: "180"  # seconds
-{$LINE_ROUTER_IP}: "192.168.1.1"
-{$LINE_ROUTER_USERNAME}: "admin"
-{$LINE_ROUTER_PASSWORD}: "password"
-{$LINE_ROUTER_PLATFORM}: "cisco_iosxe"
-{$LINE_ROUTER_PROTOCOL}: "scrapli"
+{$LINE_ID}: "unique-line-identifier"      # Unique line identifier
+{$LINE_CHECK_INTERVAL}: "180"             # Check interval in seconds
+{$LINE_ROUTER_IP}: "192.168.1.1"         # Router IP address
+{$LINE_ROUTER_USERNAME}: "admin"          # Router username
+{$LINE_ROUTER_PASSWORD}: "password"       # Router password
+{$LINE_ROUTER_PLATFORM}: "cisco_iosxe"   # Router platform
+{$LINE_ROUTER_PROTOCOL}: "scrapli"       # Protocol type
 ```
 
 ### Service Configuration
@@ -99,25 +113,40 @@ The system requires specific Zabbix host macros for line configuration:
 server:
   log:
     applog:
-      loglevel: 1
-  ip: 192.168.1.100
+      loglevel: 1                 # Log level: 0=Debug, 1=Info, 2=Warn, 3=Error
+  ip: xx.xx.xx.xx
 
 zabbix:
-  username: "monitor_user"
-  password: "password"
-  serverip: "zabbix.example.com"
+  username: "aoms"
+  password: "your_password"
+  serverip: "10.194.75.135"
   serverport: "80"
+  proxyname: "zabbix-proxy-01"    # Required: Proxy name for host discovery
+  proxyip: "10.194.75.134"        # Required: Proxy IP for data submission
+  proxyport: "10051"              # Required: Proxy port for data submission (configurable)
 ```
+
+**Note**: The log file path is hardcoded to `../logs/ddl_monitor.log` (relative to the executable). Make sure the `logs` directory exists in the parent directory of where you run the application.
 
 ## Usage
 
 ### Starting the Service
 ```bash
-# Default configuration
-./cmd/monitor/main
+# Build the application first
+go mod download
+go build -o ddl_monitor ./cmd/monitor
+
+# Create logs directory
+mkdir -p logs
+
+# Default configuration (uses ../conf/svr.yml relative to executable)
+./ddl_monitor
 
 # Custom configuration path
-./cmd/monitor/main -c /path/to/config.yml
+./ddl_monitor -c /path/to/config.yml
+
+# Alternative: Run directly
+go run ./cmd/monitor/main.go -c conf/svr.yml
 ```
 
 ### Task Examples
@@ -179,8 +208,14 @@ type ProtocolDriver interface {
 
 ### Building
 ```bash
+# Download dependencies
 go mod download
+
+# Build the application
 go build -o ddl_monitor ./cmd/monitor
+
+# Or build with specific output directory
+go build -o bin/ddl_monitor ./cmd/monitor
 ```
 
 ### Testing
@@ -210,14 +245,15 @@ go test ./task -tags=integration
 ## Dependencies
 
 ### Core Dependencies
-- **scrapligo**: Advanced network device automation
-- **zapix**: Zabbix API client library
-- **ylog**: Structured logging framework
-- **viper**: Configuration management
+- **github.com/scrapli/scrapligo**: Advanced network device automation and protocol drivers
+- **github.com/charlesren/zapix**: Custom Zabbix API client library with enhanced features
+- **github.com/charlesren/ylog**: Structured logging framework with rotation support
+- **github.com/charlesren/userconfig**: Configuration management with multi-format support
+- **github.com/spf13/viper**: Configuration file parsing and management
 
 ### Protocol Libraries
-- **golang.org/x/crypto/ssh**: SSH protocol implementation
-- **scrapli/scrapligo**: Network device automation framework
+- **golang.org/x/crypto/ssh**: SSH protocol implementation for basic router connections
+- **github.com/scrapli/scrapligo**: Advanced network device automation with interactive support
 
 ## License
 
@@ -240,37 +276,62 @@ For issues and questions:
 
 ## Architecture Design Notes
 
-### 🔄 **Evolution from Batch to Individual Processing**
+### 🔄 **Individual IP Processing Architecture**
 
-The system has undergone architectural optimization, evolving from the original batch processing mode to a more stable and efficient individual IP processing mode:
+The system implements an individual IP processing mode for maximum stability and efficiency:
 
-**Challenges with Previous Batch Processing**:
-- Most network devices don't support native batch ping commands
-- Complex batch output parsing was error-prone
-- Single point of failure affecting entire batch tasks
-- Difficult debugging and error localization
+**Design Advantages**:
+- ✅ **Error Isolation**: Each dedicated line ping task executes independently, preventing cascading failures
+- ✅ **Connection Efficiency**: Advanced connection pool management with protocol-specific optimizations
+- ✅ **Simplified Parsing**: Direct command-response mapping eliminates complex batch output parsing
+- ✅ **Scalable Design**: Independent parameter configuration and error handling per line
+- ✅ **Debugging Friendly**: Each task has isolated execution context and detailed logging
 
-**Current Individual IP Processing Advantages**:
-- ✅ **Error Isolation**: Each dedicated line ping task executes independently, single failures don't affect others
-- ✅ **Connection Reuse**: Maintains resource efficiency through advanced connection pool management
-- ✅ **Simplified Architecture**: Removed complex batch parsing logic, more reliable code
-- ✅ **Easy to Scale**: Supports independent parameter configuration and error handling for each line
+**Why Individual Processing Over Batch**:
+- Most network devices lack native batch ping command support
+- Simplified error handling and recovery mechanisms  
+- Better resource utilization through smart connection pooling
+- Platform-agnostic implementation across different router types
 
-### 🏗️ **Implementation Details**
+### 🏗️ **Implementation Architecture**
 ```go
-// Execution logic in RouterScheduler
-for _, line := range lines {
-    // Create independent ping task for each dedicated line
+// Current execution logic in RouterScheduler.executeIndividualPing()
+func (s *RouterScheduler) executeIndividualPing(line syncer.Line, task task.Task, cmdType task.CommandType) {
+    // Get connection from pool
+    conn, err := s.connection.Get(s.router.Protocol)
+    if err != nil {
+        // Handle connection failure
+        return
+    }
+    
+    // Create isolated task context for single IP
     taskCtx := task.TaskContext{
         TaskType: "ping",
+        Platform: s.router.Platform,
+        Protocol: s.router.Protocol,
+        CommandType: cmdType,
         Params: map[string]interface{}{
-            "target_ip": line.IP, // Single IP
+            "target_ip": line.IP,    // Single target IP
             "repeat":    5,
             "timeout":   10 * time.Second,
         },
+        Ctx: s.routerCtx,
     }
     
-    // Submit task asynchronously, maintaining high-efficiency concurrency
-    s.asyncExecutor.Submit(pingTask, conn, taskCtx, callback)
+    // Submit to async executor with callback handling
+    err = s.asyncExecutor.Submit(task, conn, taskCtx, func(result task.Result, err error) {
+        // Release connection back to pool
+        s.connection.Release(conn)
+        
+        // Submit results to aggregator for batch reporting
+        s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration)
+    })
 }
 ```
+
+### 🔧 **Configuration Management**
+The system supports dynamic configuration updates with zero-downtime reloading:
+- **Hot Reload**: Configuration changes detected via Zabbix API polling
+- **Version Control**: Monotonic version numbers for change tracking  
+- **Event-Driven**: Subscriber pattern for configuration change notifications
+- **Graceful Updates**: Existing tasks complete before applying new configurations
