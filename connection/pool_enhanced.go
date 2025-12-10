@@ -291,7 +291,7 @@ func NewEnhancedConnectionPool(parentCtx context.Context, config *EnhancedConnec
 		minConnections:    config.MinConnections,
 		healthCheckTime:   config.HealthCheckTime,
 		collector:         GetGlobalMetricsCollector(),
-		resilientExecutor: NewDefaultResilientExecutor(),
+		resilientExecutor: NewResilientExecutor().WithRetrier(NewDefaultRetrier(60 * time.Second)), // 保留重试，移除断路器
 		debugMode:         false,
 		activeConns:       make(map[string]*ConnectionTrace),
 		eventChan:         make(chan PoolEvent, 1000),
@@ -369,7 +369,7 @@ func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Proto
 		p.collector.RecordOperationDuration(proto, "get_connection", time.Since(start))
 	}()
 
-	// 使用弹性执行器获取连接
+	// 使用弹性执行器获取连接（保留重试，移除断路器）
 	var conn *EnhancedPooledConnection
 	var err error
 
