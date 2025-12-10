@@ -36,8 +36,9 @@ type RouterScheduler struct {
 	asyncExecutor  *task.AsyncExecutor
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
-	mu             sync.Mutex
-	routerCtx      context.Context // 路由器级上下文
+	routerCtx      context.Context
+	mu             sync.RWMutex
+	connSemaphore  chan struct{} // 连接信号量，用于控制并发任务数
 }
 
 func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initialLines []syncer.Line, manager *Manager) (*RouterScheduler, error) {
@@ -56,13 +57,14 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 
 	// 4. 创建调度器实例
 	scheduler := &RouterScheduler{
-		connection: pool,
-		router:     router,
-		lines:      initialLines,
-		manager:    manager,
-		queues:     make(map[time.Duration]*IntervalTaskQueue),
-		stopChan:   make(chan struct{}),
-		routerCtx:  parentCtx,
+		connection:    pool,
+		router:        router,
+		lines:         initialLines,
+		manager:       manager,
+		queues:        make(map[time.Duration]*IntervalTaskQueue),
+		stopChan:      make(chan struct{}),
+		routerCtx:     parentCtx,
+		connSemaphore: make(chan struct{}, config.MaxConnections),
 	}
 
 	// 5. 预热连接池
@@ -96,8 +98,8 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 
 	// 7. 创建异步执行器
 	scheduler.asyncExecutor = task.NewAsyncExecutor(
-		2,
-		task.WithSmartTimeout(30*time.Second),
+		3,
+		task.WithSmartTimeout(60*time.Second),
 	)
 	// 可选：启用调试和事件监听
 	//scheduler.connection.EnableDebug()
@@ -250,10 +252,26 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 
 // executeIndividualPing 执行单个专线的ping任务
 func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask task.Task, matchedCmdType task.CommandType) {
-	// 获取连接
+	// 1. 先获取信号量（阻塞等待连接可用）
+	select {
+	case s.connSemaphore <- struct{}{}:
+		// 成功获取信号量，可以继续获取连接
+		ylog.Debugf("scheduler", "router=%s acquired semaphore for line %s (semaphore: %d/%d)",
+			s.router.IP, line.IP, len(s.connSemaphore), cap(s.connSemaphore))
+	case <-s.routerCtx.Done():
+		ylog.Warnf("scheduler", "router=%s context cancelled while waiting for semaphore for line %s",
+			s.router.IP, line.IP)
+		return
+	}
+
+	// 2. 获取连接
 	conn, err := s.connection.Get(s.router.Protocol)
 	if err != nil {
 		ylog.Errorf("scheduler", "router=%s get connection failed for line %s: %v", s.router.IP, line.IP, err)
+		// 释放信号量
+		<-s.connSemaphore
+		ylog.Debugf("scheduler", "router=%s released semaphore due to connection failure for line %s",
+			s.router.IP, line.IP)
 		return
 	}
 
@@ -283,6 +301,11 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 		// 释放连接
 		s.connection.Release(conn)
 
+		// 释放信号量
+		<-s.connSemaphore
+		ylog.Debugf("scheduler", "router=%s released semaphore for line %s (semaphore: %d/%d)",
+			s.router.IP, line.IP, len(s.connSemaphore), cap(s.connSemaphore))
+
 		// 处理结果
 		if err != nil {
 			ylog.Errorf("scheduler", "ping task execution failed for line %s on router %s: %v", line.IP, s.router.IP, err)
@@ -310,6 +333,10 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 	if err != nil {
 		ylog.Errorf("scheduler", "failed to submit ping task for line %s on router %s: %v", line.IP, s.router.IP, err)
 		s.connection.Release(conn)
+		// 释放信号量
+		<-s.connSemaphore
+		ylog.Debugf("scheduler", "router=%s released semaphore due to submit failure for line %s (semaphore: %d/%d)",
+			s.router.IP, line.IP, len(s.connSemaphore), cap(s.connSemaphore))
 	}
 }
 
@@ -339,6 +366,26 @@ func (s *RouterScheduler) Stop() {
 
 	// 等待所有goroutine完成
 	s.wg.Wait()
+
+	// 等待所有信号量释放（确保所有任务都已完成）
+	if s.connSemaphore != nil {
+		timeout := time.After(30 * time.Second)
+		semaphoreCapacity := cap(s.connSemaphore)
+		for i := 0; i < semaphoreCapacity; i++ {
+			select {
+			case s.connSemaphore <- struct{}{}:
+				// 成功获取信号量，说明有可用槽位
+				<-s.connSemaphore // 立即释放
+			case <-timeout:
+				ylog.Warnf("scheduler", "timeout waiting for semaphore release (router=%s, acquired=%d/%d)",
+					s.router.IP, len(s.connSemaphore), semaphoreCapacity)
+				break
+			}
+		}
+		close(s.connSemaphore)
+		ylog.Debugf("scheduler", "semaphore closed (router=%s)", s.router.IP)
+	}
+
 	ylog.Infof("scheduler", "router scheduler fully stopped (router=%s)", s.router.IP)
 	// 关闭连接池
 	if s.connection != nil {

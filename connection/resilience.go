@@ -470,10 +470,10 @@ func (re *ResilientExecutor) Execute(ctx context.Context, operation func() error
 var (
 	// 默认指数退避策略
 	DefaultExponentialBackoff = &ExponentialBackoffPolicy{
-		BaseDelay:   100 * time.Millisecond,
-		MaxDelay:    5 * time.Second,
-		BackoffRate: 2.0,
-		MaxAttempts: 3,
+		BaseDelay:   2 * time.Second,
+		MaxDelay:    10 * time.Second,
+		BackoffRate: 1.5,
+		MaxAttempts: 2,
 		Jitter:      true,
 	}
 
@@ -485,11 +485,11 @@ var (
 
 	// 默认熔断器配置
 	DefaultCircuitBreakerConfig = CircuitBreakerConfig{
-		MaxFailures:      5,
-		ResetTimeout:     60 * time.Second,
-		FailureThreshold: 0.6,
-		MinRequests:      10,
-		MaxRequests:      3,
+		MaxFailures:      20,               // 最大失败次数：20次（考虑200专线规模）
+		ResetTimeout:     30 * time.Second, // 重置超时：30秒（快速恢复）
+		FailureThreshold: 0.7,              // 失败阈值：70%
+		MinRequests:      30,               // 最小请求数：30次（开始计算失败率）
+		MaxRequests:      5,                // 半开状态最大请求：5次（测试连接恢复）
 	}
 )
 
@@ -504,7 +504,7 @@ func NewDefaultCircuitBreaker() *CircuitBreaker {
 
 func NewDefaultResilientExecutor() *ResilientExecutor {
 	return NewResilientExecutor().
-		WithRetrier(NewDefaultRetrier(30 * time.Second)).
+		WithRetrier(NewDefaultRetrier(60 * time.Second)).
 		WithCircuitBreaker(NewDefaultCircuitBreaker())
 }
 

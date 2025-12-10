@@ -40,7 +40,7 @@ func NewAsyncExecutor(workers int, middlewares ...Middleware) *AsyncExecutor {
 	executor := NewExecutor(nil, middlewares...)
 
 	return &AsyncExecutor{
-		taskChan: make(chan AsyncTaskRequest, workers*2), // 缓冲队列
+		taskChan: make(chan AsyncTaskRequest, workers*10), // 缓冲队列
 		workers:  workers,
 		stopChan: make(chan struct{}),
 		executor: executor,

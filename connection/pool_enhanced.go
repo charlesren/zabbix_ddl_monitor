@@ -322,9 +322,9 @@ func (p *EnhancedConnectionPool) RegisterFactory(proto Protocol, factory Protoco
 		factory:     factory,
 		stats:       &DriverPoolStats{Protocol: proto},
 		healthChecker: &HealthChecker{
-			interval:    30 * time.Second,
+			interval:    120 * time.Second,
 			timeout:     10 * time.Second,
-			maxFailures: 3,
+			maxFailures: 10,
 			checkFunc:   p.defaultHealthCheck,
 		},
 		connectionLifecycle: &ConnectionLifecycleManager{
