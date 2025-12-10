@@ -146,13 +146,32 @@ func (m *Manager) handleLineChanges(sub *syncer.Subscription) {
 	ylog.Infof("manager", "已订阅配置变更通知")
 	defer m.wg.Done()
 
+	// 使用缓冲区解耦事件接收和处理，避免阻塞订阅通道
+	eventBuffer := make(chan syncer.LineChangeEvent, 500)
+
+	// 启动事件处理器
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		for event := range eventBuffer {
+			ylog.Infof("manager", "收到变更事件: %v", event.Type)
+			m.processLineEvent(event)
+		}
+	}()
+
 	for {
 		select {
 		case <-m.stopChan:
+			close(eventBuffer)
 			return
 		case event := <-sub.Events():
-			ylog.Infof("manager", "收到变更事件: %v", event.Type)
-			m.processLineEvent(event)
+			// 将事件放入缓冲区，避免阻塞订阅通道
+			select {
+			case eventBuffer <- event:
+				// 事件成功缓冲
+			default:
+				ylog.Errorf("manager", "事件缓冲区已满，丢弃事件: %v", event.Type)
+			}
 		}
 	}
 }

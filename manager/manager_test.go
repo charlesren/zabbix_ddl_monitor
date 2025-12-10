@@ -30,7 +30,7 @@ func (m *MockConfigSyncer) GetLines() map[string]syncer.Line {
 func (m *MockConfigSyncer) Subscribe(ctx context.Context) *syncer.Subscription {
 	m.Called(ctx)
 	mockSub := &MockSubscription{
-		events: make(chan syncer.LineChangeEvent, 100),
+		events: make(chan syncer.LineChangeEvent, 1000),
 	}
 
 	m.mu.Lock()

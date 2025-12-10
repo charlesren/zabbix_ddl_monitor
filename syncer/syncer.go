@@ -414,13 +414,22 @@ func (cs *ConfigSyncer) notifyAll(events []LineChangeEvent) {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 	ylog.Infof("syncer", "notifying %d subscribers with %d events", len(cs.subscribers), len(events))
+
 	for _, event := range events {
 		for _, sub := range cs.subscribers {
+			// Try to send with a short timeout to avoid blocking forever
 			select {
 			case sub <- event:
 				ylog.Debugf("syncer", "event sent to subscriber: %+v", event)
 			default:
-				ylog.Warnf("syncer", "warn: subscriber channel full, dropped event %v", event)
+				// Channel is full, try once more with a timeout
+				ylog.Warnf("syncer", "subscriber channel full, retrying with timeout for event %v", event)
+				select {
+				case sub <- event:
+					ylog.Debugf("syncer", "event sent to subscriber after retry: %+v", event)
+				case <-time.After(100 * time.Millisecond):
+					ylog.Errorf("syncer", "ERROR: subscriber channel still full after timeout, dropped event %v", event)
+				}
 			}
 		}
 	}
@@ -465,7 +474,7 @@ func (cs *ConfigSyncer) detectChanges(newLines map[string]Line) []LineChangeEven
 }
 
 func (cs *ConfigSyncer) Subscribe(ctx context.Context) *Subscription {
-	ch := make(chan LineChangeEvent, 100)
+	ch := make(chan LineChangeEvent, 1000)
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.subscribers = append(cs.subscribers, ch)

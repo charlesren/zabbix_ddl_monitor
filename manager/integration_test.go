@@ -271,7 +271,7 @@ func (t *TestConfigSyncer) Subscribe(ctx context.Context) *syncer.Subscription {
 
 	subCtx, cancel := context.WithCancel(ctx)
 	testSub := &TestSubscription{
-		events: make(chan syncer.LineChangeEvent, 100),
+		events: make(chan syncer.LineChangeEvent, 1000),
 		ctx:    subCtx,
 		cancel: cancel,
 	}
