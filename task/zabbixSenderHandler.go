@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -299,18 +300,23 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 		if v, ok := event.Data["packet_loss"].(int); ok {
 			// 验证值在合理范围内 (0-100)
 			if v >= 0 && v <= 100 {
+				// 尝试直接使用整数，而不是转换为字符串
+				// Zabbix可能期望数字类型而不是字符串
 				value := fmt.Sprintf("%d", v)
 				metrics = append(metrics, &sender.Metric{
-					Host:  event.IP,
-					Key:   "dedicatedLinePing",
-					Value: value,
-					Clock: event.Timestamp.Unix(),
+					Host:   event.IP,
+					Key:    "dedicatedLinePing",
+					Value:  value,
+					Clock:  event.Timestamp.Unix(),
+					Active: false, // 明确设置为false，表示这是trapper item
 				})
+				// 同时记录原始整数值用于调试
+				ylog.Debugf("zabbix_sender", "原始整数值: host=%s, packet_loss=%d (类型: %T)", event.IP, v, v)
 				validEvents++
 
 				// 详细记录每个有效metric
-				ylog.Debugf("zabbix_sender", "有效数据: host=%s, packet_loss=%d, timestamp=%d",
-					event.IP, v, event.Timestamp.Unix())
+				ylog.Debugf("zabbix_sender", "有效数据: host=%s, packet_loss=%d, timestamp=%d, active=%v",
+					event.IP, v, event.Timestamp.Unix(), false)
 			} else {
 				// 值超出范围
 				ylog.Warnf("zabbix_sender", "数据超出范围: host=%s, packet_loss=%d (应在0-100范围内)",
@@ -336,17 +342,47 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 
 	// 详细记录所有即将发送的metrics内容
 	ylog.Infof("zabbix_sender", "即将发送的metrics详细信息 (共%d个):", len(metrics))
+
+	// 统计active和trapper metrics的数量
+	activeCount := 0
+	trapperCount := 0
+	for _, metric := range metrics {
+		if metric.Active {
+			activeCount++
+		} else {
+			trapperCount++
+		}
+	}
+	ylog.Infof("zabbix_sender", "Metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
+
 	for i, metric := range metrics {
-		ylog.Infof("zabbix_sender", "  metric[%d]: host=%s, key=%s, value=%s, clock=%d, value_type=%T",
-			i, metric.Host, metric.Key, metric.Value, metric.Clock, metric.Value)
+		// 尝试解析值以确定实际类型
+		var valueType string
+		if _, err := strconv.Atoi(metric.Value); err == nil {
+			valueType = "integer(as_string)"
+		} else if _, err := strconv.ParseFloat(metric.Value, 64); err == nil {
+			valueType = "float(as_string)"
+		} else {
+			valueType = "string"
+		}
+
+		ylog.Infof("zabbix_sender", "  metric[%d]: host=%s, key=%s, value=%s (实际类型: %s), clock=%d, active=%v",
+			i, metric.Host, metric.Key, metric.Value, valueType, metric.Clock, metric.Active)
 
 		// 额外验证value是否为有效整数
 		if valueInt, err := strconv.Atoi(metric.Value); err == nil {
 			if valueInt < 0 || valueInt > 100 {
 				ylog.Warnf("zabbix_sender", "  WARNING: metric[%d]值超出范围: %d (应在0-100之间)", i, valueInt)
+			} else {
+				ylog.Debugf("zabbix_sender", "  metric[%d]是有效整数: %d", i, valueInt)
 			}
 		} else {
-			ylog.Errorf("zabbix_sender", "  ERROR: metric[%d]值不是有效整数: %s", i, metric.Value)
+			// 尝试解析为浮点数
+			if valueFloat, err := strconv.ParseFloat(metric.Value, 64); err == nil {
+				ylog.Debugf("zabbix_sender", "  metric[%d]是浮点数: %f", i, valueFloat)
+			} else {
+				ylog.Warnf("zabbix_sender", "  WARNING: metric[%d]值不是有效数字: %s", i, metric.Value)
+			}
 		}
 	}
 
@@ -366,6 +402,15 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 		ylog.Debugf("zabbix_sender", "发送metric[%d/%d]: host=%s, key=%s, value=%s, clock=%d",
 			i+1, len(metrics), metric.Host, metric.Key, metric.Value, metric.Clock)
 	}
+
+	// 调试：记录发送前的metrics数据结构
+	ylog.Debugf("zabbix_sender", "发送前的metrics数据结构:")
+	for i, metric := range metrics {
+		ylog.Debugf("zabbix_sender", "  metric[%d]: %+v", i, metric)
+	}
+
+	// 调试：尝试手动构建Zabbix数据包以验证格式
+	ylog.Debugf("zabbix_sender", "尝试构建Zabbix数据包...")
 
 	resActive, resTrapper, err := h.sender.SendMetrics(metrics)
 	duration := time.Since(start)
@@ -400,6 +445,38 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 		}
 
 		ylog.Warnf("zabbix_sender", "zabbix server reported partial failure: %v", failedDetails)
+
+		// 记录metrics分类信息，帮助诊断问题
+		ylog.Errorf("zabbix_sender", "发送的metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
+		ylog.Errorf("zabbix_sender", "如果active=0但resActive有响应，可能是sender库内部问题")
+
+		// 记录更详细的Zabbix响应信息
+		ylog.Errorf("zabbix_sender", "Zabbix详细响应信息: active_response='%s', active_info='%s', trapper_response='%s', trapper_info='%s'",
+			resActive.Response, resActive.Info, resTrapper.Response, resTrapper.Info)
+
+		// 检查是否是数据格式问题
+		if resActive.Info == "" || resTrapper.Info == "" {
+			ylog.Errorf("zabbix_sender", "Zabbix返回空信息，可能是数据格式问题")
+		} else {
+			// 分析Zabbix错误信息
+			ylog.Errorf("zabbix_sender", "Zabbix错误分析: active_info='%s', trapper_info='%s'",
+				resActive.Info, resTrapper.Info)
+
+			// 检查是否是数据类型问题
+			if strings.Contains(resActive.Info, "invalid") || strings.Contains(resTrapper.Info, "invalid") {
+				ylog.Errorf("zabbix_sender", "可能是数据类型无效错误")
+			}
+			if strings.Contains(resActive.Info, "type") || strings.Contains(resTrapper.Info, "type") {
+				ylog.Errorf("zabbix_sender", "可能是数据类型不匹配错误")
+			}
+
+			// 检查是否是"cannot find pair with name 'data'"错误
+			if strings.Contains(resActive.Info, "cannot find pair") || strings.Contains(resTrapper.Info, "cannot find pair") {
+				ylog.Errorf("zabbix_sender", "检测到'cannot find pair'错误，可能是JSON格式问题")
+				ylog.Errorf("zabbix_sender", "建议检查sender库生成的JSON格式，确保包含'data'字段")
+			}
+		}
+
 		return fmt.Errorf("zabbix server reported failures: %v", failedDetails)
 	}
 
@@ -415,6 +492,13 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	}
 
 	ylog.Infof("zabbix_sender", "successfully sent %d metrics to zabbix in %v", len(metrics), duration)
+
+	// 记录成功的Zabbix响应信息
+	ylog.Debugf("zabbix_sender", "Zabbix成功响应: active_response='%s', active_info='%s', trapper_response='%s', trapper_info='%s'",
+		resActive.Response, resActive.Info, resTrapper.Response, resTrapper.Info)
+
+	// 记录metrics分类信息
+	ylog.Infof("zabbix_sender", "成功发送metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
 
 	// 记录发送后的连接池状态
 	ylog.Debugf("zabbix_sender", "connection pool stats after send: active=%d, idle=%d, total=%d",
