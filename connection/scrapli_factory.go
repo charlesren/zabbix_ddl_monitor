@@ -49,7 +49,7 @@ func (f *ScrapliFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver
 		options.WithAuthNoStrictKey(),
 		options.WithAuthUsername(config.Username),
 		options.WithAuthPassword(config.Password),
-		options.WithTimeoutOps(30*time.Second),
+		options.WithTimeoutOps(60*time.Second),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create platform failed: %w", err)

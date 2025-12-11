@@ -78,6 +78,6 @@ func (d *SSHDriver) GetCapability() ProtocolCapability {
 			CommandTypeCommands,
 		},
 		MaxConcurrent: 3,
-		Timeout:       15 * time.Second,
+		Timeout:       30 * time.Second,
 	}
 }

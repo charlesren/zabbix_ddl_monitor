@@ -278,7 +278,7 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 		Params: map[string]interface{}{
 			"target_ip": line.IP,
 			"repeat":    5,
-			"timeout":   10 * time.Second,
+			"timeout":   30 * time.Second,
 		},
 		Ctx: s.routerCtx,
 	}

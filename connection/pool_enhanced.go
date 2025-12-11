@@ -291,7 +291,7 @@ func NewEnhancedConnectionPool(parentCtx context.Context, config *EnhancedConnec
 		minConnections:    config.MinConnections,
 		healthCheckTime:   config.HealthCheckTime,
 		collector:         GetGlobalMetricsCollector(),
-		resilientExecutor: NewResilientExecutor().WithRetrier(NewDefaultRetrier(60 * time.Second)), // 保留重试，移除断路器
+		resilientExecutor: NewResilientExecutor().WithRetrier(NewDefaultRetrier(30 * time.Second)), // 保留重试，移除断路器，减少超时时间
 		debugMode:         false,
 		activeConns:       make(map[string]*ConnectionTrace),
 		eventChan:         make(chan PoolEvent, 1000),
