@@ -292,26 +292,30 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	metrics := make([]*sender.Metric, 0, len(events))
 	validEvents := 0
 	for _, event := range events {
-		var value string
+		// 只处理整数类型的packet_loss值
 		if v, ok := event.Data["packet_loss"].(int); ok {
-			value = fmt.Sprintf("%d", v)
-			validEvents++
-		} else if v, ok := event.Data["packet_loss"].(string); ok {
-			value = v
+			value := fmt.Sprintf("%d", v)
+			metrics = append(metrics, &sender.Metric{
+				Host:  event.IP,
+				Key:   "dedicatedLinePing",
+				Value: value,
+				Clock: event.Timestamp.Unix(),
+			})
 			validEvents++
 		} else {
-			value = ""
-			ylog.Warnf("zabbix_sender", "event for host %s has no valid value field", event.IP)
+			// 跳过非整数类型的packet_loss值，记录警告
+			ylog.Warnf("zabbix_sender", "跳过无效数据: host=%s, packet_loss类型=%T, 值=%v",
+				event.IP, event.Data["packet_loss"], event.Data["packet_loss"])
 		}
-		metrics = append(metrics, &sender.Metric{
-			Host:  event.IP,
-			Key:   "dedicatedLinePing",
-			Value: value,
-			Clock: event.Timestamp.Unix(),
-		})
 	}
 
 	ylog.Debugf("zabbix_sender", "prepared %d metrics (%d valid events) for zabbix", len(metrics), validEvents)
+
+	// 检查是否有有效的metrics可以发送
+	if len(metrics) == 0 {
+		ylog.Warnf("zabbix_sender", "所有事件都被过滤，没有有效数据发送到Zabbix")
+		return nil
+	}
 
 	// 详细记录metrics内容
 	if len(metrics) > 0 {

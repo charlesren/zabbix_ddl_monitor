@@ -302,11 +302,14 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 			ylog.Debugf("scheduler", "ping completed for line %s in %v", line.IP, duration)
 		}
 
-		// 提交结果给聚合器
-		if s.manager != nil && s.manager.aggregator != nil {
+		// 只提交成功解析的数据给聚合器
+		if result.Success && s.manager != nil && s.manager.aggregator != nil {
 			if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
 				ylog.Debugf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
 			}
+		} else if !result.Success {
+			// 记录解析失败，供监控和调试
+			ylog.Warnf("scheduler", "ping解析失败，不提交给aggregator: line=%s, error=%s", line.IP, result.Error)
 		}
 	})
 

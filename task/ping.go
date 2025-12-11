@@ -526,8 +526,8 @@ func (PingTask) parseCiscoOutput(output string, result *Result) bool {
 							result.Data["success_rate"] = successRate
 							result.Data["packet_loss"] = 100 - successRate
 						} else {
-							result.Data["success_rate"] = "unknown"
-							result.Data["packet_loss"] = "unknown"
+							ylog.Errorf("PingTask", "Cisco parsing: 无法解析百分比值: %s", parts[i-1])
+							return false
 						}
 						break
 					}
@@ -583,8 +583,8 @@ func (PingTask) parseCiscoNxosOutput(output string, result *Result) bool {
 								result.Data["packet_loss"] = packetLoss
 								result.Data["success_rate"] = 100 - packetLoss
 							} else {
-								result.Data["packet_loss"] = "unknown"
-								result.Data["success_rate"] = "unknown"
+								ylog.Errorf("PingTask", "Cisco NXOS parsing: 无法解析丢包率值: %s", packetLossStr)
+								return false
 							}
 						}
 						break
@@ -658,8 +658,8 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 									return true
 								}
 							} else {
-								result.Data["packet_loss"] = "unknown"
-								result.Data["success_rate"] = "unknown"
+								ylog.Errorf("PingTask", "Huawei parsing: 无法解析丢包率值: %s", packetLossStr)
+								return false
 							}
 						}
 						break
@@ -727,16 +727,15 @@ func (PingTask) parseGenericOutput(output string, result *Result) bool {
 
 	// 如果包含ping相关输出但无法确定结果
 	if strings.Contains(output, "ping") || strings.Contains(output, "icmp") {
-		result.Data["status"] = "unknown"
-		result.Data["success_rate"] = "unknown"
-		result.Data["packet_loss"] = "unknown"
+		ylog.Errorf("PingTask", "通用解析: 包含ping/icmp但无法确定结果，输出: %s", output)
+		// 不设置任何packet_loss或success_rate字段，让上层处理
+		result.Data["status"] = "parse_error"
 		ylog.Debugf("PingTask", "通用解析: 包含ping/icmp但无法确定结果")
-		return true
+		return false
 	}
 
-	result.Data["status"] = "error"
-	result.Data["success_rate"] = "unknown"
-	result.Data["packet_loss"] = "unknown"
+	ylog.Errorf("PingTask", "通用解析: 无法识别输出内容，输出: %s", output)
+	result.Data["status"] = "parse_error"
 	ylog.Debugf("PingTask", "通用解析: 无法识别输出内容")
 	return false
 }

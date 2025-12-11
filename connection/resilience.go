@@ -504,8 +504,9 @@ func NewDefaultCircuitBreaker() *CircuitBreaker {
 
 func NewDefaultResilientExecutor() *ResilientExecutor {
 	return NewResilientExecutor().
-		WithRetrier(NewDefaultRetrier(60 * time.Second)).
-		WithCircuitBreaker(NewDefaultCircuitBreaker())
+		WithRetrier(NewDefaultRetrier(60 * time.Second))
+	// 移除断路器，因为专线监控场景不适合使用断路器
+	// 在200专线并发场景下，断路器容易误触发
 }
 
 // 便利函数
