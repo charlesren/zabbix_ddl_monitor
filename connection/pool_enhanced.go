@@ -582,12 +582,19 @@ func (p *EnhancedConnectionPool) WarmUp(proto Protocol, targetCount int) error {
 	// 计算成功连接数
 	successCount := int(atomic.LoadInt64(&warmup.Success))
 
-	// 允许部分失败：只要至少有一个连接成功，就认为warmup成功
-	if successCount > 0 {
+	// 判断warmup结果：完全成功、部分成功或完全失败
+	if successCount == targetCount {
+		// 完全成功：所有连接都建立成功
 		warmup.Status = WarmupStateCompleted
-		ylog.Infof("EnhancedConnectionPool", "warmup partially successful: %d/%d connections established for protocol %s",
+		ylog.Infof("EnhancedConnectionPool", "warmup successful: %d/%d connections established for protocol %s",
+			successCount, targetCount, proto)
+	} else if successCount > 0 {
+		// 部分成功：至少有一个连接成功
+		warmup.Status = WarmupStateCompleted
+		ylog.Warnf("EnhancedConnectionPool", "warmup partially successful: %d/%d connections established for protocol %s",
 			successCount, targetCount, proto)
 	} else {
+		// 完全失败：没有任何连接成功
 		warmup.Status = WarmupStateFailed
 		ylog.Errorf("EnhancedConnectionPool", "warmup failed: 0/%d connections established for protocol %s",
 			targetCount, proto)

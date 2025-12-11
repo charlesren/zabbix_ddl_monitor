@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -291,38 +292,61 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 
 	metrics := make([]*sender.Metric, 0, len(events))
 	validEvents := 0
+	invalidEvents := 0
+
 	for _, event := range events {
 		// 只处理整数类型的packet_loss值
 		if v, ok := event.Data["packet_loss"].(int); ok {
-			value := fmt.Sprintf("%d", v)
-			metrics = append(metrics, &sender.Metric{
-				Host:  event.IP,
-				Key:   "dedicatedLinePing",
-				Value: value,
-				Clock: event.Timestamp.Unix(),
-			})
-			validEvents++
+			// 验证值在合理范围内 (0-100)
+			if v >= 0 && v <= 100 {
+				value := fmt.Sprintf("%d", v)
+				metrics = append(metrics, &sender.Metric{
+					Host:  event.IP,
+					Key:   "dedicatedLinePing",
+					Value: value,
+					Clock: event.Timestamp.Unix(),
+				})
+				validEvents++
+
+				// 详细记录每个有效metric
+				ylog.Debugf("zabbix_sender", "有效数据: host=%s, packet_loss=%d, timestamp=%d",
+					event.IP, v, event.Timestamp.Unix())
+			} else {
+				// 值超出范围
+				ylog.Warnf("zabbix_sender", "数据超出范围: host=%s, packet_loss=%d (应在0-100范围内)",
+					event.IP, v)
+				invalidEvents++
+			}
 		} else {
 			// 跳过非整数类型的packet_loss值，记录警告
-			ylog.Warnf("zabbix_sender", "跳过无效数据: host=%s, packet_loss类型=%T, 值=%v",
+			ylog.Warnf("zabbix_sender", "跳过无效数据类型: host=%s, packet_loss类型=%T, 值=%v",
 				event.IP, event.Data["packet_loss"], event.Data["packet_loss"])
+			invalidEvents++
 		}
 	}
 
-	ylog.Debugf("zabbix_sender", "prepared %d metrics (%d valid events) for zabbix", len(metrics), validEvents)
+	ylog.Infof("zabbix_sender", "数据统计: 总事件=%d, 有效数据=%d, 无效数据=%d", len(events), validEvents, invalidEvents)
+	ylog.Debugf("zabbix_sender", "准备发送 %d 个metrics到Zabbix", len(metrics))
 
 	// 检查是否有有效的metrics可以发送
 	if len(metrics) == 0 {
-		ylog.Warnf("zabbix_sender", "所有事件都被过滤，没有有效数据发送到Zabbix")
+		ylog.Errorf("zabbix_sender", "所有事件都被过滤，没有有效数据发送到Zabbix。总事件=%d, 无效数据=%d", len(events), invalidEvents)
 		return nil
 	}
 
-	// 详细记录metrics内容
-	if len(metrics) > 0 {
-		ylog.Debugf("zabbix_sender", "record metrics details")
-		for i, metric := range metrics {
-			ylog.Debugf("zabbix_sender", "  metric[%d]: host=%s, key=%s, value=%s, clock=%d",
-				i, metric.Host, metric.Key, metric.Value, metric.Clock)
+	// 详细记录所有即将发送的metrics内容
+	ylog.Infof("zabbix_sender", "即将发送的metrics详细信息 (共%d个):", len(metrics))
+	for i, metric := range metrics {
+		ylog.Infof("zabbix_sender", "  metric[%d]: host=%s, key=%s, value=%s, clock=%d, value_type=%T",
+			i, metric.Host, metric.Key, metric.Value, metric.Clock, metric.Value)
+
+		// 额外验证value是否为有效整数
+		if valueInt, err := strconv.Atoi(metric.Value); err == nil {
+			if valueInt < 0 || valueInt > 100 {
+				ylog.Warnf("zabbix_sender", "  WARNING: metric[%d]值超出范围: %d (应在0-100之间)", i, valueInt)
+			}
+		} else {
+			ylog.Errorf("zabbix_sender", "  ERROR: metric[%d]值不是有效整数: %s", i, metric.Value)
 		}
 	}
 
@@ -336,10 +360,11 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	ylog.Debugf("zabbix_sender", "connection pool stats before send: active=%d, idle=%d, total=%d",
 		activeConnections, idleConnections, totalConnections)
 
-	// 记录发送前的详细metrics信息
+	// 记录发送前的最后验证
+	ylog.Debugf("zabbix_sender", "开始发送到Zabbix服务器: %s", h.serverAddr)
 	for i, metric := range metrics {
-		ylog.Debugf("zabbix_sender", "sending metric[%d]: host=%s, key=%s, value=%s, clock=%d",
-			i, metric.Host, metric.Key, metric.Value, metric.Clock)
+		ylog.Debugf("zabbix_sender", "发送metric[%d/%d]: host=%s, key=%s, value=%s, clock=%d",
+			i+1, len(metrics), metric.Host, metric.Key, metric.Value, metric.Clock)
 	}
 
 	resActive, resTrapper, err := h.sender.SendMetrics(metrics)
