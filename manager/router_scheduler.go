@@ -68,9 +68,11 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 	}
 
 	// 5. 预热连接池
+	ylog.Infof("scheduler", "warming up connection pool for router=%s with %d connections", router.IP, warmUpConnectionCount)
 	if err := scheduler.connection.WarmUp(router.Protocol, warmUpConnectionCount); err != nil {
-		ylog.Warnf("scheduler", "connection pool warm-up failed: %v (router=%s)",
-			err, router.IP)
+		// warmup可能部分失败，但只要不是完全失败，系统仍可运行
+		ylog.Warnf("scheduler", "connection pool warm-up had issues: %v (router=%s)", err, router.IP)
+		ylog.Warnf("scheduler", "system will continue with available connections, performance may be degraded")
 	}
 
 	// 同步预加载Connection能力

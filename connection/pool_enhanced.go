@@ -521,17 +521,45 @@ func (p *EnhancedConnectionPool) WarmUp(proto Protocol, targetCount int) error {
 
 	errChan := make(chan error, targetCount)
 
-	// 并发创建连接
+	// 限制并发度，避免对设备造成太大压力
+	maxConcurrent := 2
+	if targetCount < maxConcurrent {
+		maxConcurrent = targetCount
+	}
+
+	sem := make(chan struct{}, maxConcurrent)
+
+	// 并发创建连接，带重试机制
 	for i := 0; i < targetCount; i++ {
-		go func() {
-			_, err := p.createConnection(pool)
+		go func(index int) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			var err error
+			// 重试机制：最多重试2次
+			for attempt := 0; attempt < 3; attempt++ {
+				if attempt > 0 {
+					// 重试前等待一段时间
+					waitTime := time.Duration(attempt) * time.Second
+					ylog.Debugf("EnhancedConnectionPool", "warmup retry %d for connection %d, waiting %v", attempt, index+1, waitTime)
+					time.Sleep(waitTime)
+				}
+
+				_, err = p.createConnection(pool)
+				if err == nil {
+					atomic.AddInt64(&warmup.Success, 1)
+					break
+				}
+
+				ylog.Debugf("EnhancedConnectionPool", "warmup attempt %d failed for connection %d: %v", attempt+1, index+1, err)
+			}
+
 			if err != nil {
 				atomic.AddInt64(&warmup.Failed, 1)
-			} else {
-				atomic.AddInt64(&warmup.Success, 1)
+				ylog.Warnf("EnhancedConnectionPool", "warmup failed for connection %d after retries: %v", index+1, err)
 			}
 			errChan <- err
-		}()
+		}(i)
 	}
 
 	// 等待所有连接创建完成
@@ -542,19 +570,44 @@ func (p *EnhancedConnectionPool) WarmUp(proto Protocol, targetCount int) error {
 		}
 	}
 
+	// 等待所有goroutine完成
+	for i := 0; i < maxConcurrent; i++ {
+		sem <- struct{}{}
+	}
+	close(sem)
+
 	p.mu.Lock()
 	warmup.EndTime = time.Now()
-	if len(errors) == 0 {
+
+	// 计算成功连接数
+	successCount := int(atomic.LoadInt64(&warmup.Success))
+
+	// 允许部分失败：只要至少有一个连接成功，就认为warmup成功
+	if successCount > 0 {
 		warmup.Status = WarmupStateCompleted
+		ylog.Infof("EnhancedConnectionPool", "warmup partially successful: %d/%d connections established for protocol %s",
+			successCount, targetCount, proto)
 	} else {
 		warmup.Status = WarmupStateFailed
+		ylog.Errorf("EnhancedConnectionPool", "warmup failed: 0/%d connections established for protocol %s",
+			targetCount, proto)
 	}
 	p.mu.Unlock()
 
 	p.sendEvent(EventPoolWarmupCompleted, proto, warmup)
 
+	// 如果没有任何连接成功，才返回错误
+	if successCount == 0 {
+		return fmt.Errorf("warmup failed: 0 connections established out of %d attempts", targetCount)
+	}
+
+	// 记录部分成功的详细信息
 	if len(errors) > 0 {
-		return fmt.Errorf("warmup failed: %d errors out of %d connections", len(errors), targetCount)
+		ylog.Warnf("EnhancedConnectionPool", "warmup had %d failures out of %d attempts for protocol %s",
+			len(errors), targetCount, proto)
+		for i, err := range errors {
+			ylog.Debugf("EnhancedConnectionPool", "warmup failure %d: %v", i+1, err)
+		}
 	}
 
 	return nil
