@@ -101,8 +101,14 @@ func (h *ZabbixSenderHandler) TestConnection() error {
 		h.serverAddr, testActive, testIdle, testTotal)
 
 	start := time.Now()
-	_, err := h.sender.Send(testPacket)
+	res, err := h.sender.Send(testPacket)
 	duration := time.Since(start)
+
+	// 打印详细的response信息用于调试
+	ylog.Debugf("zabbix_sender", "TestConnection Send返回的response详细信息:")
+	ylog.Debugf("zabbix_sender", "  Response: '%s'", res.Response)
+	ylog.Debugf("zabbix_sender", "  Info: '%s'", res.Info)
+	ylog.Debugf("zabbix_sender", "  err: %v", err)
 
 	if err != nil {
 		ylog.Errorf("zabbix_sender", "connection test failed for %s after %v: %v", h.serverAddr, duration, err)
@@ -415,10 +421,18 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	resActive, resTrapper, err := h.sender.SendMetrics(metrics)
 	duration := time.Since(start)
 
+	// 打印详细的response信息用于调试
+	ylog.Debugf("zabbix_sender", "SendMetrics返回的response详细信息:")
+	ylog.Debugf("zabbix_sender", "  resActive.Response: '%s'", resActive.Response)
+	ylog.Debugf("zabbix_sender", "  resActive.Info: '%s'", resActive.Info)
+	ylog.Debugf("zabbix_sender", "  resTrapper.Response: '%s'", resTrapper.Response)
+	ylog.Debugf("zabbix_sender", "  resTrapper.Info: '%s'", resTrapper.Info)
+	ylog.Debugf("zabbix_sender", "  err: %v", err)
+
 	if err != nil {
 		// 记录详细的错误信息，包括响应内容
-		activeResponse := fmt.Sprintf("active_response=%s, active_info=%s", resActive.Response, resActive.Info)
-		trapperResponse := fmt.Sprintf("trapper_response=%s, trapper_info=%s", resTrapper.Response, resTrapper.Info)
+		activeResponse := fmt.Sprintf("active_response='%s', active_info='%s'", resActive.Response, resActive.Info)
+		trapperResponse := fmt.Sprintf("trapper_response='%s', trapper_info='%s'", resTrapper.Response, resTrapper.Info)
 
 		ylog.Errorf("zabbix_sender", "failed to send %d metrics to zabbix after %v: %v [%s %s]",
 			len(metrics), duration, err, activeResponse, trapperResponse)
@@ -435,45 +449,82 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	}
 
 	// 检查是否有metrics处理失败（即使没有网络错误，服务器可能返回部分失败）
-	if resActive.Response != "success" || resTrapper.Response != "success" {
-		var failedDetails []string
-		if resActive.Response != "success" {
-			failedDetails = append(failedDetails, fmt.Sprintf("active: %s - %s", resActive.Response, resActive.Info))
-		}
-		if resTrapper.Response != "success" {
-			failedDetails = append(failedDetails, fmt.Sprintf("trapper: %s - %s", resTrapper.Response, resTrapper.Info))
-		}
+	// 注意：只有当有对应类型的metrics时才检查响应
+	var failedDetails []string
+
+	// 打印当前metrics分类信息
+	ylog.Debugf("zabbix_sender", "检查响应状态 - activeCount=%d, trapperCount=%d", activeCount, trapperCount)
+	ylog.Debugf("zabbix_sender", "响应值 - resActive.Response='%s', resTrapper.Response='%s'",
+		resActive.Response, resTrapper.Response)
+
+	// 只有当有active metrics时才检查active响应
+	if activeCount > 0 && resActive.Response != "success" {
+		failedDetails = append(failedDetails, fmt.Sprintf("active: %s - %s", resActive.Response, resActive.Info))
+		ylog.Debugf("zabbix_sender", "检测到active响应失败: '%s' - '%s'", resActive.Response, resActive.Info)
+	}
+
+	// 只有当有trapper metrics时才检查trapper响应
+	if trapperCount > 0 && resTrapper.Response != "success" {
+		failedDetails = append(failedDetails, fmt.Sprintf("trapper: %s - %s", resTrapper.Response, resTrapper.Info))
+		ylog.Debugf("zabbix_sender", "检测到trapper响应失败: '%s' - '%s'", resTrapper.Response, resTrapper.Info)
+	}
+
+	// 只有当有失败详情时才报告错误
+	if len(failedDetails) > 0 {
 
 		ylog.Warnf("zabbix_sender", "zabbix server reported partial failure: %v", failedDetails)
 
 		// 记录metrics分类信息，帮助诊断问题
 		ylog.Errorf("zabbix_sender", "发送的metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
-		ylog.Errorf("zabbix_sender", "如果active=0但resActive有响应，可能是sender库内部问题")
 
 		// 记录更详细的Zabbix响应信息
-		ylog.Errorf("zabbix_sender", "Zabbix详细响应信息: active_response='%s', active_info='%s', trapper_response='%s', trapper_info='%s'",
-			resActive.Response, resActive.Info, resTrapper.Response, resTrapper.Info)
+		if activeCount > 0 {
+			ylog.Errorf("zabbix_sender", "Active响应信息: response='%s', info='%s'", resActive.Response, resActive.Info)
+		}
+		if trapperCount > 0 {
+			ylog.Errorf("zabbix_sender", "Trapper响应信息: response='%s', info='%s'", resTrapper.Response, resTrapper.Info)
+		}
 
 		// 检查是否是数据格式问题
-		if resActive.Info == "" || resTrapper.Info == "" {
+		hasActiveInfo := activeCount > 0 && resActive.Info != ""
+		hasTrapperInfo := trapperCount > 0 && resTrapper.Info != ""
+
+		if !hasActiveInfo && !hasTrapperInfo {
 			ylog.Errorf("zabbix_sender", "Zabbix返回空信息，可能是数据格式问题")
 		} else {
 			// 分析Zabbix错误信息
-			ylog.Errorf("zabbix_sender", "Zabbix错误分析: active_info='%s', trapper_info='%s'",
-				resActive.Info, resTrapper.Info)
-
-			// 检查是否是数据类型问题
-			if strings.Contains(resActive.Info, "invalid") || strings.Contains(resTrapper.Info, "invalid") {
-				ylog.Errorf("zabbix_sender", "可能是数据类型无效错误")
+			if hasActiveInfo {
+				ylog.Errorf("zabbix_sender", "Active错误分析: info='%s'", resActive.Info)
+				// 检查是否是数据类型问题
+				if strings.Contains(resActive.Info, "invalid") {
+					ylog.Errorf("zabbix_sender", "可能是active数据类型无效错误")
+				}
+				if strings.Contains(resActive.Info, "type") {
+					ylog.Errorf("zabbix_sender", "可能是active数据类型不匹配错误")
+				}
+				// 检查是否是"cannot find pair with name 'data'"错误
+				if strings.Contains(resActive.Info, "cannot find pair") {
+					ylog.Errorf("zabbix_sender", "检测到active 'cannot find pair'错误，可能是JSON格式问题")
+				} else if strings.Contains(resActive.Info, "failed -") {
+					ylog.Warnf("zabbix_sender", "检测到active业务错误，可能是key不存在或权限问题")
+				}
 			}
-			if strings.Contains(resActive.Info, "type") || strings.Contains(resTrapper.Info, "type") {
-				ylog.Errorf("zabbix_sender", "可能是数据类型不匹配错误")
-			}
 
-			// 检查是否是"cannot find pair with name 'data'"错误
-			if strings.Contains(resActive.Info, "cannot find pair") || strings.Contains(resTrapper.Info, "cannot find pair") {
-				ylog.Errorf("zabbix_sender", "检测到'cannot find pair'错误，可能是JSON格式问题")
-				ylog.Errorf("zabbix_sender", "建议检查sender库生成的JSON格式，确保包含'data'字段")
+			if hasTrapperInfo {
+				ylog.Errorf("zabbix_sender", "Trapper错误分析: info='%s'", resTrapper.Info)
+				// 检查是否是数据类型问题
+				if strings.Contains(resTrapper.Info, "invalid") {
+					ylog.Errorf("zabbix_sender", "可能是trapper数据类型无效错误")
+				}
+				if strings.Contains(resTrapper.Info, "type") {
+					ylog.Errorf("zabbix_sender", "可能是trapper数据类型不匹配错误")
+				}
+				// 检查是否是"cannot find pair with name 'data'"错误
+				if strings.Contains(resTrapper.Info, "cannot find pair") {
+					ylog.Errorf("zabbix_sender", "检测到trapper 'cannot find pair'错误，可能是JSON格式问题")
+				} else if strings.Contains(resTrapper.Info, "failed -") {
+					ylog.Warnf("zabbix_sender", "检测到trapper业务错误，可能是key不存在或权限问题")
+				}
 			}
 		}
 
