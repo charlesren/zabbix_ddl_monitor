@@ -102,7 +102,7 @@ func main() {
 	registry := task.NewDefaultRegistry()
 	ylog.Infof("Main", "任务注册表初始化完成")
 
-	//5个worker ，200倍worker数量的缓冲队列,满100个批量，10秒定时刷
+	//5个worker ，200倍worker数量的缓冲队列,满100个批量刷，10秒定时刷
 	aggregator := task.NewAggregator(5, 100, 10*time.Second)
 	aggregator.AddHandler(&task.LogHandler{})
 	aggregator.AddHandler(&task.MetricsHandler{})

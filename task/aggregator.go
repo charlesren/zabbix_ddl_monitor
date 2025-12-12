@@ -278,20 +278,23 @@ func (a *Aggregator) bufferManager() {
 func (a *Aggregator) flush() {
 	start := time.Now()
 
-	a.mu.Lock()
-	currentBufferSize := len(a.buffer)
-	if currentBufferSize == 0 {
-		a.mu.Unlock()
+	// 快速检查缓冲区是否为空，避免不必要的锁
+	if len(a.buffer) == 0 {
 		ylog.Debugf("aggregator", "flush: buffer empty, skipping")
 		return
 	}
 
-	// 复制缓冲区内容
-	events := make([]ResultEvent, currentBufferSize)
-	copy(events, a.buffer)
+	a.mu.Lock()
+	currentBufferSize := len(a.buffer)
+	if currentBufferSize == 0 {
+		a.mu.Unlock()
+		return
+	}
 
-	// 清空缓冲区
-	a.buffer = a.buffer[:0]
+	// 快速交换缓冲区，减少锁持有时间
+	events := a.buffer
+	// 创建新缓冲区，避免在锁内进行大量内存分配
+	a.buffer = make([]ResultEvent, 0, a.bufferSize)
 	a.mu.Unlock()
 
 	ylog.Debugf("aggregator", "flush: processing %d events from buffer", currentBufferSize)
@@ -299,7 +302,7 @@ func (a *Aggregator) flush() {
 	// 处理事件
 	a.handleEvents(events)
 
-	// 更新刷新时间
+	// 更新刷新时间（在锁外更新）
 	a.stats.Lock()
 	a.stats.lastFlush = time.Now()
 	a.stats.Unlock()
@@ -368,24 +371,33 @@ func (a *Aggregator) handleEvents(events []ResultEvent) {
 // updateStats 更新统计信息
 func (a *Aggregator) updateStats(event ResultEvent) {
 	a.stats.Lock()
-	defer a.stats.Unlock()
-
 	a.stats.totalEvents++
 	if event.Success {
 		a.stats.successEvents++
-		ylog.Debugf("aggregator", "stats: success event for %s (total_success=%d, total_events=%d)",
-			event.IP, a.stats.successEvents, a.stats.totalEvents)
 	} else {
 		a.stats.failedEvents++
+	}
+
+	// 获取统计值用于日志记录
+	totalEvents := a.stats.totalEvents
+	successEvents := a.stats.successEvents
+	failedEvents := a.stats.failedEvents
+	a.stats.Unlock()
+
+	// 在锁外记录日志
+	if event.Success {
+		ylog.Debugf("aggregator", "stats: success event for %s (total_success=%d, total_events=%d)",
+			event.IP, successEvents, totalEvents)
+	} else {
 		ylog.Debugf("aggregator", "stats: failed event for %s (total_failed=%d, total_events=%d, error=%s)",
-			event.IP, a.stats.failedEvents, a.stats.totalEvents, event.Error)
+			event.IP, failedEvents, totalEvents, event.Error)
 	}
 
 	// 定期记录统计摘要（每100个事件）
-	if a.stats.totalEvents%100 == 0 {
-		successRate := float64(a.stats.successEvents) / float64(a.stats.totalEvents) * 100
+	if totalEvents%100 == 0 {
+		successRate := float64(successEvents) / float64(totalEvents) * 100
 		ylog.Infof("aggregator", "stats summary: total=%d, success=%d, failed=%d, success_rate=%.1f%%",
-			a.stats.totalEvents, a.stats.successEvents, a.stats.failedEvents, successRate)
+			totalEvents, successEvents, failedEvents, successRate)
 	}
 }
 
