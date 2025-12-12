@@ -79,6 +79,27 @@ func (cs *ConfigSyncer) sync() error {
 	}
 
 	events := cs.detectChanges(newLines)
+
+	// 如果是第一次同步（cs.lines为空），过滤掉创建事件
+	// 因为第一次同步是初始化，不应该被视为"变更"
+	cs.mu.RLock()
+	isInitialSync := len(cs.lines) == 0
+	cs.mu.RUnlock()
+
+	if isInitialSync {
+		filteredEvents := make([]LineChangeEvent, 0, len(events))
+		for _, event := range events {
+			if event.Type != LineCreate {
+				filteredEvents = append(filteredEvents, event)
+			} else {
+				ylog.Debugf("syncer", "过滤初始同步的创建事件: line_ip=%s, router=%s",
+					event.Line.IP, event.Line.Router.IP)
+			}
+		}
+		events = filteredEvents
+		ylog.Infof("syncer", "初始同步完成，过滤了创建事件，剩余事件数: %d", len(events))
+	}
+
 	if len(events) == 0 {
 		ylog.Debugf("syncer", "no config changes detected")
 		return nil
