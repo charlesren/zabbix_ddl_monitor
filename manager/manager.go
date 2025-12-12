@@ -97,6 +97,26 @@ func (m *Manager) Stop() {
 func (m *Manager) fullSync() {
 	ylog.Infof("manager", "执行全量同步")
 	lines := m.configSyncer.GetLines()
+
+	// 特殊处理：如果同步器还没有数据，等待并重试
+	if len(lines) == 0 {
+		ylog.Warnf("manager", "同步器返回空数据，等待重试...")
+		for i := 0; i < 3; i++ { // 最多重试3次
+			time.Sleep(2 * time.Second)
+			lines = m.configSyncer.GetLines()
+			if len(lines) > 0 {
+				ylog.Infof("manager", "第%d次重试成功，获取到%d条专线", i+1, len(lines))
+				break
+			}
+			ylog.Debugf("manager", "第%d次重试：同步器仍然返回空数据", i+1)
+		}
+
+		if len(lines) == 0 {
+			ylog.Errorf("manager", "多次重试后同步器仍然返回空数据，跳过本次全量同步")
+			return
+		}
+	}
+
 	newRouterLines := make(map[string][]syncer.Line)
 
 	// 按路由器分组专线
