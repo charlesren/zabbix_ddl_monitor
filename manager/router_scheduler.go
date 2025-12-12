@@ -14,7 +14,7 @@ import (
 
 // 预热参数配置
 var (
-	warmUpConnectionCount = 3 // 预热连接数
+	warmUpConnectionCount = 2 // 预热连接数
 )
 
 type Scheduler interface {
