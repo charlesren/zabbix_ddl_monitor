@@ -74,22 +74,22 @@ func (q *IntervalTaskQueue) IsEmpty() bool {
 	return len(q.lines) == 0
 }
 
-func (q *IntervalTaskQueue) Remove(lineID string) {
+func (q *IntervalTaskQueue) Remove(lineIP string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for i, line := range q.lines {
-		if line.ID == lineID {
+		if line.IP == lineIP {
 			q.lines = append(q.lines[:i], q.lines[i+1:]...)
 			break
 		}
 	}
 }
 
-func (q *IntervalTaskQueue) Contains(lineID string) bool {
+func (q *IntervalTaskQueue) Contains(lineIP string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, line := range q.lines {
-		if line.ID == lineID {
+		if line.IP == lineIP {
 			return true
 		}
 	}
@@ -122,7 +122,7 @@ func (q *IntervalTaskQueue) UpdateTask(line syncer.Line) {
 	defer q.mu.Unlock()
 
 	for i, t := range q.lines {
-		if t.ID == line.ID {
+		if t.IP == line.IP {
 			q.lines[i] = line
 			break
 		}

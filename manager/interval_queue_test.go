@@ -71,7 +71,7 @@ func TestIntervalTaskQueue_Remove(t *testing.T) {
 	queue.Add(line2)
 
 	// Remove first line
-	queue.Remove("line1")
+	queue.Remove("10.0.0.1")
 
 	snapshot := queue.GetTasksSnapshot()
 	assert.Equal(t, 1, len(snapshot))
@@ -86,7 +86,7 @@ func TestIntervalTaskQueue_Remove_NonexistentLine(t *testing.T) {
 	queue.Add(line1)
 
 	// Try to remove non-existent line
-	queue.Remove("nonexistent")
+	queue.Remove("10.0.0.999")
 
 	snapshot := queue.GetTasksSnapshot()
 	assert.Equal(t, 1, len(snapshot))
@@ -100,8 +100,8 @@ func TestIntervalTaskQueue_Contains(t *testing.T) {
 	line1 := createQueueTestLine("line1", "10.0.0.1", "192.168.1.1", 5*time.Minute)
 	queue.Add(line1)
 
-	assert.True(t, queue.Contains("line1"))
-	assert.False(t, queue.Contains("nonexistent"))
+	assert.True(t, queue.Contains("10.0.0.1"))
+	assert.False(t, queue.Contains("10.0.0.999"))
 }
 
 func TestIntervalTaskQueue_IsEmpty(t *testing.T) {
@@ -117,7 +117,7 @@ func TestIntervalTaskQueue_IsEmpty(t *testing.T) {
 	assert.False(t, queue.IsEmpty())
 
 	// Remove line
-	queue.Remove("line1")
+	queue.Remove("10.0.0.1")
 	assert.True(t, queue.IsEmpty())
 }
 
@@ -372,9 +372,9 @@ func TestIntervalTaskQueue_ConcurrentAddRemove(t *testing.T) {
 			defer wg.Done()
 			// Try to remove various lines
 			if id%2 == 0 {
-				queue.Remove(fmt.Sprintf("initial_%d", id%10))
+				queue.Remove(fmt.Sprintf("10.0.0.%d", id%10))
 			} else {
-				queue.Remove(fmt.Sprintf("concurrent_%d", id-1))
+				queue.Remove(fmt.Sprintf("10.0.1.%d", id-1))
 			}
 		}(i)
 	}
@@ -469,7 +469,7 @@ func TestIntervalTaskQueue_LargeNumberOfLines(t *testing.T) {
 	// Test search performance
 	start = time.Now()
 	for i := 0; i < 1000; i++ {
-		queue.Contains(fmt.Sprintf("large_%d", i))
+		queue.Contains(fmt.Sprintf("10.100.0.%d", i))
 	}
 	searchElapsed := time.Since(start)
 
@@ -494,7 +494,7 @@ func TestIntervalTaskQueue_RemoveFromEmptyQueue(t *testing.T) {
 
 	// Should not panic when removing from empty queue
 	assert.NotPanics(t, func() {
-		queue.Remove("nonexistent")
+		queue.Remove("10.0.0.999")
 	})
 
 	assert.True(t, queue.IsEmpty())
@@ -552,7 +552,7 @@ func BenchmarkIntervalTaskQueue_Remove(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		queue.Remove(fmt.Sprintf("bench_%d", i))
+		queue.Remove(fmt.Sprintf("10.200.0.%d", i))
 	}
 }
 
@@ -574,7 +574,7 @@ func BenchmarkIntervalTaskQueue_Contains(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		queue.Contains(fmt.Sprintf("bench_%d", i%numLines))
+		queue.Contains(fmt.Sprintf("10.200.0.%d", i%numLines))
 	}
 }
 

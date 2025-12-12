@@ -361,7 +361,7 @@ func (s *RouterScheduler) OnLineCreated(line syncer.Line) {
 	defer s.mu.Unlock()
 
 	// 检查专线是否已存在（防御性编程）
-	if s.lineExistsLocked(line.ID) {
+	if s.lineExistsLocked(line.IP) {
 		ylog.Warnf("scheduler", "duplicate line creation ignored (id=%s, line_ip=%s, router=%s)",
 			line.ID, line.IP, s.router.IP)
 		return
@@ -382,15 +382,14 @@ func (s *RouterScheduler) OnLineCreated(line syncer.Line) {
 }
 
 // 辅助方法：检查专线是否存在（需在锁内调用）
-func (s *RouterScheduler) lineExistsLocked(lineID string) bool {
+func (s *RouterScheduler) lineExistsLocked(lineIP string) bool {
 	for _, l := range s.lines {
-		if l.ID == lineID {
+		if l.IP == lineIP {
 			return true
 		}
 	}
 	return false
 }
-
 func (s *RouterScheduler) OnLineUpdated(oldLine, newLine syncer.Line) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -399,7 +398,7 @@ func (s *RouterScheduler) OnLineUpdated(oldLine, newLine syncer.Line) {
 	if oldLine.Interval != newLine.Interval {
 		// 从旧队列移除
 		if oldQueue, exists := s.queues[oldLine.Interval]; exists {
-			oldQueue.Remove(oldLine.ID)
+			oldQueue.Remove(oldLine.IP)
 			ylog.Debugf("scheduler", "moved line %s from %v to %v queue (router=%s)",
 				oldLine.ID, oldLine.Interval, newLine.Interval, s.router.IP)
 		}
@@ -433,13 +432,13 @@ func (s *RouterScheduler) OnLineDeleted(line syncer.Line) {
 
 	if queue, exists := s.queues[line.Interval]; exists {
 		// 防御性检查：确保任务存在
-		if !queue.Contains(line.ID) {
+		if !queue.Contains(line.IP) {
 			ylog.Warnf("scheduler", "line %s not found in queue (router=%s)",
 				line.ID, s.router.IP)
 			return
 		}
 
-		queue.Remove(line.ID)
+		queue.Remove(line.IP)
 		ylog.Debugf("scheduler", "removed line %s from %v queue (router=%s)",
 			line.ID, line.Interval, s.router.IP)
 

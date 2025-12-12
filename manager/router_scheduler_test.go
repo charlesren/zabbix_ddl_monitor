@@ -345,11 +345,11 @@ func TestRouterScheduler_OnLineUpdated_DifferentInterval(t *testing.T) {
 
 	// New queue should have the line
 	newQueue := scheduler.queues[3*time.Minute]
-	assert.True(t, newQueue.Contains("line1"))
+	assert.True(t, newQueue.Contains("10.0.0.1"))
 
 	// Old queue should not have the line
 	oldQueue := scheduler.queues[5*time.Minute]
-	assert.False(t, oldQueue.Contains("line1"))
+	assert.False(t, oldQueue.Contains("10.0.0.1"))
 
 	// Lines array should be updated
 	assert.Equal(t, 3*time.Minute, scheduler.lines[0].Interval)
@@ -375,8 +375,8 @@ func TestRouterScheduler_OnLineDeleted(t *testing.T) {
 	assert.Equal(t, 1, len(scheduler.queues))
 
 	queue := scheduler.queues[5*time.Minute]
-	assert.False(t, queue.Contains("line1"))
-	assert.True(t, queue.Contains("line2"))
+	assert.False(t, queue.Contains("10.0.0.1"))
+	assert.True(t, queue.Contains("10.0.0.2"))
 	assert.False(t, queue.IsEmpty())
 }
 
@@ -429,7 +429,7 @@ func TestRouterScheduler_OnLineDeleted_NonexistentLine(t *testing.T) {
 	// Original state should be preserved
 	assert.Equal(t, 1, len(scheduler.queues))
 	queue := scheduler.queues[5*time.Minute]
-	assert.True(t, queue.Contains("line1"))
+	assert.True(t, queue.Contains("10.0.0.1"))
 	assert.False(t, queue.IsEmpty())
 }
 
