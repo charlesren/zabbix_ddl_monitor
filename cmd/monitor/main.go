@@ -112,7 +112,7 @@ func main() {
 		ConnectionTimeout: 5 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      5 * time.Second,
-		PoolSize:          5,
+		PoolSize:          2,
 	}
 	zabbixSender, err := task.NewZabbixSenderHandler(zabbixSenderConfig)
 	if err != nil {

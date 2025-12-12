@@ -71,14 +71,6 @@ func NewZabbixSenderHandler(config ZabbixSenderConfig) (*ZabbixSenderHandler, er
 		stopChan:   make(chan struct{}),
 	}
 
-	// Test connection during initialization
-	if err := handler.TestConnection(); err != nil {
-		ylog.Warnf("zabbix_sender", "initial connection test failed for %s: %v", serverAddr, err)
-	} else {
-		ylog.Infof("zabbix_sender", "connection test successful for %s", serverAddr)
-	}
-
-	// Start connection health monitor
 	handler.StartHealthMonitor()
 
 	ylog.Infof("zabbix_sender", "zabbix sender handler created successfully for %s", serverAddr)
@@ -92,49 +84,24 @@ func (h *ZabbixSenderHandler) TestConnection() error {
 		Data:    []*sender.Metric{},
 	}
 
-	// 记录连接测试前的连接池状态
-	stats := h.GetStats()
-	testActive, _ := stats["active_connections"].(int)
-	testIdle, _ := stats["idle_connections"].(int)
-	testTotal, _ := stats["total_connections"].(int)
-	ylog.Debugf("zabbix_sender", "connection test starting for %s, pool stats: active=%d, idle=%d, total=%d",
-		h.serverAddr, testActive, testIdle, testTotal)
+	// 只在debug级别记录连接测试开始
+	ylog.Debugf("zabbix_sender", "connection test starting for %s", h.serverAddr)
 
 	start := time.Now()
 	res, err := h.sender.Send(testPacket)
 	duration := time.Since(start)
 
-	// 打印详细的response信息用于调试
-	ylog.Debugf("zabbix_sender", "TestConnection Send返回的response详细信息:")
-	ylog.Debugf("zabbix_sender", "  Response: '%s'", res.Response)
-	ylog.Debugf("zabbix_sender", "  Info: '%s'", res.Info)
-	ylog.Debugf("zabbix_sender", "  err: %v", err)
+	// 只在debug级别记录详细响应信息
+	ylog.Debugf("zabbix_sender", "TestConnection response: '%s', info: '%s', err: %v",
+		res.Response, res.Info, err)
 
 	if err != nil {
-		ylog.Errorf("zabbix_sender", "connection test failed for %s after %v: %v", h.serverAddr, duration, err)
-
-		// 记录失败时的详细连接池状态
-		failedStats := h.GetStats()
-		failedActive, _ := failedStats["active_connections"].(int)
-		failedIdle, _ := failedStats["idle_connections"].(int)
-		failedTotal, _ := failedStats["total_connections"].(int)
-		failedUtilization, _ := failedStats["utilization_percent"].(string)
-		ylog.Debugf("zabbix_sender", "connection test failed details - pool: active=%d, idle=%d, total=%d, utilization=%s",
-			failedActive, failedIdle, failedTotal, failedUtilization)
-
+		ylog.Warnf("zabbix_sender", "connection test failed for %s after %v: %v", h.serverAddr, duration, err)
 		return fmt.Errorf("connection test failed: %w", err)
 	}
 
-	ylog.Infof("zabbix_sender", "connection test successful for %s in %v", h.serverAddr, duration)
-
-	// 记录成功时的连接池状态
-	successStats := h.GetStats()
-	successActive, _ := successStats["active_connections"].(int)
-	successIdle, _ := successStats["idle_connections"].(int)
-	successTotal, _ := successStats["total_connections"].(int)
-	successUtilization, _ := successStats["utilization_percent"].(string)
-	ylog.Debugf("zabbix_sender", "connection test successful - pool stats: active=%d, idle=%d, total=%d, utilization=%s",
-		successActive, successIdle, successTotal, successUtilization)
+	// 只在debug级别记录成功信息
+	ylog.Debugf("zabbix_sender", "connection test successful for %s in %v", h.serverAddr, duration)
 
 	return nil
 }
@@ -152,10 +119,11 @@ func (h *ZabbixSenderHandler) StartHealthMonitor() {
 		for {
 			select {
 			case <-ticker.C:
+				// 静默执行健康检查，只在debug级别记录
 				if err := h.TestConnection(); err != nil {
-					ylog.Warnf("zabbix_sender", "periodic connection health check failed for %s", h.serverAddr)
+					ylog.Debugf("zabbix_sender", "periodic health check failed for %s: %v", h.serverAddr, err)
 				} else {
-					ylog.Debugf("zabbix_sender", "periodic connection health check passed for %s", h.serverAddr)
+					ylog.Debugf("zabbix_sender", "periodic health check passed for %s", h.serverAddr)
 				}
 			case <-h.stopChan:
 				ylog.Debugf("zabbix_sender", "connection health monitor stopped for %s", h.serverAddr)
