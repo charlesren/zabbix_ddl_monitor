@@ -362,8 +362,8 @@ func (s *RouterScheduler) OnLineCreated(line syncer.Line) {
 
 	// 检查专线是否已存在（防御性编程）
 	if s.lineExistsLocked(line.ID) {
-		ylog.Warnf("scheduler", "duplicate line creation ignored (id=%s, router=%s)",
-			line.ID, s.router.IP)
+		ylog.Warnf("scheduler", "duplicate line creation ignored (id=%s, line_ip=%s, router=%s)",
+			line.ID, line.IP, s.router.IP)
 		return
 	}
 

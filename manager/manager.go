@@ -192,7 +192,8 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 		// 防御性检查
 		for _, l := range m.routerLines[routerIP] {
 			if l.IP == event.Line.IP {
-				ylog.Warnf("manager", "duplicate line create,ip: %v", event.Line.IP)
+				ylog.Warnf("manager", "duplicate line create (line_ip=%s, router=%s, line_id=%s)",
+					event.Line.IP, routerIP, event.Line.ID)
 				return
 			}
 		}
