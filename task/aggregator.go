@@ -59,7 +59,7 @@ func NewAggregator(workers int, bufferSize int, flushInterval time.Duration) *Ag
 
 	return &Aggregator{
 		handlers:      make([]ResultHandler, 0),
-		eventChan:     make(chan ResultEvent, workers*2), // 缓冲队列
+		eventChan:     make(chan ResultEvent, workers*200), // 缓冲队列，200倍worker数量
 		workers:       workers,
 		buffer:        make([]ResultEvent, 0, bufferSize),
 		bufferSize:    bufferSize,

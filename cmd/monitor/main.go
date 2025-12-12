@@ -95,14 +95,15 @@ func main() {
 		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
 		return
 	}
-	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 5m)")
+	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 10m)")
 	go syncer.Start()
 	defer syncer.Stop()
 
 	registry := task.NewDefaultRegistry()
 	ylog.Infof("Main", "任务注册表初始化完成")
 
-	aggregator := task.NewAggregator(5, 500, 15*time.Second)
+	//5个worker ，200倍worker数量的缓冲队列,满100个批量，10秒定时刷
+	aggregator := task.NewAggregator(5, 100, 10*time.Second)
 	aggregator.AddHandler(&task.LogHandler{})
 	aggregator.AddHandler(&task.MetricsHandler{})
 	zabbixSenderConfig := task.ZabbixSenderConfig{
