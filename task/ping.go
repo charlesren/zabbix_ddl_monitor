@@ -393,6 +393,7 @@ func (PingTask) buildHuaweiCommand(targetIP string, repeat int, timeout time.Dur
 //ping 命令输出示例
 // 1. ZZB0000_DTT_05_OTV01 : cisco_iosxe系统
 /*
+// 无丢包
 ```shell
 ZZB0000_DTT_05_OTV01#ping 10.194.10.106
 Type escape sequence to abort.
@@ -400,10 +401,22 @@ Sending 5, 100-byte ICMP Echos to 10.194.10.106, timeout is 2 seconds:
 !!!!!
 Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/1 ms
 ZZB0000_DTT_05_OTV01#
+```
+
+// 不通
+ ```shell
+ ZZA0000_17_PRO_CS05-10.192.253.228#ping 123.123.123.123
+ Type escape sequence to abort.
+ Sending 5, 100-byte ICMP Echos to 123.123.123.123, timeout is 2 seconds:
+ .....
+ Success rate is 0 percent (0/5)
+ ZZA0000_17_PRO_CS05#
+ ```
 */
 
 // 2. ZZA_DTT_17_SA21  : cisco_iosxr系统
 /*
+// 无丢包
 ```shell
 ZZA_DTT_17_SA21#
 > ping 10.194.10.106
@@ -415,6 +428,16 @@ Sending 5, 100-byte ICMP Echos to 10.194.10.106, timeout is 2 seconds:
 Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/4 ms
 ZZA_DTT_17_SA21#
 >
+```
+// 不通
+```shell
+RP/0/RSP0/CPU0:ZZA0000-SRB-WANPE-10.252.254.6#ping 123.123.123.123
+Mon Dec 15 10:17:58.918 CST
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 123.123.123.123, timeout is 2 seconds:
+UUUUU
+Success rate is 0 percent (0/5)
+RP/0/RSP0/CPU0:ZZA0000-SRB-WANPE#
 ```
 */
 
@@ -433,6 +456,19 @@ PING 10.194.17.20 (10.194.17.20): 56 data bytes
 5 packets transmitted, 5 packets received, 0.00% packet loss
 round-trip min/avg/max = 1.116/1.399/1.687 ms
 ZZB0000_DTT_05_SA17#
+```
+*/
+// 4 .  ZZA0000_17_PRO_WR37-10.192.253.238 : huawei_vrp 系统
+/*
+// 不通
+```shell
+<ZZA0000_17_PRO_WR37-10.192.253.238>ping 123.123.123.123
+Ping 123.123.123.123 (123.123.123.123): 56 data bytes, press CTRL+C to break
+Request time out
+Request time out
+Request time out
+Request time out
+Request time out
 ```
 */
 func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
