@@ -658,6 +658,15 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
+		// 检查是否为Request time out（华为设备不通时的输出）
+		if strings.Contains(strings.ToLower(line), "request time out") {
+			result.Data["packet_loss"] = 100
+			result.Data["success_rate"] = 0
+			result.Data["status"] = "failed"
+			ylog.Debugf("PingTask", "Huawei parsing: Request time out detected, 100%% packet loss")
+			return false
+		}
+
 		// 查找packet loss行
 		if strings.Contains(line, "packet loss") {
 			// 首先检查100%（最具体的）
