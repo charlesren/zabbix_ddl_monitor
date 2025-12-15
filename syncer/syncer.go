@@ -100,6 +100,12 @@ func (cs *ConfigSyncer) sync() error {
 		ylog.Infof("syncer", "初始同步完成，过滤了创建事件，剩余事件数: %d", len(events))
 	}
 
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	cs.lines = newLines
+	cs.version++
+
 	if len(events) == 0 {
 		ylog.Debugf("syncer", "no config changes detected")
 		return nil
@@ -109,11 +115,6 @@ func (cs *ConfigSyncer) sync() error {
 		countEvents(events, LineCreate),
 		countEvents(events, LineUpdate),
 		countEvents(events, LineDelete))
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-
-	cs.lines = newLines
-	cs.version++
 
 	// 为所有事件设置版本号
 	for i := range events {
