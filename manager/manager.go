@@ -98,21 +98,28 @@ func (m *Manager) fullSync() {
 	ylog.Infof("manager", "执行全量同步")
 	lines := m.configSyncer.GetLines()
 
-	// 特殊处理：如果同步器还没有数据，等待并重试
+	// 特殊处理：如果同步器还没有数据，等待同步完成
 	if len(lines) == 0 {
-		ylog.Warnf("manager", "同步器返回空数据，等待重试...")
-		for i := 0; i < 3; i++ { // 最多重试3次
-			time.Sleep(2 * time.Second)
+		ylog.Warnf("manager", "同步器返回空数据，等待同步完成...")
+
+		// 等待同步器完成第一次同步
+		// 最多等待60秒，每2秒检查一次
+		maxChecks := 30
+		checkInterval := 2 * time.Second
+
+		for i := 0; i < maxChecks; i++ {
+			time.Sleep(checkInterval)
 			lines = m.configSyncer.GetLines()
 			if len(lines) > 0 {
-				ylog.Infof("manager", "第%d次重试成功，获取到%d条专线", i+1, len(lines))
+				waitedTime := time.Duration(i+1) * checkInterval
+				ylog.Infof("manager", "等待%v后获取到%d条专线", waitedTime, len(lines))
 				break
 			}
-			ylog.Debugf("manager", "第%d次重试：同步器仍然返回空数据", i+1)
+			ylog.Debugf("manager", "等待中...已等待%v", time.Duration(i+1)*checkInterval)
 		}
 
 		if len(lines) == 0 {
-			ylog.Errorf("manager", "多次重试后同步器仍然返回空数据，跳过本次全量同步")
+			ylog.Errorf("manager", "等待60秒后同步器仍然返回空数据，跳过本次全量同步")
 			return
 		}
 	}
