@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/charlesren/ylog"
@@ -37,7 +38,11 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	cmd, err := task.BuildCommand(ctx)
 	if err != nil {
 		ylog.Errorf(logModule, "failed to build command for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
-		return Result{Error: err.Error()}, err
+		return Result{
+			Success: false,
+			Error:   err.Error(),
+			Data:    map[string]interface{}{"status": StatusExecutionError},
+		}, err
 	}
 	ylog.Debugf(logModule, "built command for %s: type=%s, payload=%T", ctx.TaskType, cmd.Type, cmd.Payload)
 
@@ -66,7 +71,11 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 		payload = v
 	default:
 		ylog.Errorf(logModule, "unsupported payload type %T for task %s on %s", cmd.Payload, ctx.TaskType, ctx.Platform)
-		return Result{Error: "unsupported payload type"}, nil
+		return Result{
+			Success: false,
+			Error:   "unsupported payload type",
+			Data:    map[string]interface{}{"status": StatusExecutionError},
+		}, fmt.Errorf("unsupported payload type")
 	}
 	ylog.Debugf(logModule, "executing %s command on %s", cmd.Type, ctx.Platform)
 	ylog.Debugf(logModule, "executing %s command on %s with payload: %+v", cmd.Type, ctx.Platform, payload)
@@ -78,7 +87,20 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	if err != nil {
 		duration := time.Since(start)
 		ylog.Errorf(logModule, "execution failed for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
-		return Result{Error: err.Error()}, err
+		// 检查错误类型，设置相应的状态
+		status := StatusExecutionError
+		if ctx.Ctx != nil && ctx.Ctx.Err() == context.DeadlineExceeded {
+			status = StatusCheckTimeout
+		} else if strings.Contains(strings.ToLower(err.Error()), "connection") ||
+			strings.Contains(strings.ToLower(err.Error()), "connect") ||
+			strings.Contains(strings.ToLower(err.Error()), "timeout") {
+			status = StatusConnectionError
+		}
+		return Result{
+			Success: false,
+			Error:   err.Error(),
+			Data:    map[string]interface{}{"status": status},
+		}, err
 	}
 
 	// 统一使用原始数据解析
@@ -97,10 +119,31 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 
 	if err != nil {
 		ylog.Errorf(logModule, "failed to parse output for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
+		// 如果解析失败，确保有status字段
+		if result.Data == nil {
+			result.Data = make(map[string]interface{})
+		}
+		if _, hasStatus := result.Data["status"]; !hasStatus {
+			result.Data["status"] = StatusParseFailed
+		}
 	} else if !result.Success {
 		ylog.Warnf(logModule, "task %s on %s completed with failure after %v: %s", ctx.TaskType, ctx.Platform, duration, result.Error)
+		// 确保失败的结果也有status字段
+		if result.Data == nil {
+			result.Data = make(map[string]interface{})
+		}
+		if _, hasStatus := result.Data["status"]; !hasStatus {
+			result.Data["status"] = StatusExecutionError
+		}
 	} else {
 		ylog.Infof(logModule, "task %s on %s completed successfully in %v", ctx.TaskType, ctx.Platform, duration)
+		// 确保成功的结果也有status字段
+		if result.Data == nil {
+			result.Data = make(map[string]interface{})
+		}
+		if _, hasStatus := result.Data["status"]; !hasStatus {
+			result.Data["status"] = StatusCheckFinished
+		}
 	}
 
 	return result, err
@@ -111,19 +154,31 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 	core := func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
 		if err := task.ValidateParams(ctx.Params); err != nil {
 			ylog.Errorf(logModule, "parameter validation failed for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
-			return Result{Error: err.Error()}, err
+			return Result{
+				Success: false,
+				Error:   err.Error(),
+				Data:    map[string]interface{}{"status": StatusExecutionError},
+			}, err
 		}
 
 		// 验证连接能力
 		if err := validateCapability(conn, ctx); err != nil {
 			ylog.Errorf(logModule, "capability validation failed for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
-			return Result{Error: err.Error()}, err
+			return Result{
+				Success: false,
+				Error:   err.Error(),
+				Data:    map[string]interface{}{"status": StatusConnectionError},
+			}, err
 		}
 
 		cmd, err := task.BuildCommand(ctx)
 		if err != nil {
 			ylog.Errorf(logModule, "failed to build command for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
-			return Result{Error: err.Error()}, err
+			return Result{
+				Success: false,
+				Error:   err.Error(),
+				Data:    map[string]interface{}{"status": StatusExecutionError},
+			}, err
 		}
 		ylog.Debugf(logModule, "built command for %s: type=%s", ctx.TaskType, cmd.Type)
 
@@ -135,7 +190,11 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 		case []*channel.SendInteractiveEvent:
 			payload = v
 		default:
-			return Result{Error: "unsupported payload type"}, fmt.Errorf("unsupported payload type")
+			return Result{
+				Success: false,
+				Error:   "unsupported payload type",
+				Data:    map[string]interface{}{"status": StatusExecutionError},
+			}, fmt.Errorf("unsupported payload type")
 		}
 
 		ylog.Debugf(logModule, "executing %s command on %s with payload: %+v", cmd.Type, ctx.Platform, payload)
@@ -145,7 +204,20 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 		})
 		if err != nil {
 			ylog.Errorf(logModule, "execution failed for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
-			return Result{Error: err.Error()}, err
+			// 检查错误类型，设置相应的状态
+			status := StatusExecutionError
+			if ctx.Ctx != nil && ctx.Ctx.Err() == context.DeadlineExceeded {
+				status = StatusCheckTimeout
+			} else if strings.Contains(strings.ToLower(err.Error()), "connection") ||
+				strings.Contains(strings.ToLower(err.Error()), "connect") ||
+				strings.Contains(strings.ToLower(err.Error()), "timeout") {
+				status = StatusConnectionError
+			}
+			return Result{
+				Success: false,
+				Error:   err.Error(),
+				Data:    map[string]interface{}{"status": status},
+			}, err
 		}
 		ylog.Debugf(logModule, "received %d bytes of response from %s", len(resp.RawData), ctx.Platform)
 
@@ -161,6 +233,13 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 		result, err := task.ParseOutput(ctx, resp.RawData)
 		if err != nil {
 			ylog.Errorf(logModule, "failed to parse output for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
+			// 如果解析失败，确保有status字段
+			if result.Data == nil {
+				result.Data = make(map[string]interface{})
+			}
+			if _, hasStatus := result.Data["status"]; !hasStatus {
+				result.Data["status"] = StatusParseFailed
+			}
 		}
 		return result, err
 	}

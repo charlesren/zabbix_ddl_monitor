@@ -304,14 +304,24 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 			ylog.Debugf("scheduler", "ping completed for line %s in %v", line.IP, duration)
 		}
 
-		// 只提交成功解析的数据给聚合器
-		if result.Success && s.manager != nil && s.manager.aggregator != nil {
-			if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
-				ylog.Debugf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
+		// 检查status字段，基于status决定是否提交给聚合器
+		if s.manager != nil && s.manager.aggregator != nil {
+			// 从result.Data中获取status字段
+			if status, hasStatus := result.Data["status"].(string); hasStatus {
+				// 无论status是什么，都提交给聚合器
+				// Zabbix sender会根据status决定发送哪个监控项
+				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
+					ylog.Debugf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
+				}
+				ylog.Debugf("scheduler", "提交结果给聚合器: line=%s, status=%s, success=%v", line.IP, status, result.Success)
+			} else {
+				// 没有status字段，也提交给聚合器
+				// Zabbix sender会检测到缺少status字段并发送相应的错误状态
+				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
+					ylog.Debugf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
+				}
+				ylog.Warnf("scheduler", "提交缺少status字段的结果给聚合器: line=%s, success=%v", line.IP, result.Success)
 			}
-		} else if !result.Success {
-			// 记录解析失败，供监控和调试
-			ylog.Warnf("scheduler", "ping解析失败，不提交给aggregator: line=%s, error=%s", line.IP, result.Error)
 		}
 	})
 

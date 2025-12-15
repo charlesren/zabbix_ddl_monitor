@@ -266,51 +266,110 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	ylog.Infof("zabbix_sender", "processing %d events for zabbix submission", len(events))
 
 	metrics := make([]*sender.Metric, 0, len(events))
-	validEvents := 0
-	invalidEvents := 0
+	processedEvents := 0
 
 	for _, event := range events {
-		// 只处理整数类型的packet_loss值
-		if v, ok := event.Data["packet_loss"].(int); ok {
-			// 验证值在合理范围内 (0-100)
-			if v >= 0 && v <= 100 {
-				// 尝试直接使用整数，而不是转换为字符串
-				// Zabbix可能期望数字类型而不是字符串
-				value := fmt.Sprintf("%d", v)
+		// 检查status字段
+		status, hasStatus := event.Data["status"].(string)
+		if !hasStatus {
+			ylog.Warnf("zabbix_sender", "事件缺少status字段: host=%s", event.IP)
+			// 发送缺少status字段的错误到dedicatedLineErrorDetail
+			metrics = append(metrics, &sender.Metric{
+				Host:   event.IP,
+				Key:    "dedicatedLineErrorDetail",
+				Value:  StatusMissingStatusField,
+				Clock:  event.Timestamp.Unix(),
+				Active: false,
+			})
+			ylog.Debugf("zabbix_sender", "发送缺少status字段错误: host=%s", event.IP)
+			processedEvents++
+			continue
+		}
+
+		// 根据status决定发送哪个监控项
+		if status == StatusCheckFinished {
+			// 检查完成：发送packet_loss到dedicatedLinePing
+			if v, ok := event.Data["packet_loss"].(int); ok {
+				// 验证值在合理范围内 (0-100)
+				if v >= 0 && v <= 100 {
+					// 尝试直接使用整数，而不是转换为字符串
+					// Zabbix可能期望数字类型而不是字符串
+					value := fmt.Sprintf("%d", v)
+					metrics = append(metrics, &sender.Metric{
+						Host:   event.IP,
+						Key:    "dedicatedLinePing",
+						Value:  value,
+						Clock:  event.Timestamp.Unix(),
+						Active: false, // 明确设置为false，表示这是trapper item
+					})
+					// 同时记录原始整数值用于调试
+					ylog.Debugf("zabbix_sender", "发送ping结果: host=%s, packet_loss=%d, status=%s", event.IP, v, status)
+					// 详细记录每个有效metric
+					ylog.Debugf("zabbix_sender", "有效数据: host=%s, packet_loss=%d, timestamp=%d, active=%v",
+						event.IP, v, event.Timestamp.Unix(), false)
+					processedEvents++
+				} else {
+					// 值超出范围，发送错误状态
+					ylog.Warnf("zabbix_sender", "数据超出范围: host=%s, packet_loss=%d (应在0-100范围内), status=%s",
+						event.IP, v, status)
+					// 发送PacketLossOutOfRange错误到dedicatedLineErrorDetail
+					metrics = append(metrics, &sender.Metric{
+						Host:   event.IP,
+						Key:    "dedicatedLineErrorDetail",
+						Value:  StatusPacketLossOutOfRange,
+						Clock:  event.Timestamp.Unix(),
+						Active: false,
+					})
+					ylog.Debugf("zabbix_sender", "发送packet_loss超出范围错误: host=%s, packet_loss=%d", event.IP, v)
+					processedEvents++
+				}
+			} else {
+				// CheckFinished但无有效packet_loss，发送错误状态
+				ylog.Warnf("zabbix_sender", "CheckFinished但无有效packet_loss: host=%s, packet_loss类型=%T, 值=%v, status=%s",
+					event.IP, event.Data["packet_loss"], event.Data["packet_loss"], status)
+				// 发送InvalidPacketLossData错误到dedicatedLineErrorDetail
 				metrics = append(metrics, &sender.Metric{
 					Host:   event.IP,
-					Key:    "dedicatedLinePing",
-					Value:  value,
+					Key:    "dedicatedLineErrorDetail",
+					Value:  StatusInvalidPacketLossData,
 					Clock:  event.Timestamp.Unix(),
-					Active: false, // 明确设置为false，表示这是trapper item
+					Active: false,
 				})
-				// 同时记录原始整数值用于调试
-				ylog.Debugf("zabbix_sender", "原始整数值: host=%s, packet_loss=%d (类型: %T)", event.IP, v, v)
-				validEvents++
-
-				// 详细记录每个有效metric
-				ylog.Debugf("zabbix_sender", "有效数据: host=%s, packet_loss=%d, timestamp=%d, active=%v",
-					event.IP, v, event.Timestamp.Unix(), false)
-			} else {
-				// 值超出范围
-				ylog.Warnf("zabbix_sender", "数据超出范围: host=%s, packet_loss=%d (应在0-100范围内)",
-					event.IP, v)
-				invalidEvents++
+				ylog.Debugf("zabbix_sender", "发送无效packet_loss数据错误: host=%s", event.IP)
+				processedEvents++
 			}
 		} else {
-			// 跳过非整数类型的packet_loss值，记录警告
-			ylog.Warnf("zabbix_sender", "跳过无效数据类型: host=%s, packet_loss类型=%T, 值=%v",
-				event.IP, event.Data["packet_loss"], event.Data["packet_loss"])
-			invalidEvents++
+			// 检查失败：发送status到dedicatedLineErrorDetail
+			metrics = append(metrics, &sender.Metric{
+				Host:   event.IP,
+				Key:    "dedicatedLineErrorDetail",
+				Value:  status,
+				Clock:  event.Timestamp.Unix(),
+				Active: false, // 明确设置为false，表示这是trapper item
+			})
+			ylog.Debugf("zabbix_sender", "发送错误状态: host=%s, status=%s", event.IP, status)
+			processedEvents++
 		}
 	}
 
-	ylog.Infof("zabbix_sender", "数据统计: 总事件=%d, 有效数据=%d, 无效数据=%d", len(events), validEvents, invalidEvents)
+	// 统计不同类型的监控项
+	pingMetrics := 0
+	errorMetrics := 0
+	for _, metric := range metrics {
+		if metric.Key == "dedicatedLinePing" {
+			pingMetrics++
+		} else if metric.Key == "dedicatedLineErrorDetail" {
+			errorMetrics++
+		}
+	}
+
+	ylog.Infof("zabbix_sender", "数据统计: 总事件=%d, 已处理事件=%d", len(events), processedEvents)
+	ylog.Infof("zabbix_sender", "监控项分类: ping指标=%d, 错误详情=%d", pingMetrics, errorMetrics)
 	ylog.Debugf("zabbix_sender", "准备发送 %d 个metrics到Zabbix", len(metrics))
 
 	// 检查是否有有效的metrics可以发送
 	if len(metrics) == 0 {
-		ylog.Errorf("zabbix_sender", "所有事件都被过滤，没有有效数据发送到Zabbix。总事件=%d, 无效数据=%d", len(events), invalidEvents)
+		ylog.Errorf("zabbix_sender", "所有事件都被过滤，没有有效数据发送到Zabbix。总事件=%d", len(events))
 		return nil
 	}
 
@@ -328,6 +387,21 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 		}
 	}
 	ylog.Infof("zabbix_sender", "Metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
+
+	// 按监控项类型记录详细信息
+	for i, metric := range metrics {
+		var metricType string
+		if metric.Key == "dedicatedLinePing" {
+			metricType = "ping指标"
+		} else if metric.Key == "dedicatedLineErrorDetail" {
+			metricType = "错误详情"
+		} else {
+			metricType = "未知类型"
+		}
+
+		ylog.Infof("zabbix_sender", "  [%d] %s: host=%s, key=%s, value=%s, type=%s",
+			i+1, metricType, metric.Host, metric.Key, metric.Value, metricType)
+	}
 
 	for i, metric := range metrics {
 		// 尝试解析值以确定实际类型

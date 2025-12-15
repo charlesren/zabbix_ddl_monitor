@@ -11,6 +11,22 @@ import (
 	"github.com/scrapli/scrapligo/channel"
 )
 
+// Ping任务状态常量
+const (
+	StatusCheckFinished   = "CheckFinished"     // 检查正常完成（无论ping结果）
+	StatusCheckTimeout    = "CheckTimeout"      // 检查超时
+	StatusParseFailed     = "ParseResultFailed" // 解析失败
+	StatusConnectionError = "ConnectionError"   // 连接错误
+	StatusExecutionError  = "ExecutionError"    // 执行错误（其他错误）
+)
+
+// Zabbix sender错误状态常量
+const (
+	StatusMissingStatusField    = "MissingStatusField"    // 事件缺少status字段
+	StatusPacketLossOutOfRange  = "PacketLossOutOfRange"  // packet_loss值超出0-100范围
+	StatusInvalidPacketLossData = "InvalidPacketLossData" // packet_loss数据无效（类型错误或不存在）
+)
+
 type PingTask struct{}
 
 func (PingTask) Meta() TaskMeta {
@@ -488,6 +504,9 @@ func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
 		return Result{
 			Success: false,
 			Error:   "unsupported output type",
+			Data: map[string]interface{}{
+				"status": StatusParseFailed,
+			},
 		}, fmt.Errorf("unsupported output type: %T", raw)
 	}
 
@@ -498,6 +517,9 @@ func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
 		return Result{
 			Success: false,
 			Error:   "target_ip parameter missing or invalid",
+			Data: map[string]interface{}{
+				"status": StatusParseFailed,
+			},
 		}, fmt.Errorf("target_ip parameter missing or invalid")
 	}
 
@@ -543,15 +565,15 @@ func (PingTask) parseCiscoOutput(output string, result *Result) bool {
 			if strings.Contains(line, "100 percent") {
 				result.Data["success_rate"] = 100
 				result.Data["packet_loss"] = 0
-				result.Data["status"] = "success"
-				ylog.Debugf("PingTask", "Cisco parsing: 100%% success rate, 0%% packet loss")
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Cisco parsing: 100%% success rate, 0%% packet loss, status=%s", StatusCheckFinished)
 				return true
 			} else if strings.Contains(line, "0 percent") {
 				result.Data["success_rate"] = 0
 				result.Data["packet_loss"] = 100
-				result.Data["status"] = "failed"
-				ylog.Debugf("PingTask", "Cisco parsing: 0%% success rate, 100%% packet loss")
-				return false
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Cisco parsing: 0%% success rate, 100%% packet loss, status=%s", StatusCheckFinished)
+				return true
 			} else {
 				// 提取百分比
 				parts := strings.Fields(line)
@@ -563,13 +585,14 @@ func (PingTask) parseCiscoOutput(output string, result *Result) bool {
 							result.Data["packet_loss"] = 100 - successRate
 						} else {
 							ylog.Errorf("PingTask", "Cisco parsing: 无法解析百分比值: %s", parts[i-1])
+							result.Data["status"] = StatusParseFailed
 							return false
 						}
 						break
 					}
 				}
-				result.Data["status"] = "partial"
-				ylog.Debugf("PingTask", "Cisco parsing: partial success rate: %v, packet loss: %v", result.Data["success_rate"], result.Data["packet_loss"])
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Cisco parsing: partial success rate: %v, packet loss: %v, status=%s", result.Data["success_rate"], result.Data["packet_loss"], StatusCheckFinished)
 				return true
 			}
 		}
@@ -581,7 +604,8 @@ func (PingTask) parseCiscoOutput(output string, result *Result) bool {
 		}
 	}
 
-	ylog.Debugf("PingTask", "Cisco parsing: no success/failure pattern found")
+	ylog.Errorf("PingTask", "Cisco parsing: no success/failure pattern found")
+	result.Data["status"] = StatusParseFailed
 	return false
 }
 
@@ -599,15 +623,15 @@ func (PingTask) parseCiscoNxosOutput(output string, result *Result) bool {
 			if strings.Contains(line, "0.00% packet loss") {
 				result.Data["packet_loss"] = 0
 				result.Data["success_rate"] = 100
-				result.Data["status"] = "success"
-				ylog.Debugf("PingTask", "Cisco NXOS parsing: 0%% packet loss, 100%% success rate")
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Cisco NXOS parsing: 0%% packet loss, 100%% success rate, status=%s", StatusCheckFinished)
 				return true
 			} else if strings.Contains(line, "100.00% packet loss") {
 				result.Data["packet_loss"] = 100
 				result.Data["success_rate"] = 0
-				result.Data["status"] = "failed"
-				ylog.Debugf("PingTask", "Cisco NXOS parsing: 100%% packet loss, 0%% success rate")
-				return false
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Cisco NXOS parsing: 100%% packet loss, 0%% success rate, status=%s", StatusCheckFinished)
+				return true
 			} else {
 				// 提取丢包率
 				parts := strings.Fields(line)
@@ -620,14 +644,15 @@ func (PingTask) parseCiscoNxosOutput(output string, result *Result) bool {
 								result.Data["success_rate"] = 100 - packetLoss
 							} else {
 								ylog.Errorf("PingTask", "Cisco NXOS parsing: 无法解析丢包率值: %s", packetLossStr)
+								result.Data["status"] = StatusParseFailed
 								return false
 							}
 						}
 						break
 					}
 				}
-				result.Data["status"] = "partial"
-				ylog.Debugf("PingTask", "Cisco NXOS parsing: partial packet loss: %v, success rate: %v", result.Data["packet_loss"], result.Data["success_rate"])
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Cisco NXOS parsing: partial packet loss: %v, success rate: %v, status=%s", result.Data["packet_loss"], result.Data["success_rate"], StatusCheckFinished)
 				return true
 			}
 		}
@@ -645,7 +670,8 @@ func (PingTask) parseCiscoNxosOutput(output string, result *Result) bool {
 		}
 	}
 
-	ylog.Debugf("PingTask", "Cisco NXOS parsing: no packet loss pattern found")
+	ylog.Errorf("PingTask", "Cisco NXOS parsing: no packet loss pattern found")
+	result.Data["status"] = StatusParseFailed
 	return false
 }
 
@@ -662,9 +688,9 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 		if strings.Contains(strings.ToLower(line), "request time out") {
 			result.Data["packet_loss"] = 100
 			result.Data["success_rate"] = 0
-			result.Data["status"] = "failed"
-			ylog.Debugf("PingTask", "Huawei parsing: Request time out detected, 100%% packet loss")
-			return false
+			result.Data["status"] = StatusCheckFinished
+			ylog.Debugf("PingTask", "Huawei parsing: Request time out detected, 100%% packet loss, status=%s", StatusCheckFinished)
+			return true
 		}
 
 		// 查找packet loss行
@@ -673,14 +699,14 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 			if strings.Contains(line, "100% packet loss") {
 				result.Data["packet_loss"] = 100
 				result.Data["success_rate"] = 0
-				result.Data["status"] = "failed"
-				ylog.Debugf("PingTask", "Huawei parsing: 100%% packet loss, 0%% success rate")
-				return false
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Huawei parsing: 100%% packet loss, 0%% success rate, status=%s", StatusCheckFinished)
+				return true
 			} else if strings.Contains(line, "0% packet loss") {
 				result.Data["packet_loss"] = 0
 				result.Data["success_rate"] = 100
-				result.Data["status"] = "success"
-				ylog.Debugf("PingTask", "Huawei parsing: 0%% packet loss, 100%% success rate")
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Huawei parsing: 0%% packet loss, 100%% success rate, status=%s", StatusCheckFinished)
 				return true
 			} else {
 				// 提取丢包率
@@ -693,25 +719,26 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 								result.Data["packet_loss"] = packetLoss
 								result.Data["success_rate"] = 100 - packetLoss
 								if packetLoss == 0 {
-									result.Data["status"] = "success"
+									result.Data["status"] = StatusCheckFinished
 									return true
 								} else if packetLoss == 100 {
-									result.Data["status"] = "failed"
-									return false
+									result.Data["status"] = StatusCheckFinished
+									return true
 								} else {
-									result.Data["status"] = "partial"
+									result.Data["status"] = StatusCheckFinished
 									return true
 								}
 							} else {
 								ylog.Errorf("PingTask", "Huawei parsing: 无法解析丢包率值: %s", packetLossStr)
+								result.Data["status"] = StatusParseFailed
 								return false
 							}
 						}
 						break
 					}
 				}
-				result.Data["status"] = "partial"
-				ylog.Debugf("PingTask", "Huawei parsing: partial packet loss: %v, success rate: %v", result.Data["packet_loss"], result.Data["success_rate"])
+				result.Data["status"] = StatusCheckFinished
+				ylog.Debugf("PingTask", "Huawei parsing: partial packet loss: %v, success rate: %v, status=%s", result.Data["packet_loss"], result.Data["success_rate"], StatusCheckFinished)
 				return true
 			}
 		}
@@ -724,6 +751,8 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 	}
 
 	ylog.Debugf("PingTask", "Huawei parsing: no packet loss info found")
+	ylog.Errorf("PingTask", "Huawei parsing: no packet loss info found")
+	result.Data["status"] = StatusParseFailed
 	return false
 }
 
@@ -742,10 +771,10 @@ func (PingTask) parseGenericOutput(output string, result *Result) bool {
 
 	for _, pattern := range successPatterns {
 		if strings.Contains(output, pattern) {
-			result.Data["status"] = "success"
+			result.Data["status"] = StatusCheckFinished
 			result.Data["success_rate"] = 100
 			result.Data["packet_loss"] = 0
-			ylog.Debugf("PingTask", "通用解析: 匹配成功模式: %s", pattern)
+			ylog.Debugf("PingTask", "通用解析: 匹配成功模式: %s, status=%s", pattern, StatusCheckFinished)
 			return true
 		}
 	}
@@ -762,25 +791,24 @@ func (PingTask) parseGenericOutput(output string, result *Result) bool {
 
 	for _, pattern := range failPatterns {
 		if strings.Contains(output, pattern) {
-			result.Data["status"] = "failed"
+			result.Data["status"] = StatusCheckFinished
 			result.Data["success_rate"] = 0
 			result.Data["packet_loss"] = 100
-			ylog.Debugf("PingTask", "通用解析: 匹配失败模式: %s", pattern)
-			return false
+			ylog.Debugf("PingTask", "通用解析: 匹配失败模式: %s, status=%s", pattern, StatusCheckFinished)
+			return true
 		}
 	}
 
 	// 如果包含ping相关输出但无法确定结果
 	if strings.Contains(output, "ping") || strings.Contains(output, "icmp") {
 		ylog.Errorf("PingTask", "通用解析: 包含ping/icmp但无法确定结果，输出: %s", output)
-		// 不设置任何packet_loss或success_rate字段，让上层处理
-		result.Data["status"] = "parse_error"
-		ylog.Debugf("PingTask", "通用解析: 包含ping/icmp但无法确定结果")
+		result.Data["status"] = StatusParseFailed
+		ylog.Debugf("PingTask", "通用解析: 包含ping/icmp但无法确定结果, status=%s", StatusParseFailed)
 		return false
 	}
 
 	ylog.Errorf("PingTask", "通用解析: 无法识别输出内容，输出: %s", output)
-	result.Data["status"] = "parse_error"
-	ylog.Debugf("PingTask", "通用解析: 无法识别输出内容")
+	result.Data["status"] = StatusParseFailed
+	ylog.Debugf("PingTask", "通用解析: 无法识别输出内容, status=%s", StatusParseFailed)
 	return false
 }
