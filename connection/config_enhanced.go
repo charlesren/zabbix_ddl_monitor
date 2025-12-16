@@ -51,12 +51,13 @@ type EnhancedConnectionConfig struct {
 	Metadata map[string]interface{} `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 
 	// 智能重建配置
-	SmartRebuildEnabled  bool          `json:"smart_rebuild_enabled" yaml:"smart_rebuild_enabled"`
-	RebuildMaxUsageCount int64         `json:"rebuild_max_usage_count" yaml:"rebuild_max_usage_count"`
-	RebuildMaxAge        time.Duration `json:"rebuild_max_age" yaml:"rebuild_max_age"`
-	RebuildMaxErrorRate  float64       `json:"rebuild_max_error_rate" yaml:"rebuild_max_error_rate"`
-	RebuildMinInterval   time.Duration `json:"rebuild_min_interval" yaml:"rebuild_min_interval"`
-	RebuildStrategy      string        `json:"rebuild_strategy" yaml:"rebuild_strategy"` // "any" | "all" | "usage" | "age" | "error"
+	SmartRebuildEnabled            bool          `json:"smart_rebuild_enabled" yaml:"smart_rebuild_enabled"`
+	RebuildMaxUsageCount           int64         `json:"rebuild_max_usage_count" yaml:"rebuild_max_usage_count"`
+	RebuildMaxAge                  time.Duration `json:"rebuild_max_age" yaml:"rebuild_max_age"`
+	RebuildMaxErrorRate            float64       `json:"rebuild_max_error_rate" yaml:"rebuild_max_error_rate"`
+	RebuildMinInterval             time.Duration `json:"rebuild_min_interval" yaml:"rebuild_min_interval"`
+	RebuildMinRequestsForErrorRate int64         `json:"rebuild_min_requests_for_error_rate" yaml:"rebuild_min_requests_for_error_rate"`
+	RebuildStrategy                string        `json:"rebuild_strategy" yaml:"rebuild_strategy"` // "any" | "all" | "usage" | "age" | "error"
 }
 
 // SSH特定配置
@@ -141,27 +142,28 @@ func NewConfigBuilder() *ConfigBuilder {
 	return &ConfigBuilder{
 		config: &EnhancedConnectionConfig{
 			// 设置默认值
-			Port:                 22,
-			ConnectTimeout:       30 * time.Second,
-			ReadTimeout:          30 * time.Second,
-			WriteTimeout:         10 * time.Second,
-			IdleTimeout:          30 * time.Second,
-			MaxRetries:           2,
-			RetryInterval:        2 * time.Second,
-			BackoffFactor:        1.5,
-			MaxConnections:       5,
-			MinConnections:       2,
-			MaxIdleTime:          2 * time.Minute,
-			HealthCheckTime:      30 * time.Second,
-			Extensions:           make(map[string]interface{}),
-			Labels:               make(map[string]string),
-			Metadata:             make(map[string]interface{}),
-			SmartRebuildEnabled:  true,
-			RebuildMaxUsageCount: 200,
-			RebuildMaxAge:        30 * time.Minute,
-			RebuildMaxErrorRate:  0.2,
-			RebuildMinInterval:   5 * time.Minute,
-			RebuildStrategy:      "any",
+			Port:                           22,
+			ConnectTimeout:                 30 * time.Second,
+			ReadTimeout:                    30 * time.Second,
+			WriteTimeout:                   10 * time.Second,
+			IdleTimeout:                    30 * time.Second,
+			MaxRetries:                     2,
+			RetryInterval:                  2 * time.Second,
+			BackoffFactor:                  1.5,
+			MaxConnections:                 5,
+			MinConnections:                 2,
+			MaxIdleTime:                    2 * time.Minute,
+			HealthCheckTime:                30 * time.Second,
+			Extensions:                     make(map[string]interface{}),
+			Labels:                         make(map[string]string),
+			Metadata:                       make(map[string]interface{}),
+			SmartRebuildEnabled:            true,
+			RebuildMaxUsageCount:           200,
+			RebuildMaxAge:                  30 * time.Minute,
+			RebuildMaxErrorRate:            0.2,
+			RebuildMinInterval:             5 * time.Minute,
+			RebuildMinRequestsForErrorRate: 10,
+			RebuildStrategy:                "any",
 		},
 	}
 }
@@ -216,7 +218,7 @@ func (b *ConfigBuilder) WithConnectionPool(max, min int, maxIdle, healthCheck ti
 }
 
 // WithSmartRebuild 设置智能重建配置
-func (b *ConfigBuilder) WithSmartRebuild(enabled bool, maxUsage int64, maxAge time.Duration, maxErrorRate float64) *ConfigBuilder {
+func (b *ConfigBuilder) WithSmartRebuild(enabled bool, maxUsage int64, maxAge time.Duration, maxErrorRate float64, minRequestsForErrorRate int64) *ConfigBuilder {
 	b.config.SmartRebuildEnabled = enabled
 	if maxUsage > 0 {
 		b.config.RebuildMaxUsageCount = maxUsage
@@ -226,6 +228,9 @@ func (b *ConfigBuilder) WithSmartRebuild(enabled bool, maxUsage int64, maxAge ti
 	}
 	if maxErrorRate > 0 {
 		b.config.RebuildMaxErrorRate = maxErrorRate
+	}
+	if minRequestsForErrorRate > 0 {
+		b.config.RebuildMinRequestsForErrorRate = minRequestsForErrorRate
 	}
 	return b
 }
@@ -316,6 +321,37 @@ func (c *EnhancedConnectionConfig) Validate() error {
 	}
 	if c.BackoffFactor < 1.0 {
 		return fmt.Errorf("backoff factor must be >= 1.0")
+	}
+
+	// 智能重建配置验证
+	if c.SmartRebuildEnabled {
+		if c.RebuildMaxUsageCount <= 0 {
+			return fmt.Errorf("rebuild max usage count must be positive when smart rebuild is enabled")
+		}
+		if c.RebuildMaxAge <= 0 {
+			return fmt.Errorf("rebuild max age must be positive when smart rebuild is enabled")
+		}
+		if c.RebuildMaxErrorRate < 0 || c.RebuildMaxErrorRate > 1.0 {
+			return fmt.Errorf("rebuild max error rate must be between 0 and 1.0")
+		}
+		if c.RebuildMinInterval <= 0 {
+			return fmt.Errorf("rebuild min interval must be positive")
+		}
+		if c.RebuildMinRequestsForErrorRate < 0 {
+			return fmt.Errorf("rebuild min requests for error rate cannot be negative")
+		}
+
+		// 验证策略
+		validStrategies := map[string]bool{
+			"any":   true,
+			"all":   true,
+			"usage": true,
+			"age":   true,
+			"error": true,
+		}
+		if !validStrategies[c.RebuildStrategy] {
+			return fmt.Errorf("invalid rebuild strategy: %s", c.RebuildStrategy)
+		}
 	}
 
 	// 协议特定验证

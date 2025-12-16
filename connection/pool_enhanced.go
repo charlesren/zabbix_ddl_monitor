@@ -137,8 +137,8 @@ type EnhancedPooledConnection struct {
 	inUse      bool
 
 	// 重建相关
-	lastRebuiltAt time.Time // 上次重建时间
-
+	lastRebuiltAt    time.Time // 上次重建时间
+	markedForRebuild int32     // 标记是否正在重建，防止并发重建(0=未标记, 1=已标记)
 	// 健康状态
 	healthStatus        HealthStatus
 	lastHealthCheck     time.Time
@@ -433,56 +433,94 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 
 	// 第二优先级：需要重建的连接 → 立即替换
 	for id, conn := range pool.connections {
-		if !conn.inUse && conn.valid && p.shouldRebuildConnection(conn) {
-			ylog.Debugf("connection_pool", "发现需要重建的连接: id=%s, usage=%d, age=%v",
-				conn.id, conn.usageCount, time.Since(conn.createdAt))
+		if !conn.inUse && conn.valid {
+			// 检查是否需要重建，并且在这个过程中会原子性地标记连接为正在重建
+			if p.shouldRebuildConnection(conn) {
+				ylog.Debugf("connection_pool", "发现需要重建的连接: id=%s, usage=%d, age=%v",
+					conn.id, conn.usageCount, time.Since(conn.createdAt))
 
-			// 立即创建新连接替代
-			newConn, err := p.createConnection(pool)
-			if err != nil {
-				// 创建失败，降级使用旧连接
-				ylog.Warnf("connection_pool", "创建新连接失败，降级使用旧连接: %v", err)
-				conn.healthStatus = HealthStatusDegraded
-				p.collector.IncrementConnectionsReused(pool.protocol)
-				// 记录重建错误
-				atomic.AddInt64(&pool.stats.RebuildErrors, 1)
-				return conn, nil
-			}
-
-			// 设置重建时间
-			newConn.lastRebuiltAt = time.Now()
-
-			// 执行替换
-			delete(pool.connections, id)
-			pool.connections[newConn.id] = newConn
-
-			// 更新统计
-			atomic.AddInt64(&pool.stats.CreatedConnections, 1)
-			atomic.AddInt64(&pool.stats.RebuiltConnections, 1)
-			// IdleConnections不变（替换，不是新增）
-			p.collector.IncrementConnectionsCreated(pool.protocol)
-
-			ylog.Infof("connection_pool", "立即替换连接: %s→%s, usage=%d",
-				conn.id, newConn.id, conn.usageCount)
-
-			// 发送重建事件
-			p.sendEvent(EventConnectionRebuilt, conn.protocol, map[string]interface{}{
-				"old_connection_id": conn.id,
-				"new_connection_id": newConn.id,
-				"old_usage_count":   atomic.LoadInt64(&conn.usageCount),
-				"old_age":           time.Since(conn.createdAt).String(),
-				"reason":            p.getRebuildReason(conn),
-			})
-
-			// 异步关闭旧连接
-			go func() {
-				if err := conn.driver.Close(); err != nil {
-					ylog.Warnf("connection_pool", "关闭旧连接失败: %v", err)
+				// 尝试创建新连接替代，最多重试3次
+				var newConn *EnhancedPooledConnection
+				var err error
+				for attempt := 0; attempt < 3; attempt++ {
+					newConn, err = p.createConnection(pool)
+					if err == nil {
+						break
+					}
+					// 重试前等待一段时间
+					if attempt < 2 { // 不在最后一次尝试后等待
+						waitTime := time.Duration(attempt+1) * time.Second
+						ylog.Debugf("connection_pool", "重建连接第%d次尝试失败，%v后重试: %v", attempt+1, waitTime, err)
+						time.Sleep(waitTime)
+					}
 				}
-				atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
-			}()
+				if err != nil {
+					// 创建失败，清除重建标记并降级使用旧连接
+					atomic.StoreInt32(&conn.markedForRebuild, 0)
+					ylog.Warnf("connection_pool", "创建新连接失败，降级使用旧连接: %v", err)
+					conn.healthStatus = HealthStatusDegraded
+					p.collector.IncrementConnectionsReused(pool.protocol)
+					// 记录重建错误
+					atomic.AddInt64(&pool.stats.RebuildErrors, 1)
+					return conn, nil
+				}
 
-			return newConn, nil
+				// 设置重建时间
+				newConn.lastRebuiltAt = time.Now()
+
+				// 执行替换
+				delete(pool.connections, id)
+				pool.connections[newConn.id] = newConn
+
+				// 确保新连接不会被标记为正在重建（createConnection已经初始化为0，这里是额外保障）
+				atomic.StoreInt32(&newConn.markedForRebuild, 0)
+				// 更新统计
+				atomic.AddInt64(&pool.stats.CreatedConnections, 1)
+				atomic.AddInt64(&pool.stats.RebuiltConnections, 1)
+				// IdleConnections不变（替换，不是新增）
+				p.collector.IncrementConnectionsCreated(pool.protocol)
+
+				ylog.Infof("connection_pool", "立即替换连接: %s→%s, usage=%d",
+					conn.id, newConn.id, conn.usageCount)
+
+				// 发送重建事件
+				p.sendEvent(EventConnectionRebuilt, conn.protocol, map[string]interface{}{
+					"old_connection_id": conn.id,
+					"new_connection_id": newConn.id,
+					"old_usage_count":   atomic.LoadInt64(&conn.usageCount),
+					"old_age":           time.Since(conn.createdAt).String(),
+					"reason":            p.getRebuildReason(conn),
+				})
+
+				// 异步关闭旧连接，带超时保护
+				go func(oldConn *EnhancedPooledConnection) {
+					// 创建带超时的上下文
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+
+					// 在单独的goroutine中执行关闭操作
+					done := make(chan error, 1)
+					go func() {
+						done <- oldConn.driver.Close()
+					}()
+
+					// 等待关闭完成或超时
+					select {
+					case err := <-done:
+						if err != nil {
+							ylog.Warnf("connection_pool", "关闭旧连接失败: %v", err)
+						} else {
+							ylog.Debugf("connection_pool", "旧连接成功关闭: %s", oldConn.id)
+						}
+					case <-ctx.Done():
+						ylog.Warnf("connection_pool", "关闭旧连接超时: %s", oldConn.id)
+					}
+
+					atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
+				}(conn)
+
+				return newConn, nil
+			}
 		}
 	}
 
@@ -524,16 +562,17 @@ func (p *EnhancedConnectionPool) createConnection(pool *EnhancedDriverPool) (*En
 	}
 
 	conn := &EnhancedPooledConnection{
-		driver:        driver,
-		id:            fmt.Sprintf("%s|%s|%d", p.config.Host, pool.protocol, time.Now().UnixNano()),
-		protocol:      pool.protocol,
-		createdAt:     time.Now(),
-		lastUsed:      time.Now(),
-		lastRebuiltAt: time.Time{}, // 初始化为零值，表示从未重建
-		valid:         true,
-		healthStatus:  HealthStatusUnknown,
-		labels:        make(map[string]string),
-		metadata:      make(map[string]interface{}),
+		driver:           driver,
+		id:               fmt.Sprintf("%s|%s|%d", p.config.Host, pool.protocol, time.Now().UnixNano()),
+		protocol:         pool.protocol,
+		createdAt:        time.Now(),
+		lastUsed:         time.Now(),
+		lastRebuiltAt:    time.Time{}, // 初始化为零值，表示从未重建
+		markedForRebuild: 0,           // 新连接不应该标记为正在重建
+		valid:            true,
+		healthStatus:     HealthStatusUnknown,
+		labels:           make(map[string]string),
+		metadata:         make(map[string]interface{}),
 	}
 
 	// 复制配置中的标签
@@ -632,15 +671,21 @@ func (p *EnhancedConnectionPool) WarmUp(proto Protocol, targetCount int) error {
 					time.Sleep(waitTime)
 				}
 
-				_, err = p.createConnection(pool)
+				newConn, err := p.createConnection(pool)
 				if err == nil {
+					// 将新创建的连接添加到连接池中
+					pool.mu.Lock()
+					pool.connections[newConn.id] = newConn
+					atomic.AddInt64(&pool.stats.CreatedConnections, 1)
+					atomic.AddInt64(&pool.stats.IdleConnections, 1)
+					pool.mu.Unlock()
+
 					atomic.AddInt64(&warmup.Success, 1)
 					break
 				}
 
 				ylog.Debugf("EnhancedConnectionPool", "warmup attempt %d failed for connection %d: %v", attempt+1, index+1, err)
 			}
-
 			if err != nil {
 				atomic.AddInt64(&warmup.Failed, 1)
 				ylog.Warnf("EnhancedConnectionPool", "warmup failed for connection %d after retries: %v", index+1, err)
@@ -948,6 +993,13 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		return false
 	}
 
+	// 检查是否已经标记为正在重建，防止并发重建
+	// 使用原子操作确保只有一个goroutine能将连接标记为重建
+	if atomic.LoadInt32(&conn.markedForRebuild) != 0 {
+		ylog.Debugf("connection_pool", "连接已标记为正在重建: id=%s", conn.id)
+		return false
+	}
+
 	// 调试：打印连接详细信息
 	usageCount := atomic.LoadInt64(&conn.usageCount)
 	ylog.Debugf("connection_pool", "检查连接重建条件: id=%s, inUse=%v, valid=%v, health=%v, usage=%d, createdAt=%v, lastRebuiltAt=%v",
@@ -959,6 +1011,18 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		// 仅基于使用次数
 		usageCount := atomic.LoadInt64(&conn.usageCount)
 		shouldRebuild := usageCount >= p.config.RebuildMaxUsageCount
+		if shouldRebuild {
+			// 使用原子操作确保只有一个goroutine能将连接标记为重建
+			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+				ylog.Debugf("connection_pool", "usage策略检查: id=%s, usage=%d, max=%d, rebuild=%v (已标记)",
+					conn.id, usageCount, p.config.RebuildMaxUsageCount, shouldRebuild)
+				return true
+			} else {
+				ylog.Debugf("connection_pool", "usage策略检查: id=%s, usage=%d, max=%d, rebuild=%v (已被其他goroutine标记)",
+					conn.id, usageCount, p.config.RebuildMaxUsageCount, shouldRebuild)
+				return false
+			}
+		}
 		ylog.Debugf("connection_pool", "usage策略检查: id=%s, usage=%d, max=%d, rebuild=%v",
 			conn.id, usageCount, p.config.RebuildMaxUsageCount, shouldRebuild)
 		return shouldRebuild
@@ -967,6 +1031,18 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		// 仅基于连接年龄
 		age := now.Sub(conn.createdAt)
 		shouldRebuild := age >= p.config.RebuildMaxAge
+		if shouldRebuild {
+			// 使用原子操作确保只有一个goroutine能将连接标记为重建
+			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+				ylog.Debugf("connection_pool", "age策略检查: id=%s, age=%v, max=%v, rebuild=%v (已标记)",
+					conn.id, age, p.config.RebuildMaxAge, shouldRebuild)
+				return true
+			} else {
+				ylog.Debugf("connection_pool", "age策略检查: id=%s, age=%v, max=%v, rebuild=%v (已被其他goroutine标记)",
+					conn.id, age, p.config.RebuildMaxAge, shouldRebuild)
+				return false
+			}
+		}
 		ylog.Debugf("connection_pool", "age策略检查: id=%s, age=%v, max=%v, rebuild=%v",
 			conn.id, age, p.config.RebuildMaxAge, shouldRebuild)
 		return shouldRebuild
@@ -974,13 +1050,28 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 	case "error":
 		// 仅基于错误率
 		totalRequests := atomic.LoadInt64(&conn.totalRequests)
-		if totalRequests > 10 {
+		if totalRequests >= p.config.RebuildMinRequestsForErrorRate {
 			totalErrors := atomic.LoadInt64(&conn.totalErrors)
-			errorRate := float64(totalErrors) / float64(totalRequests)
-			shouldRebuild := errorRate >= p.config.RebuildMaxErrorRate
-			ylog.Debugf("connection_pool", "error策略检查: id=%s, requests=%d, errors=%d, rate=%.2f, max=%.2f, rebuild=%v",
-				conn.id, totalRequests, totalErrors, errorRate, p.config.RebuildMaxErrorRate, shouldRebuild)
-			return shouldRebuild
+			if totalRequests > 0 { // 防止除零错误
+				// 使用浮点数计算确保精度
+				errorRate := float64(totalErrors) / float64(totalRequests)
+				shouldRebuild := errorRate >= p.config.RebuildMaxErrorRate
+				if shouldRebuild {
+					// 使用原子操作确保只有一个goroutine能将连接标记为重建
+					if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+						ylog.Debugf("connection_pool", "error策略检查: id=%s, requests=%d, errors=%d, rate=%.2f, max=%.2f, rebuild=%v (已标记)",
+							conn.id, totalRequests, totalErrors, errorRate, p.config.RebuildMaxErrorRate, shouldRebuild)
+						return true
+					} else {
+						ylog.Debugf("connection_pool", "error策略检查: id=%s, requests=%d, errors=%d, rate=%.2f, max=%.2f, rebuild=%v (已被其他goroutine标记)",
+							conn.id, totalRequests, totalErrors, errorRate, p.config.RebuildMaxErrorRate, shouldRebuild)
+						return false
+					}
+				}
+				ylog.Debugf("connection_pool", "error策略检查: id=%s, requests=%d, errors=%d, rate=%.2f, max=%.2f, rebuild=%v",
+					conn.id, totalRequests, totalErrors, errorRate, p.config.RebuildMaxErrorRate, shouldRebuild)
+				return shouldRebuild
+			}
 		}
 		ylog.Debugf("connection_pool", "error策略检查: id=%s, requests=%d (太少)，跳过", conn.id, totalRequests)
 		return false
@@ -1003,8 +1094,9 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		}
 
 		totalRequests := atomic.LoadInt64(&conn.totalRequests)
-		if totalRequests > 10 {
+		if totalRequests >= p.config.RebuildMinRequestsForErrorRate {
 			totalErrors := atomic.LoadInt64(&conn.totalErrors)
+			// 使用浮点数计算确保精度
 			errorRate := float64(totalErrors) / float64(totalRequests)
 			if errorRate >= p.config.RebuildMaxErrorRate {
 				conditions++
@@ -1014,6 +1106,18 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		}
 
 		shouldRebuild := conditions == 3
+		if shouldRebuild {
+			// 使用原子操作确保只有一个goroutine能将连接标记为重建
+			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+				ylog.Debugf("connection_pool", "all策略检查: id=%s, conditions=%d/3, rebuild=%v (已标记)",
+					conn.id, conditions, shouldRebuild)
+				return true
+			} else {
+				ylog.Debugf("connection_pool", "all策略检查: id=%s, conditions=%d/3, rebuild=%v (已被其他goroutine标记)",
+					conn.id, conditions, shouldRebuild)
+				return false
+			}
+		}
 		ylog.Debugf("connection_pool", "all策略检查: id=%s, conditions=%d/3, rebuild=%v",
 			conn.id, conditions, shouldRebuild)
 		return shouldRebuild
@@ -1024,27 +1128,55 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		// 满足任意条件
 		usageCount := atomic.LoadInt64(&conn.usageCount)
 		if usageCount >= p.config.RebuildMaxUsageCount {
-			ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 使用次数达到%d >= %d",
-				conn.id, usageCount, p.config.RebuildMaxUsageCount)
-			return true
+			// 使用原子操作确保只有一个goroutine能将连接标记为重建
+			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+				ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 使用次数达到%d >= %d (已标记)",
+					conn.id, usageCount, p.config.RebuildMaxUsageCount)
+				return true
+			} else {
+				ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 使用次数达到%d >= %d (已被其他goroutine标记)",
+					conn.id, usageCount, p.config.RebuildMaxUsageCount)
+				return false
+			}
 		}
 
 		age := now.Sub(conn.createdAt)
 		if age >= p.config.RebuildMaxAge {
-			ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 年龄达到%v >= %v",
-				conn.id, age, p.config.RebuildMaxAge)
-			return true
+			// 使用原子操作确保只有一个goroutine能将连接标记为重建
+			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+				ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 年龄达到%v >= %v (已标记)",
+					conn.id, age, p.config.RebuildMaxAge)
+				return true
+			} else {
+				ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 年龄达到%v >= %v (已被其他goroutine标记)",
+					conn.id, age, p.config.RebuildMaxAge)
+				return false
+			}
 		}
 
 		totalRequests := atomic.LoadInt64(&conn.totalRequests)
-		if totalRequests > 10 {
+		if totalRequests >= p.config.RebuildMinRequestsForErrorRate {
 			totalErrors := atomic.LoadInt64(&conn.totalErrors)
-			errorRate := float64(totalErrors) / float64(totalRequests)
-			if errorRate >= p.config.RebuildMaxErrorRate {
-				ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 错误率%.2f >= %.2f",
-					conn.id, errorRate, p.config.RebuildMaxErrorRate)
-				return true
+			if totalRequests > 0 { // 防止除零错误
+				// 使用浮点数计算确保精度
+				errorRate := float64(totalErrors) / float64(totalRequests)
+				if errorRate >= p.config.RebuildMaxErrorRate {
+					// 使用原子操作确保只有一个goroutine能将连接标记为重建
+					if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+						ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 错误率%.4f >= %.4f (已标记)",
+							conn.id, errorRate, p.config.RebuildMaxErrorRate)
+						return true
+					} else {
+						ylog.Debugf("connection_pool", "any策略: 连接需要重建: id=%s, 错误率%.4f >= %.4f (已被其他goroutine标记)",
+							conn.id, errorRate, p.config.RebuildMaxErrorRate)
+						return false
+					}
+				}
 			}
+		} else if totalRequests > 0 {
+			// 请求数太少，不计算错误率，记录日志
+			ylog.Debugf("connection_pool", "any策略: 连接请求数太少不计算错误率: id=%s, requests=%d < %d",
+				conn.id, totalRequests, p.config.RebuildMinRequestsForErrorRate)
 		}
 
 		ylog.Debugf("connection_pool", "any策略: 连接不需要重建: id=%s, usage=%d/%d, age=%v/%v",
@@ -1236,27 +1368,50 @@ func (p *EnhancedConnectionPool) GetWarmupStatus() map[Protocol]*WarmupStatus {
 // getRebuildReason 获取重建原因
 func (p *EnhancedConnectionPool) getRebuildReason(conn *EnhancedPooledConnection) string {
 	now := time.Now()
-	reasons := []string{}
 
+	// 按优先级检查各个条件，返回最主要的原因
 	usageCount := atomic.LoadInt64(&conn.usageCount)
 	if usageCount >= p.config.RebuildMaxUsageCount {
-		reasons = append(reasons, fmt.Sprintf("usage(%d)", usageCount))
+		return fmt.Sprintf("usage_exceeded(%d>=%d)", usageCount, p.config.RebuildMaxUsageCount)
 	}
 
-	if now.Sub(conn.createdAt) >= p.config.RebuildMaxAge {
-		reasons = append(reasons, fmt.Sprintf("age(%v)", now.Sub(conn.createdAt)))
+	age := now.Sub(conn.createdAt)
+	if age >= p.config.RebuildMaxAge {
+		return fmt.Sprintf("age_exceeded(%v>=%v)", age, p.config.RebuildMaxAge)
 	}
 
 	totalRequests := atomic.LoadInt64(&conn.totalRequests)
-	if totalRequests > 10 {
+	if totalRequests >= p.config.RebuildMinRequestsForErrorRate {
 		totalErrors := atomic.LoadInt64(&conn.totalErrors)
-		errorRate := float64(totalErrors) / float64(totalRequests)
-		if errorRate >= p.config.RebuildMaxErrorRate {
-			reasons = append(reasons, fmt.Sprintf("error_rate(%.2f)", errorRate))
+		if totalRequests > 0 { // 防止除零错误
+			// 使用浮点数计算确保精度，但保持与测试一致的格式化
+			errorRate := float64(totalErrors) / float64(totalRequests)
+			if errorRate >= p.config.RebuildMaxErrorRate {
+				return fmt.Sprintf("error_rate_exceeded(%.2f>=%.2f)", errorRate, p.config.RebuildMaxErrorRate)
+			}
 		}
 	}
 
-	return strings.Join(reasons, "|")
+	// 如果没有明确的原因，返回所有满足的条件
+	reasons := []string{}
+	if usageCount >= p.config.RebuildMaxUsageCount {
+		reasons = append(reasons, fmt.Sprintf("usage(%d)", usageCount))
+	}
+	if age >= p.config.RebuildMaxAge {
+		reasons = append(reasons, fmt.Sprintf("age(%v)", age))
+	}
+	if totalRequests >= p.config.RebuildMinRequestsForErrorRate &&
+		float64(atomic.LoadInt64(&conn.totalErrors))/float64(totalRequests) >= p.config.RebuildMaxErrorRate {
+		errorRate := float64(atomic.LoadInt64(&conn.totalErrors)) / float64(totalRequests)
+		reasons = append(reasons, fmt.Sprintf("error_rate(%.2f)", errorRate))
+	}
+
+	if len(reasons) > 0 {
+		return strings.Join(reasons, "|")
+	}
+
+	// 如果没有任何条件满足，返回空字符串
+	return ""
 }
 
 // Close 关闭连接池
@@ -1340,34 +1495,6 @@ func (md *MonitoredDriver) Close() error {
 }
 
 // activateConnection 统一激活连接并返回监控包装器
-// mergeContext 合并请求上下文和池上下文
-func (p *EnhancedConnectionPool) mergeContext(requestCtx context.Context) context.Context {
-	if requestCtx == nil {
-		return p.ctx
-	}
-
-	// 如果请求上下文有超时，优先使用请求上下文的超时
-	if deadline, ok := requestCtx.Deadline(); ok {
-		// 请求上下文有超时，创建新的合并上下文
-		mergedCtx, cancel := context.WithDeadline(p.ctx, deadline)
-
-		// 监听请求上下文的取消
-		go func() {
-			select {
-			case <-requestCtx.Done():
-				cancel() // 请求上下文取消，传播取消
-			case <-mergedCtx.Done():
-				// 合并上下文自然结束
-			}
-		}()
-
-		return mergedCtx
-	}
-
-	// 请求上下文没有超时，直接使用池上下文
-	return p.ctx
-}
-
 func (p *EnhancedConnectionPool) activateConnection(conn *EnhancedPooledConnection) ProtocolDriver {
 	conn.inUse = true
 	conn.lastUsed = time.Now()
@@ -1408,4 +1535,35 @@ func (p *EnhancedConnectionPool) activateConnection(conn *EnhancedPooledConnecti
 		protocol:       conn.protocol,
 		startTime:      time.Now(),
 	}
+}
+
+// mergeContext 合并请求上下文和池上下文
+func (p *EnhancedConnectionPool) mergeContext(requestCtx context.Context) context.Context {
+	if requestCtx == nil {
+		return p.ctx
+	}
+
+	// 如果请求上下文有超时，优先使用请求上下文的超时
+	if deadline, ok := requestCtx.Deadline(); ok {
+		// 请求上下文有超时，创建新的合并上下文
+		mergedCtx, cancel := context.WithDeadline(p.ctx, deadline)
+
+		// 监听请求上下文的取消，确保资源及时释放
+		go func() {
+			defer cancel() // 确保cancel被调用以释放资源
+			select {
+			case <-requestCtx.Done():
+				// 请求上下文取消，传播取消
+			case <-mergedCtx.Done():
+				// 合并上下文自然结束
+			case <-p.ctx.Done():
+				// 池上下文取消
+			}
+		}()
+
+		return mergedCtx
+	}
+
+	// 请求上下文没有超时，直接使用池上下文
+	return p.ctx
 }

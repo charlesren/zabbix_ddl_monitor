@@ -2,6 +2,7 @@ package connection
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -135,13 +136,19 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 				ProtocolTypeFunc: func() Protocol { return "test" },
 				CloseFunc:        func() error { return nil },
 				ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
-					atomic.AddInt32(&healthCheckCount, 1)
+					// 检查是否是健康检查请求
+					if payload, ok := req.Payload.([]string); ok && len(payload) == 1 && payload[0] == "echo healthcheck" {
+						atomic.AddInt32(&healthCheckCount, 1)
+						fmt.Printf("Health check called, count: %d\n", atomic.LoadInt32(&healthCheckCount))
+					} else {
+						fmt.Printf("Regular execute called with payload: %+v\n", req.Payload)
+					}
 					return &ProtocolResponse{Success: true, RawData: []byte("ok")}, nil
 				},
 			}, nil
 		},
 		HealthCheckFunc: func(driver ProtocolDriver) bool {
-			atomic.AddInt32(&healthCheckCount, 1)
+			// 这个函数实际上不会被调用，因为defaultHealthCheck使用Execute方法
 			return true
 		},
 	}
@@ -153,14 +160,22 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 		err := pool.WarmUp("test", 2)
 		assert.NoError(t, err)
 
+		// Reset counter
+		atomic.StoreInt32(&healthCheckCount, 0)
+		fmt.Printf("Counter reset to 0\n")
+
 		// Trigger health check manually
+		fmt.Println("Calling performHealthChecks")
 		pool.performHealthChecks()
 
 		// Wait a bit for async health checks
+		fmt.Println("Waiting for health checks to complete")
 		time.Sleep(100 * time.Millisecond)
 
 		// Health check should have been called
-		assert.Greater(t, int(atomic.LoadInt32(&healthCheckCount)), 0)
+		count := atomic.LoadInt32(&healthCheckCount)
+		fmt.Printf("Final count: %d\n", count)
+		assert.Greater(t, int(count), 0)
 	})
 }
 
@@ -524,7 +539,11 @@ func TestEnhancedConnectionPool_Events(t *testing.T) {
 	t.Run("should generate events", func(t *testing.T) {
 		// Monitor events
 		eventCount := 0
+		done := make(chan bool)
 		go func() {
+			defer func() {
+				done <- true
+			}()
 			for {
 				select {
 				case event := <-pool.eventChan:
@@ -545,6 +564,13 @@ func TestEnhancedConnectionPool_Events(t *testing.T) {
 
 		// Wait for events to be processed
 		time.Sleep(100 * time.Millisecond)
+
+		// Ensure the goroutine exits
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Event monitoring goroutine did not exit in time")
+		}
 
 		assert.Greater(t, eventCount, 0)
 	})

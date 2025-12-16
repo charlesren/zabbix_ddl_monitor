@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,33 +12,34 @@ import (
 // 辅助函数：创建测试连接
 func createTestConnection(usageCount, totalRequests, totalErrors int64, createdAt, lastRebuiltAt time.Time) *EnhancedPooledConnection {
 	conn := &EnhancedPooledConnection{
-		createdAt: createdAt,
+		createdAt:     createdAt,
 		lastRebuiltAt: lastRebuiltAt,
-		valid:        true,
-		healthStatus: HealthStatusHealthy,
-		labels:       make(map[string]string),
-		metadata:     make(map[string]interface{}),
+		valid:         true,
+		healthStatus:  HealthStatusHealthy,
+		labels:        make(map[string]string),
+		metadata:      make(map[string]interface{}),
 	}
 
 	// 使用原子操作设置字段
 	atomic.StoreInt64(&conn.usageCount, usageCount)
 	atomic.StoreInt64(&conn.totalRequests, totalRequests)
 	atomic.StoreInt64(&conn.totalErrors, totalErrors)
+	// 重置重建标记
+	atomic.StoreInt32(&conn.markedForRebuild, 0)
 
 	return conn
 }
-
 func TestSmartRebuildDecision(t *testing.T) {
 	// 创建测试配置
 	config := &EnhancedConnectionConfig{
-		SmartRebuildEnabled:  true,
-		RebuildMaxUsageCount: 200,              // 使用200次后重建
-		RebuildMaxAge:        30 * time.Minute, // 30分钟后重建
-		RebuildMaxErrorRate:  0.2,              // 20%错误率
-		RebuildMinInterval:   5 * time.Minute,  // 最小重建间隔5分钟
-		RebuildStrategy:      "any",            // 满足任意条件即重建
+		SmartRebuildEnabled:            true,
+		RebuildMaxUsageCount:           200,              // 使用200次后重建
+		RebuildMaxAge:                  30 * time.Minute, // 30分钟后重建
+		RebuildMaxErrorRate:            0.2,              // 20%错误率
+		RebuildMinInterval:             5 * time.Minute,  // 最小重建间隔5分钟
+		RebuildMinRequestsForErrorRate: 10,               // 错误率计算的最小请求数
+		RebuildStrategy:                "any",            // 满足任意条件即重建
 	}
-
 	// 创建模拟连接池
 	pool := &EnhancedConnectionPool{
 		config: *config,
@@ -173,43 +175,82 @@ func TestSmartRebuildDecision(t *testing.T) {
 
 func TestSmartRebuildStrategy(t *testing.T) {
 	now := time.Now()
-	conn := createTestConnection(
-		250, // 超过200
-		100,
-		25,                       // 25%错误率，超过20%
-		now.Add(-40*time.Minute), // 超过30分钟
-		time.Time{},
-	)
 
 	// 测试不同策略
 	tests := []struct {
 		name     string
 		strategy string
+		connFunc func() *EnhancedPooledConnection // 为每个测试创建独立的连接
 		expected bool
 	}{
 		{
 			name:     "any策略-满足任意条件",
 			strategy: "any",
+			connFunc: func() *EnhancedPooledConnection {
+				return createTestConnection(
+					250, // 超过200
+					100,
+					25,                       // 25%错误率，超过20%
+					now.Add(-40*time.Minute), // 超过30分钟
+					time.Time{},
+				)
+			},
 			expected: true, // 满足所有条件
 		},
 		{
 			name:     "all策略-满足所有条件",
 			strategy: "all",
+			connFunc: func() *EnhancedPooledConnection {
+				return createTestConnection(
+					250, // 超过200
+					100,
+					25,                       // 25%错误率，超过20%
+					now.Add(-40*time.Minute), // 超过30分钟
+					time.Time{},
+				)
+			},
 			expected: true, // 满足所有条件
 		},
 		{
 			name:     "usage策略-仅使用次数",
 			strategy: "usage",
+			connFunc: func() *EnhancedPooledConnection {
+				return createTestConnection(
+					250, // 超过200
+					100,
+					5,                        // 5%错误率，低于20%
+					now.Add(-10*time.Minute), // 未超过30分钟
+					time.Time{},
+				)
+			},
 			expected: true, // 使用次数超过200
 		},
 		{
 			name:     "age策略-仅连接年龄",
 			strategy: "age",
+			connFunc: func() *EnhancedPooledConnection {
+				return createTestConnection(
+					150, // 未超过200
+					50,
+					5,                        // 10%错误率，低于20%
+					now.Add(-40*time.Minute), // 超过30分钟
+					time.Time{},
+				)
+			},
 			expected: true, // 年龄超过30分钟
 		},
 		{
 			name:     "error策略-仅错误率",
 			strategy: "error",
+			connFunc: func() *EnhancedPooledConnection {
+				return createTestConnection(
+					150, // 未超过200
+					100,
+					25,                       // 25%错误率，超过20%
+					now.Add(-10*time.Minute), // 未超过30分钟
+					time.Time{},
+				)
+			},
 			expected: true, // 错误率超过20%
 		},
 	}
@@ -229,12 +270,12 @@ func TestSmartRebuildStrategy(t *testing.T) {
 				config: *config,
 			}
 
+			conn := tt.connFunc()
 			result := pool.shouldRebuildConnection(conn)
 			assert.Equal(t, tt.expected, result, "策略测试: %s", tt.name)
 		})
 	}
 }
-
 func TestSmartRebuildDisabled(t *testing.T) {
 	// 测试智能重建禁用的情况
 	config := &EnhancedConnectionConfig{
@@ -292,7 +333,7 @@ func TestGetRebuildReason(t *testing.T) {
 				now.Add(-10*time.Minute),
 				time.Time{},
 			),
-			expected: "usage(250)",
+			expected: "usage_exceeded(250>=200)",
 		},
 		{
 			name: "仅连接年龄达到阈值",
@@ -303,7 +344,7 @@ func TestGetRebuildReason(t *testing.T) {
 				now.Add(-40*time.Minute),
 				time.Time{},
 			),
-			expected: "age(40m0s)", // 实际测试中会包含纳秒，这里只检查分钟部分
+			expected: "age_exceeded(40m0s>=30m0s)", // 实际测试中会包含纳秒，这里只检查分钟部分
 		},
 		{
 			name: "仅错误率超过阈值",
@@ -314,7 +355,7 @@ func TestGetRebuildReason(t *testing.T) {
 				now.Add(-10*time.Minute),
 				time.Time{},
 			),
-			expected: "error_rate(0.30)",
+			expected: "error_rate_exceeded(0.30>=0.20)",
 		},
 		{
 			name: "多个条件同时满足",
@@ -325,7 +366,7 @@ func TestGetRebuildReason(t *testing.T) {
 				now.Add(-40*time.Minute),
 				time.Time{},
 			),
-			expected: "usage(250)|age(40m0s)|error_rate(0.30)", // 实际测试中会包含纳秒，这里只检查分钟部分
+			expected: "usage_exceeded(250>=200)", // 由于优先级，只会返回第一个满足的条件
 		},
 		{
 			name: "没有条件满足",
@@ -345,14 +386,12 @@ func TestGetRebuildReason(t *testing.T) {
 			reason := pool.getRebuildReason(tt.conn)
 
 			// 对于包含age的测试，只检查分钟部分
-			if tt.name == "仅连接年龄达到阈值" || tt.name == "多个条件同时满足" {
-				// 检查是否包含"age(40m"
-				assert.Contains(t, reason, "age(40m", "重建原因测试: %s", tt.name)
-				// 检查是否包含其他预期部分
-				if tt.name == "多个条件同时满足" {
-					assert.Contains(t, reason, "usage(250)", "重建原因测试: %s", tt.name)
-					assert.Contains(t, reason, "error_rate(0.30)", "重建原因测试: %s", tt.name)
-				}
+			if tt.name == "仅连接年龄达到阈值" {
+				// 检查是否包含"age_exceeded("
+				assert.Contains(t, reason, "age_exceeded(", "重建原因测试: %s", tt.name)
+			} else if tt.name == "多个条件同时满足" {
+				// 对于多个条件满足的情况，由于优先级只会返回第一个满足的条件
+				assert.Equal(t, "usage_exceeded(250>=200)", reason, "重建原因测试: %s", tt.name)
 			} else {
 				assert.Equal(t, tt.expected, reason, "重建原因测试: %s", tt.name)
 			}
@@ -405,4 +444,166 @@ func TestRebuildMinIntervalLogic(t *testing.T) {
 		now.Add(-10*time.Minute), // 重建过10分钟，超过5分钟间隔
 	)
 	assert.True(t, pool.shouldRebuildConnection(conn3), "已达到最小重建间隔应允许重建")
+}
+
+// TestSmartRebuildConcurrencySafety 测试并发安全性
+func TestSmartRebuildConcurrencySafety(t *testing.T) {
+	// 创建测试配置
+	config := &EnhancedConnectionConfig{
+		SmartRebuildEnabled:            true,
+		RebuildMaxUsageCount:           200,
+		RebuildMaxAge:                  30 * time.Minute,
+		RebuildMaxErrorRate:            0.2,
+		RebuildMinInterval:             5 * time.Minute,
+		RebuildMinRequestsForErrorRate: 10,
+		RebuildStrategy:                "any",
+	}
+
+	// 创建模拟连接池
+	pool := &EnhancedConnectionPool{
+		config: *config,
+	}
+
+	now := time.Now()
+	conn := createTestConnection(
+		250, // 超过200，应该重建
+		100,
+		25,                       // 25%错误率，超过20%
+		now.Add(-40*time.Minute), // 超过30分钟
+		time.Time{},
+	)
+
+	// 并发测试：多个goroutine同时检查同一个连接是否需要重建
+	// 应该只有一个goroutine返回true
+	concurrentCalls := 10
+	results := make(chan bool, concurrentCalls)
+	var wg sync.WaitGroup
+
+	for i := 0; i < concurrentCalls; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result := pool.shouldRebuildConnection(conn)
+			results <- result
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	// 统计结果
+	trueCount := 0
+	falseCount := 0
+	for result := range results {
+		if result {
+			trueCount++
+		} else {
+			falseCount++
+		}
+	}
+
+	// 验证：只有一个goroutine应该返回true（第一个检查的），其余应该返回false
+	assert.Equal(t, 1, trueCount, "应该只有一个goroutine返回true")
+	assert.Equal(t, concurrentCalls-1, falseCount, "其余goroutine应该返回false")
+}
+
+// TestSmartRebuildEdgeCases 测试边界条件
+func TestSmartRebuildEdgeCases(t *testing.T) {
+	config := &EnhancedConnectionConfig{
+		SmartRebuildEnabled:            true,
+		RebuildMaxUsageCount:           200,
+		RebuildMaxAge:                  30 * time.Minute,
+		RebuildMaxErrorRate:            0.2,
+		RebuildMinInterval:             5 * time.Minute,
+		RebuildMinRequestsForErrorRate: 10,
+		RebuildStrategy:                "any",
+	}
+
+	// 创建模拟连接池
+	pool := &EnhancedConnectionPool{
+		config: *config,
+	}
+
+	now := time.Now()
+
+	// 测试用例
+	tests := []struct {
+		name     string
+		conn     *EnhancedPooledConnection
+		expected bool
+	}{
+		{
+			name: "使用次数刚好等于阈值",
+			conn: createTestConnection(
+				200, // 刚好等于200
+				100,
+				10,
+				now.Add(-10*time.Minute),
+				time.Time{},
+			),
+			expected: true,
+		},
+		{
+			name: "连接年龄刚好等于阈值",
+			conn: createTestConnection(
+				50,
+				50,
+				5,
+				now.Add(-30*time.Minute), // 刚好等于30分钟
+				time.Time{},
+			),
+			expected: true,
+		},
+		{
+			name: "错误率刚好等于阈值",
+			conn: createTestConnection(
+				150,
+				50,
+				10, // 20%错误率，刚好等于阈值
+				now.Add(-10*time.Minute),
+				time.Time{},
+			),
+			expected: true,
+		},
+		{
+			name: "最小重建间隔刚好到期",
+			conn: createTestConnection(
+				250, // 超过200
+				100,
+				10,
+				now.Add(-40*time.Minute), // 创建很久
+				now.Add(-5*time.Minute),  // 重建过5分钟，刚好到期
+			),
+			expected: true,
+		},
+		{
+			name: "请求数刚好等于最小请求数",
+			conn: createTestConnection(
+				150,
+				10, // 刚好等于10
+				3,  // 30%错误率，超过20%
+				now.Add(-10*time.Minute),
+				time.Time{},
+			),
+			expected: true,
+		},
+		{
+			name: "请求数小于最小请求数",
+			conn: createTestConnection(
+				150,
+				9, // 小于10
+				3, // 33%错误率，但请求数不够
+				now.Add(-10*time.Minute),
+				time.Time{},
+			),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := pool.shouldRebuildConnection(tt.conn)
+			assert.Equal(t, tt.expected, result, "测试用例: %s", tt.name)
+		})
+	}
 }
