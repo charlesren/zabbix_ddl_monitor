@@ -48,6 +48,10 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 		WithProtocol(router.Protocol, router.Platform).
 		WithMetadata("platform", router.Platform).
 		WithMetadata("protocol", router.Protocol).
+		// 启用智能重建，配置合理的参数
+		WithSmartRebuild(true, 200, 30*time.Minute, 0.2).
+		// 减少最大连接数，给管理员留空间
+		WithConnectionPool(3, 1, 10*time.Second, 30*time.Second).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build connection config: %w", err)

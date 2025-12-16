@@ -49,6 +49,14 @@ type EnhancedConnectionConfig struct {
 	// 标签和元数据
 	Labels   map[string]string      `json:"labels,omitempty" yaml:"labels,omitempty"`
 	Metadata map[string]interface{} `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+
+	// 智能重建配置
+	SmartRebuildEnabled  bool          `json:"smart_rebuild_enabled" yaml:"smart_rebuild_enabled"`
+	RebuildMaxUsageCount int64         `json:"rebuild_max_usage_count" yaml:"rebuild_max_usage_count"`
+	RebuildMaxAge        time.Duration `json:"rebuild_max_age" yaml:"rebuild_max_age"`
+	RebuildMaxErrorRate  float64       `json:"rebuild_max_error_rate" yaml:"rebuild_max_error_rate"`
+	RebuildMinInterval   time.Duration `json:"rebuild_min_interval" yaml:"rebuild_min_interval"`
+	RebuildStrategy      string        `json:"rebuild_strategy" yaml:"rebuild_strategy"` // "any" | "all" | "usage" | "age" | "error"
 }
 
 // SSH特定配置
@@ -133,21 +141,27 @@ func NewConfigBuilder() *ConfigBuilder {
 	return &ConfigBuilder{
 		config: &EnhancedConnectionConfig{
 			// 设置默认值
-			Port:            22,
-			ConnectTimeout:  30 * time.Second,
-			ReadTimeout:     30 * time.Second,
-			WriteTimeout:    10 * time.Second,
-			IdleTimeout:     30 * time.Second,
-			MaxRetries:      2,
-			RetryInterval:   2 * time.Second,
-			BackoffFactor:   1.5,
-			MaxConnections:  5,
-			MinConnections:  2,
-			MaxIdleTime:     2 * time.Minute,
-			HealthCheckTime: 30 * time.Second,
-			Extensions:      make(map[string]interface{}),
-			Labels:          make(map[string]string),
-			Metadata:        make(map[string]interface{}),
+			Port:                 22,
+			ConnectTimeout:       30 * time.Second,
+			ReadTimeout:          30 * time.Second,
+			WriteTimeout:         10 * time.Second,
+			IdleTimeout:          30 * time.Second,
+			MaxRetries:           2,
+			RetryInterval:        2 * time.Second,
+			BackoffFactor:        1.5,
+			MaxConnections:       5,
+			MinConnections:       2,
+			MaxIdleTime:          2 * time.Minute,
+			HealthCheckTime:      30 * time.Second,
+			Extensions:           make(map[string]interface{}),
+			Labels:               make(map[string]string),
+			Metadata:             make(map[string]interface{}),
+			SmartRebuildEnabled:  true,
+			RebuildMaxUsageCount: 200,
+			RebuildMaxAge:        30 * time.Minute,
+			RebuildMaxErrorRate:  0.2,
+			RebuildMinInterval:   5 * time.Minute,
+			RebuildStrategy:      "any",
 		},
 	}
 }
@@ -198,6 +212,21 @@ func (b *ConfigBuilder) WithConnectionPool(max, min int, maxIdle, healthCheck ti
 	b.config.MinConnections = min
 	b.config.MaxIdleTime = maxIdle
 	b.config.HealthCheckTime = healthCheck
+	return b
+}
+
+// WithSmartRebuild 设置智能重建配置
+func (b *ConfigBuilder) WithSmartRebuild(enabled bool, maxUsage int64, maxAge time.Duration, maxErrorRate float64) *ConfigBuilder {
+	b.config.SmartRebuildEnabled = enabled
+	if maxUsage > 0 {
+		b.config.RebuildMaxUsageCount = maxUsage
+	}
+	if maxAge > 0 {
+		b.config.RebuildMaxAge = maxAge
+	}
+	if maxErrorRate > 0 {
+		b.config.RebuildMaxErrorRate = maxErrorRate
+	}
 	return b
 }
 
