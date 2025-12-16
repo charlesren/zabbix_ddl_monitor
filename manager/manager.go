@@ -103,8 +103,8 @@ func (m *Manager) fullSync() {
 		ylog.Warnf("manager", "同步器返回空数据，等待同步完成...")
 
 		// 等待同步器完成第一次同步
-		// 最多等待60秒，每2秒检查一次
-		maxChecks := 30
+		// 最多等待300秒，每2秒检查一次
+		maxChecks := 150
 		checkInterval := 2 * time.Second
 
 		for i := 0; i < maxChecks; i++ {
@@ -119,7 +119,7 @@ func (m *Manager) fullSync() {
 		}
 
 		if len(lines) == 0 {
-			ylog.Errorf("manager", "等待60秒后同步器仍然返回空数据，跳过本次全量同步")
+			ylog.Errorf("manager", "等待300秒后同步器仍然返回空数据，跳过本次全量同步")
 			return
 		}
 	}
