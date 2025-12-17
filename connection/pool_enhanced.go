@@ -25,6 +25,7 @@ type EnhancedConnectionPool struct {
 	parentCtx context.Context // 父级上下文，用于协调关闭
 	ctx       context.Context
 	cancel    context.CancelFunc
+	wg        sync.WaitGroup // 用于同步后台任务
 
 	// 配置参数
 	idleTimeout     time.Duration
@@ -525,19 +526,31 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 
 				// 异步关闭旧连接，带超时保护
 				go func(oldConn *EnhancedPooledConnection) {
+					defer func() {
+						if r := recover(); r != nil {
+							ylog.Errorf("connection_pool", "关闭连接时发生panic: %v", r)
+						}
+					}()
+
 					// 创建带超时的上下文
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 
-					// 在单独的goroutine中执行关闭操作
-					done := make(chan error, 1)
+					// 直接执行关闭操作，避免嵌套goroutine
+					errChan := make(chan error, 1)
 					go func() {
-						done <- oldConn.driver.Close()
+						defer func() {
+							if r := recover(); r != nil {
+								ylog.Errorf("connection_pool", "关闭驱动时发生panic: %v", r)
+								errChan <- fmt.Errorf("panic: %v", r)
+							}
+						}()
+						errChan <- oldConn.driver.Close()
 					}()
 
 					// 等待关闭完成或超时
 					select {
-					case err := <-done:
+					case err := <-errChan:
 						if err != nil {
 							ylog.Warnf("connection_pool", "关闭旧连接失败: %v", err)
 						} else {
@@ -786,16 +799,32 @@ func (p *EnhancedConnectionPool) WarmUp(proto Protocol, targetCount int) error {
 // startBackgroundTasks 启动后台任务
 func (p *EnhancedConnectionPool) startBackgroundTasks() {
 	// 健康检查任务
-	go p.healthCheckTask()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.healthCheckTask()
+	}()
 
 	// 连接清理任务
-	go p.cleanupTask()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.cleanupTask()
+	}()
 
 	// 指标收集任务
-	go p.metricsTask()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.metricsTask()
+	}()
 
 	// 事件处理任务
-	go p.eventHandlerTask()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.eventHandlerTask()
+	}()
 
 	// 空闲连接健康检查任务
 	// go p.idleConnectionHealthTask()
@@ -954,6 +983,12 @@ func (p *EnhancedConnectionPool) cleanupConnections() {
 			delete(pool.connections, id)
 
 			go func(c *EnhancedPooledConnection) {
+				defer func() {
+					if r := recover(); r != nil {
+						ylog.Errorf("connection_pool", "清理连接时发生panic: %v", r)
+					}
+				}()
+
 				c.driver.Close()
 				atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
 				p.collector.IncrementConnectionsDestroyed(proto)
@@ -1266,11 +1301,14 @@ func (p *EnhancedConnectionPool) updateMetrics() {
 func (p *EnhancedConnectionPool) eventHandlerTask() {
 	for {
 		select {
-		case <-p.parentCtx.Done(): // 监听父级上下文
-			return
 		case <-p.ctx.Done():
-			return
-		case event := <-p.eventChan:
+			// 池上下文取消，等待事件通道关闭
+			// 继续循环，直到事件通道关闭
+		case event, ok := <-p.eventChan:
+			if !ok {
+				// 事件通道已关闭，退出任务
+				return
+			}
 			p.handleEvent(event)
 		}
 	}
@@ -1285,6 +1323,18 @@ func (p *EnhancedConnectionPool) handleEvent(event PoolEvent) {
 
 // sendEvent 发送事件
 func (p *EnhancedConnectionPool) sendEvent(eventType PoolEventType, protocol Protocol, data interface{}) {
+	// 检查连接池是否正在关闭
+	if atomic.LoadInt32(&p.isShuttingDown) == 1 {
+		return
+	}
+
+	// 使用 defer recover 保护，避免向已关闭的通道发送导致 panic
+	defer func() {
+		if r := recover(); r != nil {
+			// 通道已关闭，忽略发送失败
+		}
+	}()
+
 	select {
 	case p.eventChan <- PoolEvent{
 		Type:      eventType,
@@ -1450,7 +1500,14 @@ func (p *EnhancedConnectionPool) Close() error {
 	atomic.StoreInt32(&p.isShuttingDown, 1)
 	p.cancel()
 
+	// 发送关闭事件（此时事件通道仍然打开）
 	p.sendEvent(EventPoolShutdown, "", nil)
+
+	// 关闭事件通道，让事件处理任务可以退出
+	close(p.eventChan)
+
+	// 等待后台任务退出
+	p.wg.Wait()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1466,8 +1523,6 @@ func (p *EnhancedConnectionPool) Close() error {
 		pool.connections = make(map[string]*EnhancedPooledConnection)
 		pool.mu.Unlock()
 	}
-
-	close(p.eventChan)
 
 	if len(errors) > 0 {
 		return fmt.Errorf("close errors: %v", errors)

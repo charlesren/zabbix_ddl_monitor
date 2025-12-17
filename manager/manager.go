@@ -29,7 +29,7 @@ type Manager struct {
 }
 
 func NewManager(cs ConfigSyncerInterface, registry task.Registry, aggregator *task.Aggregator) *Manager {
-	return &Manager{
+	m := &Manager{
 		appCtx:       context.Background(), // 默认使用background上下文
 		configSyncer: cs,
 		schedulers:   make(map[string]Scheduler),
@@ -38,6 +38,7 @@ func NewManager(cs ConfigSyncerInterface, registry task.Registry, aggregator *ta
 		aggregator:   aggregator,
 		stopChan:     make(chan struct{}),
 	}
+	return m
 }
 
 func (m *Manager) Start() {
@@ -61,7 +62,7 @@ func (m *Manager) Start() {
 	go m.periodicSync(4 * time.Hour)
 
 	// 订阅变更通知
-	sub := m.configSyncer.Subscribe(context.Background())
+	sub := m.configSyncer.Subscribe(m.appCtx)
 	m.wg.Add(1)
 	go m.handleLineChanges(sub)
 }
@@ -184,12 +185,17 @@ func (m *Manager) handleLineChanges(sub *syncer.Subscription) {
 			ylog.Infof("manager", "收到变更事件: %v", event.Type)
 			m.processLineEvent(event)
 		}
+		ylog.Infof("manager", "事件处理器已退出")
 	}()
 
 	for {
 		select {
 		case <-m.stopChan:
+			ylog.Infof("manager", "收到停止信号，关闭事件缓冲区")
 			close(eventBuffer)
+			// 等待事件处理器处理完所有剩余事件
+			// 注意：这里不能调用 m.wg.Wait()，因为会死锁
+			// 事件处理器会在处理完所有事件后自动退出
 			return
 		case event := <-sub.Events():
 			// 将事件放入缓冲区，避免阻塞订阅通道
@@ -262,15 +268,28 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 
 			// 延迟删除空调度器
 			if len(m.routerLines[routerIP]) == 0 {
-				time.AfterFunc(10*time.Minute, func() {
-					m.mu.Lock()
-					defer m.mu.Unlock()
-					if len(m.routerLines[routerIP]) == 0 {
-						s.Stop()
-						delete(m.schedulers, routerIP)
-						delete(m.routerLines, routerIP)
+				// 注意：这里不调用 m.wg.Add(1)，因为延迟删除的 goroutine 生命周期不确定
+				go func() {
+					timer := time.NewTimer(10 * time.Minute)
+					defer timer.Stop()
+
+					select {
+					case <-m.stopChan:
+						// 如果程序正在关闭，直接返回
+						return
+					case <-timer.C:
+						m.mu.Lock()
+						defer m.mu.Unlock()
+
+						// 再次检查是否仍然没有专线
+						if len(m.routerLines[routerIP]) == 0 {
+							s.Stop()
+							delete(m.schedulers, routerIP)
+							delete(m.routerLines, routerIP)
+							ylog.Infof("manager", "延迟删除空调度器: router=%s", routerIP)
+						}
 					}
-				})
+				}()
 			}
 		}
 	}
