@@ -75,36 +75,89 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 		if !ok {
 			return nil, fmt.Errorf("invalid commands payload")
 		}
-		resp, err := d.driver.SendCommands(cmds)
-		if err != nil {
-			return nil, err
-		}
-		// 提取所有Response的结果并拼接为RawData，每个命令结果之间添加分隔符
-		var rawData strings.Builder
-		for i, r := range resp.Responses {
-			rawData.WriteString(r.Result)
-			// 在命令结果之间添加分隔符（除了最后一个）
-			if i < len(resp.Responses)-1 {
-				rawData.WriteString("\n")
+
+		// 使用goroutine包装SendCommands，以便可以超时中断
+		resultChan := make(chan struct {
+			resp *response.MultiResponse
+			err  error
+		}, 1)
+
+		ylog.Debugf("ScrapliDriver", "executing %d commands with timeout control", len(cmds))
+
+		go func() {
+			resp, err := d.driver.SendCommands(cmds)
+			resultChan <- struct {
+				resp *response.MultiResponse
+				err  error
+			}{resp, err}
+		}()
+
+		select {
+		case <-effectiveCtx.Done():
+			// 上下文超时或取消
+			ylog.Warnf("ScrapliDriver", "command execution timed out or cancelled: %v", effectiveCtx.Err())
+			return nil, effectiveCtx.Err()
+		case result := <-resultChan:
+			if result.err != nil {
+				ylog.Errorf("ScrapliDriver", "command execution failed: %v", result.err)
+				return nil, result.err
 			}
+			// 提取所有Response的结果并拼接为RawData，每个命令结果之间添加分隔符
+			var rawData strings.Builder
+			for i, r := range result.resp.Responses {
+				rawData.WriteString(r.Result)
+				// 在命令结果之间添加分隔符（除了最后一个）
+				if i < len(result.resp.Responses)-1 {
+					rawData.WriteString("\n")
+				}
+			}
+			ylog.Debugf("ScrapliDriver", "command execution successful, %d responses received", len(result.resp.Responses))
+			return &ProtocolResponse{
+				Success:    true,
+				RawData:    []byte(rawData.String()),
+				Structured: result.resp,
+			}, nil
 		}
-		return &ProtocolResponse{
-			Success:    err == nil,
-			RawData:    []byte(rawData.String()),
-			Structured: resp,
-		}, err
 
 	case CommandTypeInteractiveEvent:
 		events, ok := req.Payload.([]*channel.SendInteractiveEvent)
 		if !ok {
 			return nil, fmt.Errorf("invalid events payload")
 		}
-		resp, err := d.channel.SendInteractive(events)
-		return &ProtocolResponse{
-			Success:    err == nil,
-			RawData:    resp,
-			Structured: nil, // 交互式命令无结构化响应
-		}, err
+
+		// 使用goroutine包装SendInteractive，以便可以超时中断
+		resultChan := make(chan struct {
+			resp []byte
+			err  error
+		}, 1)
+
+		ylog.Debugf("ScrapliDriver", "executing interactive events with timeout control, events: %d", len(events))
+
+		go func() {
+			resp, err := d.channel.SendInteractive(events)
+			resultChan <- struct {
+				resp []byte
+				err  error
+			}{resp, err}
+		}()
+
+		select {
+		case <-effectiveCtx.Done():
+			// 上下文超时或取消
+			ylog.Warnf("ScrapliDriver", "interactive execution timed out or cancelled: %v", effectiveCtx.Err())
+			return nil, effectiveCtx.Err()
+		case result := <-resultChan:
+			if result.err != nil {
+				ylog.Errorf("ScrapliDriver", "interactive execution failed: %v", result.err)
+				return nil, result.err
+			}
+			ylog.Debugf("ScrapliDriver", "interactive execution successful, response length: %d", len(result.resp))
+			return &ProtocolResponse{
+				Success:    true,
+				RawData:    result.resp,
+				Structured: nil, // 交互式命令无结构化响应
+			}, nil
+		}
 
 	default:
 		return nil, ErrUnsupportedCommandType
