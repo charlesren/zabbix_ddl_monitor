@@ -8,6 +8,7 @@ replace (
 	github.com/charlesren/zabbix_ddl_monitor/internal/config => ./internal/config
 	github.com/charlesren/zabbix_ddl_monitor/internal/router => ./internal/router
 	github.com/charlesren/zabbix_ddl_monitor/syncer => ./syncer
+	github.com/scrapli/scrapligo => github.com/charlesren/scrapligo v0.0.0-20251217120000-bb44d98b8a95
 )
 
 require (
