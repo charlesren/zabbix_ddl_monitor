@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -289,13 +290,17 @@ func WithSmartTimeout(defaultTimeout time.Duration) Middleware {
 	}
 }
 
+// WithRetry 创建一个重试中间件
+// maxRetries: 最大重试次数（不包括第一次尝试）
+// delay: 每次重试之间的延迟
 func WithRetry(maxRetries int, delay time.Duration) Middleware {
 	return func(next ExecutorFunc) ExecutorFunc {
 		return func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
 			var lastErr error
 			var lastResult Result
 
-			for attempt := 0; attempt <= maxRetries; attempt++ {
+			// 总尝试次数 = 1（初始尝试） + maxRetries（重试）
+			for attempt := 0; attempt < 1+maxRetries; attempt++ {
 				result, err := next(task, conn, ctx)
 				if err == nil && result.Success {
 					return result, nil
@@ -304,9 +309,46 @@ func WithRetry(maxRetries int, delay time.Duration) Middleware {
 				lastResult = result
 				lastErr = err
 
-				// Don't delay after the last attempt
+				// 如果不是最后一次尝试，等待延迟
 				if attempt < maxRetries {
 					time.Sleep(delay)
+				}
+			}
+
+			return lastResult, lastErr
+		}
+	}
+}
+
+// WithExponentialRetry 创建一个指数退避重试中间件
+// maxRetries: 最大重试次数（不包括第一次尝试）
+// baseDelay: 基础延迟时间
+// backoffFactor: 退避因子
+func WithExponentialRetry(maxRetries int, baseDelay time.Duration, backoffFactor float64) Middleware {
+	return func(next ExecutorFunc) ExecutorFunc {
+		return func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
+			var lastErr error
+			var lastResult Result
+
+			// 总尝试次数 = 1（初始尝试） + maxRetries（重试）
+			for attempt := 0; attempt < 1+maxRetries; attempt++ {
+				result, err := next(task, conn, ctx)
+				if err == nil && result.Success {
+					return result, nil
+				}
+
+				lastResult = result
+				lastErr = err
+
+				// 如果不是最后一次尝试，计算指数退避延迟并等待
+				if attempt < maxRetries {
+					// 计算当前尝试的延迟：baseDelay * (backoffFactor ^ attempt)
+					delay := time.Duration(float64(baseDelay) * math.Pow(backoffFactor, float64(attempt)))
+					select {
+					case <-ctx.Ctx.Done():
+						return lastResult, lastErr
+					case <-time.After(delay):
+					}
 				}
 			}
 

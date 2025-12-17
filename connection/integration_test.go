@@ -21,7 +21,8 @@ func TestConnectionSystemIntegration(t *testing.T) {
 			WithBasicAuth("192.168.1.100", "netadmin", "secret123").
 			WithProtocol(ProtocolScrapli, PlatformCiscoIOSXE).
 			WithTimeouts(30*time.Second, 15*time.Second, 10*time.Second, 5*time.Minute).
-			WithRetryPolicy(3, 1*time.Second, 2.0).
+			WithConnectionRetryPolicy(3, 1*time.Second, 2.0).
+			WithTaskRetryPolicy(1, 500*time.Millisecond, 1.5).
 			WithConnectionPool(10, 2, 15*time.Minute, 30*time.Second).
 			WithLabels(map[string]string{
 				"region": "us-west",
@@ -161,11 +162,11 @@ func TestConnectionSystemIntegration(t *testing.T) {
 	t.Run("ResilienceMechanisms", func(t *testing.T) {
 		// 测试重试策略
 		policy := &ExponentialBackoffPolicy{
-			BaseDelay:   50 * time.Millisecond,
-			MaxDelay:    1 * time.Second,
-			BackoffRate: 2.0,
-			MaxAttempts: 3,
-			Jitter:      false,
+			BaseDelay:     50 * time.Millisecond,
+			MaxDelay:      1 * time.Second,
+			BackoffFactor: 2.0,
+			MaxAttempts:   3,
+			Jitter:        false,
 		}
 
 		retrier := NewRetrier(policy, 5*time.Second)

@@ -30,7 +30,7 @@ type RetryPolicy interface {
 type ExponentialBackoffPolicy struct {
 	BaseDelay       time.Duration
 	MaxDelay        time.Duration
-	BackoffRate     float64
+	BackoffFactor   float64
 	MaxAttempts     int
 	Jitter          bool
 	RetryableErrors []error
@@ -62,7 +62,7 @@ func (p *ExponentialBackoffPolicy) NextDelay(attempt int) time.Duration {
 
 	delay := p.BaseDelay
 	for i := 1; i < attempt; i++ {
-		delay = time.Duration(float64(delay) * p.BackoffRate)
+		delay = time.Duration(float64(delay) * p.BackoffFactor)
 		if delay > p.MaxDelay {
 			delay = p.MaxDelay
 			break
@@ -469,15 +469,17 @@ func (re *ResilientExecutor) Execute(ctx context.Context, operation func() error
 // 预定义的重试策略
 var (
 	// 默认指数退避策略
+	// MaxAttempts: 最大尝试次数 = 2 (意味着最大重试次数 maxRetries = 1)
 	DefaultExponentialBackoff = &ExponentialBackoffPolicy{
-		BaseDelay:   2 * time.Second,
-		MaxDelay:    10 * time.Second,
-		BackoffRate: 1.5,
-		MaxAttempts: 2,
-		Jitter:      true,
+		BaseDelay:     2 * time.Second,
+		MaxDelay:      10 * time.Second,
+		BackoffFactor: 1.5,
+		MaxAttempts:   2,
+		Jitter:        true,
 	}
 
 	// 默认固定间隔策略
+	// MaxAttempts: 最大尝试次数 = 3 (意味着最大重试次数 maxRetries = 2)
 	DefaultFixedInterval = &FixedIntervalPolicy{
 		Interval:    1 * time.Second,
 		MaxAttempts: 3,

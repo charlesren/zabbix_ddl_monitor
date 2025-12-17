@@ -13,6 +13,16 @@ import (
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
 )
 
+// createMockDriver 创建用于测试的 mock driver
+func createMockDriver() *mockProtocolDriver {
+	return &mockProtocolDriver{
+		capability: connection.ProtocolCapability{
+			CommandTypesSupport: []connection.CommandType{connection.CommandTypeCommands},
+			PlatformSupport:     []connection.Platform{connection.PlatformCiscoIOSXE},
+		},
+	}
+}
+
 // Mock middleware implementations for testing
 type mockMiddleware struct {
 	name        string
@@ -80,14 +90,15 @@ func TestMiddleware_BasicExecution(t *testing.T) {
 	executor := NewExecutor(nil, middleware.createMiddleware())
 
 	mockTask := &mockTask{}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -123,14 +134,15 @@ func TestMiddleware_ErrorHandling(t *testing.T) {
 			return Result{Success: false}, errors.New("task failed")
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -166,14 +178,15 @@ func TestMiddleware_BeforeReject(t *testing.T) {
 	executor := NewExecutor(nil, middleware.createMiddleware())
 
 	mockTask := &mockTask{}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -218,14 +231,15 @@ func TestMiddleware_ResultModification(t *testing.T) {
 			}, errors.New("original error")
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -257,14 +271,15 @@ func TestMiddleware_MultipleExecution(t *testing.T) {
 	executor := NewExecutor(nil, middleware1.createMiddleware(), middleware2.createMiddleware(), middleware3.createMiddleware())
 
 	mockTask := &mockTask{}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -331,14 +346,15 @@ func TestMiddleware_ExecutionOrder(t *testing.T) {
 			return Result{Success: true, Data: map[string]interface{}{}}, nil
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	_, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -424,14 +440,15 @@ func TestMiddleware_ChainInterruption(t *testing.T) {
 			return Result{Success: true, Data: map[string]interface{}{}}, nil
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	_, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -486,14 +503,15 @@ func TestWithTimeout_Success(t *testing.T) {
 			return Result{Success: true, Data: map[string]interface{}{}}, nil
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	start := time.Now()
@@ -524,14 +542,15 @@ func TestWithTimeout_Timeout(t *testing.T) {
 			return Result{Success: true, Data: map[string]interface{}{}}, nil
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	start := time.Now()
@@ -569,14 +588,20 @@ func TestWithRetry_Success(t *testing.T) {
 			return Result{Success: true, Data: map[string]interface{}{"attempts": count}}, nil
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := &mockProtocolDriver{
+		capability: connection.ProtocolCapability{
+			CommandTypesSupport: []connection.CommandType{"commands"},
+			PlatformSupport:     []connection.Platform{connection.PlatformCiscoIOSXE},
+		},
+	}
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -605,14 +630,20 @@ func TestWithRetry_ExhaustRetries(t *testing.T) {
 			return Result{Success: false}, errors.New("persistent failure")
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := &mockProtocolDriver{
+		capability: connection.ProtocolCapability{
+			CommandTypesSupport: []connection.CommandType{"commands"},
+			PlatformSupport:     []connection.Platform{connection.PlatformCiscoIOSXE},
+		},
+	}
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -645,14 +676,15 @@ func TestWithLogging_Success(t *testing.T) {
 	executor := NewExecutor(nil, loggingMiddleware)
 
 	mockTask := &mockTask{}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -712,14 +744,15 @@ func TestWithLogging_Error(t *testing.T) {
 			return Result{Success: false}, errors.New("task failed")
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -768,14 +801,15 @@ func TestWithMetrics_Success(t *testing.T) {
 			return Result{Success: true, Data: map[string]interface{}{}}, nil
 		},
 	}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	result, err := executor.Execute(mockTask, mockDriver, ctx)
@@ -816,7 +850,7 @@ func TestMiddleware_ConcurrentExecution(t *testing.T) {
 	executor := NewExecutor(nil, middleware.createMiddleware())
 
 	mockTask := &mockTask{}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	const numGoroutines = 50
 	var wg sync.WaitGroup
@@ -877,14 +911,15 @@ func BenchmarkMiddleware_SingleExecution(b *testing.B) {
 	executor := NewExecutor(nil, middleware.createMiddleware())
 
 	mockTask := &mockTask{}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	b.ResetTimer()
@@ -904,14 +939,15 @@ func BenchmarkMiddleware_MultipleMiddleware(b *testing.B) {
 	executor := NewExecutor(nil, middlewares...)
 
 	mockTask := &mockTask{}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	b.ResetTimer()
@@ -927,14 +963,15 @@ func BenchmarkMiddleware_WithTimeout(b *testing.B) {
 	executor := NewExecutor(nil, timeoutMiddleware)
 
 	mockTask := &mockTask{}
-	mockDriver := &mockProtocolDriver{}
+	mockDriver := createMockDriver()
 
 	ctx := TaskContext{
-		TaskType: "mock",
-		Platform: connection.PlatformCiscoIOSXE,
-		Protocol: connection.ProtocolScrapli,
-		Params:   map[string]interface{}{},
-		Ctx:      context.Background(),
+		TaskType:    "mock",
+		Platform:    connection.PlatformCiscoIOSXE,
+		Protocol:    connection.ProtocolScrapli,
+		CommandType: connection.CommandTypeCommands,
+		Params:      map[string]interface{}{},
+		Ctx:         context.Background(),
 	}
 
 	b.ResetTimer()

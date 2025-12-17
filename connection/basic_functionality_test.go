@@ -44,11 +44,11 @@ func TestBasicConnectionPoolFunctionality(t *testing.T) {
 func TestRetryPolicyBasics(t *testing.T) {
 	// Test exponential backoff policy
 	policy := &ExponentialBackoffPolicy{
-		BaseDelay:   100 * time.Millisecond,
-		MaxDelay:    5 * time.Second,
-		BackoffRate: 2.0,
-		MaxAttempts: 3,
-		Jitter:      false,
+		BaseDelay:     100 * time.Millisecond,
+		MaxDelay:      5 * time.Second,
+		BackoffFactor: 2.0,
+		MaxAttempts:   3,
+		Jitter:        false,
 	}
 
 	assert.Equal(t, 3, policy.GetMaxAttempts())
@@ -165,20 +165,23 @@ func TestLoadBalancerBasics(t *testing.T) {
 func TestConfigValidation(t *testing.T) {
 	// Test valid configuration
 	validConfig := &EnhancedConnectionConfig{
-		Host:           "192.168.1.1",
-		Username:       "admin",
-		Password:       "password",
-		Port:           22,
-		Protocol:       ProtocolSSH,
-		Platform:       PlatformCiscoIOSXE,
-		ConnectTimeout: 30 * time.Second,
-		MaxConnections: 10,
-		MinConnections: 1,
-		MaxRetries:     3,
-		BackoffFactor:  2.0,
-		Extensions:     make(map[string]interface{}),
-		Labels:         make(map[string]string),
-		Metadata:       make(map[string]interface{}),
+		Host:                    "192.168.1.1",
+		Username:                "admin",
+		Password:                "password",
+		Port:                    22,
+		Protocol:                ProtocolSSH,
+		Platform:                PlatformCiscoIOSXE,
+		ConnectTimeout:          30 * time.Second,
+		MaxConnections:          10,
+		MinConnections:          1,
+		ConnectionMaxRetries:    3,
+		ConnectionBackoffFactor: 2.0,
+		TaskMaxRetries:          1,
+		TaskRetryInterval:       500 * time.Millisecond,
+		TaskBackoffFactor:       1.5,
+		Extensions:              make(map[string]interface{}),
+		Labels:                  make(map[string]string),
+		Metadata:                make(map[string]interface{}),
 	}
 
 	err := validConfig.Validate()
@@ -196,17 +199,20 @@ func TestConfigValidation(t *testing.T) {
 
 	// Test invalid port
 	invalidPortConfig := &EnhancedConnectionConfig{
-		Host:           "192.168.1.1",
-		Username:       "admin",
-		Password:       "password",
-		Port:           0,
-		Protocol:       ProtocolSSH,
-		Platform:       PlatformCiscoIOSXE,
-		ConnectTimeout: 30 * time.Second,
-		MaxConnections: 10,
-		MinConnections: 1,
-		MaxRetries:     3,
-		BackoffFactor:  2.0,
+		Host:                    "192.168.1.1",
+		Username:                "admin",
+		Password:                "password",
+		Port:                    0,
+		Protocol:                ProtocolSSH,
+		Platform:                PlatformCiscoIOSXE,
+		ConnectTimeout:          30 * time.Second,
+		MaxConnections:          10,
+		MinConnections:          1,
+		ConnectionMaxRetries:    3,
+		ConnectionBackoffFactor: 2.0,
+		TaskMaxRetries:          1,
+		TaskRetryInterval:       500 * time.Millisecond,
+		TaskBackoffFactor:       1.5,
 	}
 
 	err = invalidPortConfig.Validate()

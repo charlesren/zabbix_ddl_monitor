@@ -5,6 +5,7 @@ type ConnectionPoolInterface interface {
 	Release(driver ProtocolDriver) error
 	WarmUp(protocol Protocol, count int) error
 	Close() error
+	GetEventChan() <-chan PoolEvent
 }
 
 /*

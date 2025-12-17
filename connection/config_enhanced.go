@@ -23,10 +23,15 @@ type EnhancedConnectionConfig struct {
 	WriteTimeout   time.Duration `json:"write_timeout" yaml:"write_timeout"`
 	IdleTimeout    time.Duration `json:"idle_timeout" yaml:"idle_timeout"`
 
-	// 重试配置
-	MaxRetries    int           `json:"max_retries" yaml:"max_retries"`
-	RetryInterval time.Duration `json:"retry_interval" yaml:"retry_interval"`
-	BackoffFactor float64       `json:"backoff_factor" yaml:"backoff_factor"`
+	// 连接重试配置（用于连接建立）
+	ConnectionMaxRetries    int           `json:"connection_max_retries" yaml:"connection_max_retries"`
+	ConnectionRetryInterval time.Duration `json:"connection_retry_interval" yaml:"connection_retry_interval"`
+	ConnectionBackoffFactor float64       `json:"connection_backoff_factor" yaml:"connection_backoff_factor"`
+
+	// 任务重试配置（用于任务执行）
+	TaskMaxRetries    int           `json:"task_max_retries" yaml:"task_max_retries"`
+	TaskRetryInterval time.Duration `json:"task_retry_interval" yaml:"task_retry_interval"`
+	TaskBackoffFactor float64       `json:"task_backoff_factor" yaml:"task_backoff_factor"`
 
 	// 连接池配置
 	MaxConnections  int           `json:"max_connections" yaml:"max_connections"`
@@ -147,9 +152,12 @@ func NewConfigBuilder() *ConfigBuilder {
 			ReadTimeout:                    30 * time.Second,
 			WriteTimeout:                   10 * time.Second,
 			IdleTimeout:                    30 * time.Second,
-			MaxRetries:                     2,
-			RetryInterval:                  2 * time.Second,
-			BackoffFactor:                  1.5,
+			ConnectionMaxRetries:           2,
+			ConnectionRetryInterval:        2 * time.Second,
+			ConnectionBackoffFactor:        1.5,
+			TaskMaxRetries:                 1,
+			TaskRetryInterval:              500 * time.Millisecond,
+			TaskBackoffFactor:              1.5,
 			MaxConnections:                 5,
 			MinConnections:                 2,
 			MaxIdleTime:                    2 * time.Minute,
@@ -200,11 +208,19 @@ func (b *ConfigBuilder) WithTimeouts(connect, read, write, idle time.Duration) *
 	return b
 }
 
-// WithRetryPolicy 设置重试策略
-func (b *ConfigBuilder) WithRetryPolicy(maxRetries int, interval time.Duration, backoff float64) *ConfigBuilder {
-	b.config.MaxRetries = maxRetries
-	b.config.RetryInterval = interval
-	b.config.BackoffFactor = backoff
+// WithConnectionRetryPolicy 设置连接建立的重试策略
+func (b *ConfigBuilder) WithConnectionRetryPolicy(maxRetries int, interval time.Duration, backoff float64) *ConfigBuilder {
+	b.config.ConnectionMaxRetries = maxRetries
+	b.config.ConnectionRetryInterval = interval
+	b.config.ConnectionBackoffFactor = backoff
+	return b
+}
+
+// WithTaskRetryPolicy 设置任务执行的重试策略
+func (b *ConfigBuilder) WithTaskRetryPolicy(maxRetries int, interval time.Duration, backoff float64) *ConfigBuilder {
+	b.config.TaskMaxRetries = maxRetries
+	b.config.TaskRetryInterval = interval
+	b.config.TaskBackoffFactor = backoff
 	return b
 }
 
@@ -315,12 +331,20 @@ func (c *EnhancedConnectionConfig) Validate() error {
 		return fmt.Errorf("min connections cannot exceed max connections")
 	}
 
-	// 重试配置验证
-	if c.MaxRetries < 0 {
-		return fmt.Errorf("max retries cannot be negative")
+	// 连接重试配置验证
+	if c.ConnectionMaxRetries < 0 {
+		return fmt.Errorf("connection max retries cannot be negative")
 	}
-	if c.BackoffFactor < 1.0 {
-		return fmt.Errorf("backoff factor must be >= 1.0")
+	if c.ConnectionBackoffFactor < 1.0 {
+		return fmt.Errorf("connection backoff factor must be >= 1.0")
+	}
+
+	// 任务重试配置验证
+	if c.TaskMaxRetries < 0 {
+		return fmt.Errorf("task max retries cannot be negative")
+	}
+	if c.TaskBackoffFactor < 1.0 {
+		return fmt.Errorf("task backoff factor must be >= 1.0")
 	}
 
 	// 智能重建配置验证

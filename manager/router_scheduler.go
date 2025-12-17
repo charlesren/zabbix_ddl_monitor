@@ -52,12 +52,21 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 		WithSmartRebuild(true, 500, 30*time.Minute, 0.2, 10).
 		// 设置连接池参数：最大2个连接，最小1个连接，最大空闲时间3分钟，健康检查间隔3分钟
 		WithConnectionPool(2, 1, 3*time.Minute, 3*time.Minute).
-		// 针对监控场景优化的重试策略：最大重试1次，初始延迟500毫秒，退避因子1.5
-		WithRetryPolicy(1, 500*time.Millisecond, 1.5).
+		// 连接建立重试策略：最大重试2次，初始延迟2秒，指数退避因子1.5
+		// 此策略用于后台连接建立和重连操作（自动重试，用户不可见）
+		WithConnectionRetryPolicy(2, 2*time.Second, 1.5).
+		// 任务执行重试策略：最大重试1次，初始延迟500毫秒，指数退避因子1.5
+		// 此策略用于前台任务执行失败重试（用户可见）
+		WithTaskRetryPolicy(0, 500*time.Millisecond, 1.5).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build connection config: %w", err)
 	}
+
+	ylog.Infof("scheduler", "创建连接池 router=%s，连接重试策略：maxRetries=%d, baseDelay=%v, backoff=%.1f (后台自动重试)",
+		router.IP, config.ConnectionMaxRetries, config.ConnectionRetryInterval, config.ConnectionBackoffFactor)
+	ylog.Infof("scheduler", "任务重试策略：maxRetries=%d, baseDelay=%v, backoff=%.1f (前台任务重试)",
+		config.TaskMaxRetries, config.TaskRetryInterval, config.TaskBackoffFactor)
 
 	pool := connection.NewEnhancedConnectionPool(parentCtx, config)
 
@@ -73,7 +82,10 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 		connSemaphore: make(chan struct{}, config.MaxConnections),
 	}
 
-	// 5. 预热连接池
+	// 5. 启动连接池事件监听（监控连接重试等后台事件）
+	go scheduler.listenToPoolEvents()
+
+	// 6. 预热连接池
 	ylog.Infof("scheduler", "warming up connection pool for router=%s with %d connections", router.IP, warmUpConnectionCount)
 	if err := scheduler.connection.WarmUp(router.Protocol, warmUpConnectionCount); err != nil {
 		// warmup可能部分失败，但只要不是完全失败，系统仍可运行
@@ -101,17 +113,19 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 		ylog.Debugf("scheduler", "preloaded capabilities for %s", scheduler.router.IP)
 	}
 
-	// 6. 初始化队列
+	// 7. 初始化队列
 	scheduler.initializeQueues()
 
-	// 7. 创建异步执行器
+	// 8. 创建异步执行器，使用配置中的任务重试策略（指数退避）
+	ylog.Infof("scheduler", "创建异步执行器 router=%s，使用任务重试策略：maxRetries=%d, baseDelay=%v, backoff=%.1f (前台任务重试)",
+		router.IP, config.TaskMaxRetries, config.TaskRetryInterval, config.TaskBackoffFactor)
+
 	scheduler.asyncExecutor = task.NewAsyncExecutor(
 		3,
 		task.WithSmartTimeout(60*time.Second),
+		// 使用配置中的任务重试策略（指数退避）
+		task.WithExponentialRetry(config.TaskMaxRetries, config.TaskRetryInterval, config.TaskBackoffFactor),
 	)
-	// 可选：启用调试和事件监听
-	//scheduler.connection.EnableDebug()
-	//go scheduler.listenToPoolEvents()
 
 	return scheduler, nil
 
@@ -536,4 +550,49 @@ func (s *RouterScheduler) GetSchedulerHealth() map[string]interface{} {
 	}
 
 	return health
+}
+
+// listenToPoolEvents 监听连接池事件，监控连接重试等后台操作
+func (s *RouterScheduler) listenToPoolEvents() {
+	ylog.Debugf("scheduler", "开始监听连接池事件 router=%s", s.router.IP)
+
+	// 获取连接池事件通道
+	eventChan := s.connection.GetEventChan()
+	if eventChan == nil {
+		ylog.Warnf("scheduler", "无法获取连接池事件通道 router=%s", s.router.IP)
+		return
+	}
+
+	for {
+		select {
+		case <-s.routerCtx.Done():
+			ylog.Debugf("scheduler", "停止监听连接池事件 router=%s (上下文取消)", s.router.IP)
+			return
+		case event, ok := <-eventChan:
+			if !ok {
+				ylog.Debugf("scheduler", "连接池事件通道已关闭 router=%s", s.router.IP)
+				return
+			}
+
+			// 根据事件类型记录日志
+			switch event.Type {
+			case connection.EventConnectionCreated:
+				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接创建成功", s.router.IP)
+			case connection.EventConnectionDestroyed:
+				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接销毁", s.router.IP)
+			case connection.EventConnectionFailed:
+				ylog.Warnf("scheduler", "连接池事件 router=%s: 连接失败，将使用配置的重试策略自动重试", s.router.IP)
+			case connection.EventHealthCheckFailed:
+				ylog.Warnf("scheduler", "连接池事件 router=%s: 健康检查失败", s.router.IP)
+			case connection.EventPoolWarmupStarted:
+				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接池预热开始", s.router.IP)
+			case connection.EventPoolWarmupCompleted:
+				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接池预热完成", s.router.IP)
+			case connection.EventConnectionRebuilt:
+				ylog.Infof("scheduler", "连接池事件 router=%s: 连接重建 (后台自动重试)", s.router.IP)
+			default:
+				ylog.Debugf("scheduler", "连接池事件 router=%s: 未知事件类型 %d", s.router.IP, event.Type)
+			}
+		}
+	}
 }

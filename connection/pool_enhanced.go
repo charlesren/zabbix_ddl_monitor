@@ -52,6 +52,11 @@ type EnhancedConnectionPool struct {
 	warmupState map[Protocol]*WarmupStatus
 }
 
+// GetEventChan 返回连接池事件通道，用于监控连接状态
+func (p *EnhancedConnectionPool) GetEventChan() <-chan PoolEvent {
+	return p.eventChan
+}
+
 // 连接追踪信息
 type ConnectionTrace struct {
 	ID         string
@@ -287,18 +292,20 @@ func NewEnhancedConnectionPool(parentCtx context.Context, config *EnhancedConnec
 	ctx, cancel := context.WithCancel(parentCtx)
 
 	pool := &EnhancedConnectionPool{
-		config:            *config,
-		factories:         make(map[Protocol]ProtocolFactory),
-		pools:             make(map[Protocol]*EnhancedDriverPool),
-		parentCtx:         parentCtx,
-		ctx:               ctx,
-		cancel:            cancel,
-		idleTimeout:       config.IdleTimeout,
-		maxConnections:    config.MaxConnections,
-		minConnections:    config.MinConnections,
-		healthCheckTime:   config.HealthCheckTime,
-		collector:         GetGlobalMetricsCollector(),
-		resilientExecutor: NewResilientExecutor().WithRetrier(NewDefaultRetrier(30 * time.Second)), // 保留重试，移除断路器，减少超时时间
+		config:          *config,
+		factories:       make(map[Protocol]ProtocolFactory),
+		pools:           make(map[Protocol]*EnhancedDriverPool),
+		parentCtx:       parentCtx,
+		ctx:             ctx,
+		cancel:          cancel,
+		idleTimeout:     config.IdleTimeout,
+		maxConnections:  config.MaxConnections,
+		minConnections:  config.MinConnections,
+		healthCheckTime: config.HealthCheckTime,
+		collector:       GetGlobalMetricsCollector(),
+		// 连接建立使用配置中的连接重试策略（后台自动重试）
+		// 任务执行的重试策略通过 WithTaskRetryPolicy() 单独配置（前台任务重试）
+		resilientExecutor: createConnectionRetryExecutor(config),
 		debugMode:         false,
 		activeConns:       make(map[string]*ConnectionTrace),
 		eventChan:         make(chan PoolEvent, 1000),
@@ -313,6 +320,30 @@ func NewEnhancedConnectionPool(parentCtx context.Context, config *EnhancedConnec
 	pool.startBackgroundTasks()
 
 	return pool
+}
+
+// createConnectionRetryExecutor 根据配置创建连接重试执行器
+func createConnectionRetryExecutor(config *EnhancedConnectionConfig) *ResilientExecutor {
+	// 使用配置中的连接重试参数
+	// 计算最大尝试次数：maxAttempts = ConnectionMaxRetries + 1
+	maxAttempts := config.ConnectionMaxRetries + 1
+
+	retryPolicy := &ExponentialBackoffPolicy{
+		BaseDelay:     config.ConnectionRetryInterval,
+		MaxDelay:      10 * time.Second, // 连接重试最大延迟10秒
+		BackoffFactor: config.ConnectionBackoffFactor,
+		MaxAttempts:   maxAttempts,
+		Jitter:        true,
+	}
+
+	// 创建带重试回调的Retrier，用于记录重试事件
+	retrier := NewRetrier(retryPolicy, 30*time.Second).
+		WithRetryCallback(func(attempt int, err error) {
+			ylog.Debugf("EnhancedConnectionPool", "连接重试 attempt=%d/%d, error=%v, nextDelay=%v",
+				attempt, maxAttempts, err, retryPolicy.NextDelay(attempt))
+		})
+
+	return NewResilientExecutor().WithRetrier(retrier)
 }
 
 // RegisterFactory 注册协议工厂
