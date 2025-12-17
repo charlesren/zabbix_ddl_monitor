@@ -49,15 +49,15 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 		WithMetadata("platform", router.Platform).
 		WithMetadata("protocol", router.Protocol).
 		// 启用智能重建，配置合理的参数
-		WithSmartRebuild(true, 500, 30*time.Minute, 0.2, 10).
+		WithSmartRebuild(true, 1500, 30*time.Minute, 0.2, 10).
 		// 设置连接池参数：最大2个连接，最小1个连接，最大空闲时间3分钟，健康检查间隔3分钟
 		WithConnectionPool(2, 1, 3*time.Minute, 3*time.Minute).
-		// 连接建立重试策略：最大重试2次，初始延迟2秒，指数退避因子1.5
+		// 连接建立重试策略：最大重试5次，初始延迟2秒，指数退避因子2
 		// 此策略用于后台连接建立和重连操作（自动重试，用户不可见）
-		WithConnectionRetryPolicy(2, 2*time.Second, 1.5).
-		// 任务执行重试策略：最大重试1次，初始延迟500毫秒，指数退避因子1.5
+		WithConnectionRetryPolicy(5, 2*time.Second, 2).
+		// 任务执行重试策略：最大重试0次，初始延迟500毫秒，指数退避因子2
 		// 此策略用于前台任务执行失败重试（用户可见）
-		WithTaskRetryPolicy(0, 500*time.Millisecond, 1.5).
+		WithTaskRetryPolicy(0, 500*time.Millisecond, 2).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build connection config: %w", err)
