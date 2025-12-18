@@ -90,6 +90,11 @@ func main() {
 			ylog.Errorf("Main", "堆栈信息:\n%s", debug.Stack())
 			fmt.Fprintf(os.Stderr, "程序发生未捕获的panic: %v\n", r)
 			fmt.Fprintf(os.Stderr, "堆栈信息:\n%s\n", debug.Stack())
+
+			// 给已有的defer一点时间执行资源清理
+			ylog.Errorf("Main", "尝试执行资源清理...")
+			time.Sleep(2 * time.Second)
+
 			os.Exit(1)
 		}
 	}()
@@ -321,48 +326,6 @@ func monitorSystemHealth(ctx context.Context) {
 					ylog.Warnf("HealthMonitor", "GC次数较多: %d", m.NumGC)
 				}
 			}
-
-			// 4. 监控系统负载（如果可用）
-			// 这里可以添加更多的系统监控指标
 		}
 	}
-}
-
-// 添加一个简单的看门狗机制，防止关键组件完全停止
-func startWatchdog(componentName string, checkFunc func() bool, restartFunc func()) {
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-
-		failureCount := 0
-		maxFailures := 3
-
-		for range ticker.C {
-			if !checkFunc() {
-				failureCount++
-				ylog.Warnf("Watchdog", "%s 检查失败，失败次数: %d/%d", componentName, failureCount, maxFailures)
-
-				if failureCount >= maxFailures {
-					ylog.Errorf("Watchdog", "%s 连续失败 %d 次，尝试重启", componentName, failureCount)
-
-					// 执行重启
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								ylog.Errorf("Watchdog", "%s 重启时发生panic: %v", componentName, r)
-							}
-						}()
-						restartFunc()
-					}()
-
-					failureCount = 0 // 重置计数器
-				}
-			} else {
-				if failureCount > 0 {
-					ylog.Infof("Watchdog", "%s 恢复健康，重置失败计数器", componentName)
-					failureCount = 0
-				}
-			}
-		}
-	}()
 }

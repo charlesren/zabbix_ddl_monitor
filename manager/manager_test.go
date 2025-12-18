@@ -439,6 +439,7 @@ func TestManager_FullSync_EmptyLines(t *testing.T) {
 	manager, mockSyncer, mockRegistry := createTestManager()
 
 	emptyLines := make(map[string]syncer.Line)
+	// 总是返回空map，避免测试等待
 	mockSyncer.On("GetLines").Return(emptyLines)
 	mockRegistry.On("Register", mock.AnythingOfType("task.TaskMeta")).Return(nil)
 	mockSyncer.On("Subscribe", mock.Anything).Return(&syncer.Subscription{})
@@ -446,13 +447,63 @@ func TestManager_FullSync_EmptyLines(t *testing.T) {
 	manager.Start()
 	defer manager.Stop()
 
-	// Wait for initial sync
+	// Wait for initial sync to complete
 	time.Sleep(100 * time.Millisecond)
 
 	manager.mu.Lock()
 	assert.Equal(t, 0, len(manager.routerLines))
 	assert.Equal(t, 0, len(manager.schedulers))
 	manager.mu.Unlock()
+}
+
+func TestManager_GetDetailedStats(t *testing.T) {
+	manager, _, _ := createTestManager()
+
+	// 不启动Manager，直接测试统计方法
+	stats := manager.GetDetailedStats()
+
+	// 验证基础统计
+	assert.NotNil(t, stats)
+	assert.Equal(t, 0, stats["scheduler_count"].(int))
+	assert.Equal(t, 0, stats["router_count"].(int))
+	assert.Equal(t, 0, stats["total_lines"].(int))
+
+	// 验证上下文状态
+	assert.Equal(t, false, stats["context_cancelled"].(bool))
+	assert.Equal(t, false, stats["stopchan_closed"].(bool))
+
+	// 验证goroutine统计存在
+	assert.GreaterOrEqual(t, stats["goroutine_count"].(int), 0)
+
+	// 验证内存统计存在
+	assert.NotNil(t, stats["memory_alloc_mb"])
+	assert.NotNil(t, stats["memory_heap_inuse_mb"])
+	assert.NotNil(t, stats["gc_count"])
+
+	// 验证时间戳存在
+	assert.NotEmpty(t, stats["timestamp"])
+
+	// 验证router_details是切片
+	routerDetails, ok := stats["router_details"].([]map[string]interface{})
+	assert.True(t, ok)
+	assert.Equal(t, 0, len(routerDetails))
+}
+
+func TestManager_GetSimpleStats(t *testing.T) {
+	manager, _, _ := createTestManager()
+
+	// 不启动Manager，直接测试统计方法
+	stats := manager.GetSimpleStats()
+
+	// 验证基础统计
+	assert.NotNil(t, stats)
+	assert.Equal(t, true, stats["healthy"].(bool))
+	assert.Equal(t, 0, stats["scheduler_count"].(int))
+	assert.Equal(t, 0, stats["total_lines"].(int))
+	assert.Equal(t, true, stats["context_ok"].(bool))
+
+	// 验证时间戳存在
+	assert.NotEmpty(t, stats["last_check"])
 }
 
 func TestManager_FullSync_WithLines(t *testing.T) {
