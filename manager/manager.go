@@ -68,22 +68,28 @@ func (m *Manager) Start() {
 }
 
 func (m *Manager) Stop() {
+	ylog.Infof("manager", "开始停止管理器")
+
 	// 先关闭stopChan通知所有goroutine退出
 	select {
 	case <-m.stopChan:
-		// Already closed
+		ylog.Debugf("manager", "stopChan已经关闭")
 	default:
+		ylog.Debugf("manager", "关闭stopChan")
 		close(m.stopChan)
 	}
 
 	// 等待后台goroutine完成
+	ylog.Debugf("manager", "等待所有goroutine完成...")
 	m.wg.Wait()
+	ylog.Debugf("manager", "所有goroutine已完成")
 
 	// 安全地停止所有调度器
 	m.mu.Lock()
 	schedulers := make([]Scheduler, 0, len(m.schedulers))
-	for _, s := range m.schedulers {
+	for routerIP, s := range m.schedulers {
 		schedulers = append(schedulers, s)
+		ylog.Debugf("manager", "准备停止调度器: router=%s", routerIP)
 	}
 	m.mu.Unlock()
 
@@ -92,6 +98,7 @@ func (m *Manager) Stop() {
 		s.Stop()
 	}
 
+	ylog.Infof("manager", "管理器已完全停止")
 }
 
 // 全量同步专线配置
@@ -181,11 +188,12 @@ func (m *Manager) handleLineChanges(sub *syncer.Subscription) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
+		ylog.Debugf("manager", "事件处理器启动")
 		for event := range eventBuffer {
-			ylog.Infof("manager", "收到变更事件: %v", event.Type)
+			ylog.Debugf("manager", "处理变更事件: %v", event.Type)
 			m.processLineEvent(event)
 		}
-		ylog.Infof("manager", "事件处理器已退出")
+		ylog.Debugf("manager", "事件处理器已退出")
 	}()
 
 	for {
@@ -194,14 +202,14 @@ func (m *Manager) handleLineChanges(sub *syncer.Subscription) {
 			ylog.Infof("manager", "收到停止信号，关闭事件缓冲区")
 			close(eventBuffer)
 			// 等待事件处理器处理完所有剩余事件
-			// 注意：这里不能调用 m.wg.Wait()，因为会死锁
 			// 事件处理器会在处理完所有事件后自动退出
+			ylog.Debugf("manager", "等待事件处理器退出...")
 			return
 		case event := <-sub.Events():
 			// 将事件放入缓冲区，避免阻塞订阅通道
 			select {
 			case eventBuffer <- event:
-				// 事件成功缓冲
+				ylog.Debugf("manager", "事件缓冲成功: %v", event.Type)
 			default:
 				ylog.Errorf("manager", "事件缓冲区已满，丢弃事件: %v", event.Type)
 			}
@@ -268,14 +276,17 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 
 			// 延迟删除空调度器
 			if len(m.routerLines[routerIP]) == 0 {
-				// 注意：这里不调用 m.wg.Add(1)，因为延迟删除的 goroutine 生命周期不确定
+				m.wg.Add(1)
 				go func() {
+					defer m.wg.Done()
+
 					timer := time.NewTimer(10 * time.Minute)
 					defer timer.Stop()
 
 					select {
 					case <-m.stopChan:
 						// 如果程序正在关闭，直接返回
+						ylog.Debugf("manager", "延迟删除goroutine收到停止信号: router=%s", routerIP)
 						return
 					case <-timer.C:
 						m.mu.Lock()
@@ -283,10 +294,12 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 
 						// 再次检查是否仍然没有专线
 						if len(m.routerLines[routerIP]) == 0 {
+							ylog.Infof("manager", "执行延迟删除空调度器: router=%s", routerIP)
 							s.Stop()
 							delete(m.schedulers, routerIP)
 							delete(m.routerLines, routerIP)
-							ylog.Infof("manager", "延迟删除空调度器: router=%s", routerIP)
+						} else {
+							ylog.Debugf("manager", "延迟删除取消: router=%s 已有新专线", routerIP)
 						}
 					}
 				}()
