@@ -1316,9 +1316,43 @@ func (p *EnhancedConnectionPool) eventHandlerTask() {
 
 // handleEvent 处理事件
 func (p *EnhancedConnectionPool) handleEvent(event PoolEvent) {
-	// 这里可以添加事件处理逻辑，如日志记录、告警等
-	// 目前只是简单记录
-	fmt.Printf("Pool event: %+v\n", event)
+	// 格式化事件信息，提供更友好的显示
+	var eventStr string
+
+	switch event.Type {
+	case EventConnectionCreated:
+		eventStr = fmt.Sprintf("连接创建: protocol=%s", event.Protocol)
+	case EventConnectionDestroyed:
+		eventStr = fmt.Sprintf("连接销毁: protocol=%s", event.Protocol)
+	case EventConnectionReused:
+		eventStr = fmt.Sprintf("连接重用: protocol=%s", event.Protocol)
+	case EventConnectionFailed:
+		eventStr = fmt.Sprintf("连接失败: protocol=%s", event.Protocol)
+	case EventHealthCheckFailed:
+		eventStr = fmt.Sprintf("健康检查失败: protocol=%s", event.Protocol)
+	case EventPoolWarmupStarted:
+		eventStr = fmt.Sprintf("连接池预热开始: protocol=%s", event.Protocol)
+	case EventPoolWarmupCompleted:
+		eventStr = fmt.Sprintf("连接池预热完成: protocol=%s", event.Protocol)
+	case EventPoolShutdown:
+		eventStr = fmt.Sprintf("连接池关闭: protocol=%s", event.Protocol)
+	case EventConnectionRebuilt:
+		// 特殊处理重建事件，格式化Data字段
+		if data, ok := event.Data.(map[string]interface{}); ok {
+			eventStr = fmt.Sprintf("连接重建: protocol=%s, old_id=%v, new_id=%v, reason=%v",
+				event.Protocol,
+				data["old_connection_id"],
+				data["new_connection_id"],
+				data["reason"])
+		} else {
+			eventStr = fmt.Sprintf("连接重建: protocol=%s, data=%v", event.Protocol, event.Data)
+		}
+	default:
+		eventStr = fmt.Sprintf("未知事件(type=%d): protocol=%s", event.Type, event.Protocol)
+	}
+
+	// 记录事件，包含时间戳
+	ylog.Infof("PoolEvent", "%s (timestamp: %s)", eventStr, event.Timestamp.Format("2006-01-02 15:04:05.000"))
 }
 
 // sendEvent 发送事件
@@ -1332,6 +1366,7 @@ func (p *EnhancedConnectionPool) sendEvent(eventType PoolEventType, protocol Pro
 	defer func() {
 		if r := recover(); r != nil {
 			// 通道已关闭，忽略发送失败
+			ylog.Debugf("PoolEvent", "事件通道已关闭，忽略事件发送: type=%d, protocol=%s", eventType, protocol)
 		}
 	}()
 
@@ -1342,8 +1377,11 @@ func (p *EnhancedConnectionPool) sendEvent(eventType PoolEventType, protocol Pro
 		Timestamp: time.Now(),
 		Data:      data,
 	}:
+		// 事件发送成功，记录调试信息
+		ylog.Debugf("PoolEvent", "事件发送成功: type=%d, protocol=%s", eventType, protocol)
 	default:
-		// 事件通道满了，丢弃事件
+		// 事件通道已满，丢弃事件
+		ylog.Warnf("PoolEvent", "事件通道已满，丢弃事件: type=%d, protocol=%s", eventType, protocol)
 	}
 }
 
@@ -1539,13 +1577,45 @@ type MonitoredDriver struct {
 	protocol  Protocol
 	startTime time.Time
 	lastError error
+
+	// 并发保护
+	mu       sync.Mutex
+	inUse    bool
+	useCount int // 使用计数，用于调试和监控
 }
 
 func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
+	// 并发保护：检查driver是否正在被使用
+	md.mu.Lock()
+	if md.inUse {
+		// 记录并发使用警告（用于调试和监控）
+		currentUse := md.useCount
+		md.mu.Unlock()
+		ylog.Warnf("MonitoredDriver", "driver %s already in use (concurrent access detected, use count=%d)",
+			md.conn.id, currentUse)
+
+		// 重新获取锁继续执行（而不是返回错误）
+		// 这样可以保持向后兼容，同时记录问题
+		md.mu.Lock()
+	}
+
+	md.inUse = true
+	md.useCount++
+	currentUse := md.useCount
+	md.mu.Unlock()
+
+	// 确保在函数退出时释放使用标志
+	defer func() {
+		md.mu.Lock()
+		md.inUse = false
+		md.mu.Unlock()
+	}()
+
+	// 记录调试信息
+	ylog.Debugf("MonitoredDriver", "driver %s executing (use count=%d)", md.conn.id, currentUse)
+
 	start := time.Now()
-
 	resp, err := md.ProtocolDriver.Execute(ctx, req)
-
 	duration := time.Since(start)
 	md.lastError = err
 
@@ -1567,6 +1637,14 @@ func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*
 }
 
 func (md *MonitoredDriver) Close() error {
+	// 检查driver是否还在使用中
+	md.mu.Lock()
+	if md.inUse {
+		ylog.Warnf("MonitoredDriver", "closing driver %s while still in use (use count=%d)",
+			md.conn.id, md.useCount)
+	}
+	md.mu.Unlock()
+
 	// 确保连接被正确释放
 	if md.pool != nil && md.conn != nil {
 		defer func() {

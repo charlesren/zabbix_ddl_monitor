@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -60,23 +61,25 @@ func (f *ScrapliFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver
 		return nil, fmt.Errorf("get network driver failed: %w", err)
 	}
 
-	if err := driver.Open(); err != nil {
-		return nil, fmt.Errorf("open connection failed: %w", err)
-	}
-	ylog.Debugf("scrapli", "driver created with config: %+v", config)
+	// 创建context，确保与driver生命周期一致
+	ctx, cancel := context.WithCancel(context.Background())
 
-	return &ScrapliDriver{
+	// 创建driver实例但不立即打开连接
+	scrapliDriver := &ScrapliDriver{
 		driver:     driver,
-		channel:    driver.Channel,
+		channel:    nil, // channel将在Connect()时设置
 		host:       config.Host,
 		username:   config.Username,
 		password:   config.Password,
 		platform:   platformOS,
 		maxRetries: 3,
 		timeout:    config.ConnectTimeout,
-		ctx:        nil, // Will be initialized on first connect
-		cancel:     nil,
-	}, nil
+		ctx:        ctx,
+		cancel:     cancel,
+	}
+
+	ylog.Debugf("scrapli", "driver created with config: %+v", config)
+	return scrapliDriver, nil
 
 }
 

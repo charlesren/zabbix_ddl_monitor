@@ -39,27 +39,50 @@ func (d *ScrapliDriver) ProtocolType() Protocol {
 
 // connection/scrapli_driver.go
 func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
+	// 1. 确保连接已建立（需要锁保护连接状态）
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// 全面检查关键字段
-	if d == nil || d.driver == nil || d.channel == nil {
-		ylog.Errorf("ScrapliDriver", "critical field not initialized: driver=%v, channel=%v",
-			d.driver, d.channel)
+	if d.driver == nil {
+		d.mu.Unlock()
+		ylog.Errorf("ScrapliDriver", "driver not initialized")
 		return nil, fmt.Errorf("driver not properly initialized")
 	}
+
+	// 检查是否需要建立连接
+	if d.channel == nil {
+		// 临时释放锁，调用Connect（Connect内部会重新获取锁）
+		d.mu.Unlock()
+		if err := d.Connect(); err != nil {
+			ylog.Errorf("ScrapliDriver", "failed to establish connection: %v", err)
+			return nil, fmt.Errorf("connection not established: %w", err)
+		}
+		// 重新获取锁检查连接状态
+		d.mu.Lock()
+	}
+
+	// 验证连接状态
+	if d.channel == nil {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("channel not available after connection attempt")
+	}
+
+	// 获取driver和channel的本地引用，然后释放锁
+	driver := d.driver
+	ch := d.channel
+	d.mu.Unlock()
 
 	// 使用传入的上下文，如果为nil则使用默认上下文
 	effectiveCtx := ctx
 	if effectiveCtx == nil {
+		d.mu.Lock()
 		if d.ctx == nil {
 			d.ctx, d.cancel = context.WithTimeout(context.Background(), d.timeout)
-			ylog.Debugf("ScrapliDriver", "initialized default context: timeout=%v", d.timeout)
+			ylog.Debugf("ScrapliDriver", "initialized default context in Execute: timeout=%v", d.timeout)
 		}
 		effectiveCtx = d.ctx
+		d.mu.Unlock()
 	}
 
-	// 检查上下文状态（已受锁保护）
+	// 检查上下文状态
 	if err := effectiveCtx.Err(); err != nil {
 		ylog.Warnf("ScrapliDriver", "context cancelled: %v", err)
 		return nil, err
@@ -85,7 +108,7 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 		ylog.Debugf("ScrapliDriver", "executing %d commands with timeout control", len(cmds))
 
 		go func() {
-			resp, err := d.driver.SendCommands(cmds)
+			resp, err := driver.SendCommands(cmds)
 			resultChan <- struct {
 				resp *response.MultiResponse
 				err  error
@@ -134,7 +157,7 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 		ylog.Debugf("ScrapliDriver", "executing interactive events with timeout control, events: %d", len(events))
 
 		go func() {
-			resp, err := d.channel.SendInteractive(events)
+			resp, err := ch.SendInteractive(events)
 			resultChan <- struct {
 				resp []byte
 				err  error
@@ -166,10 +189,30 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 
 // SendConfig 发送配置命令
 func (d *ScrapliDriver) SendConfig(config string) (string, error) {
-	if err := d.ensureConnected(); err != nil {
-		return "", err
+	// 确保连接已建立
+	d.mu.Lock()
+	if d.driver == nil {
+		d.mu.Unlock()
+		return "", fmt.Errorf("driver not initialized")
 	}
-	r, err := d.driver.SendConfig(config)
+
+	if d.channel == nil {
+		d.mu.Unlock()
+		if err := d.Connect(); err != nil {
+			return "", fmt.Errorf("connection not established: %w", err)
+		}
+		d.mu.Lock()
+	}
+
+	if d.driver == nil || d.channel == nil {
+		d.mu.Unlock()
+		return "", fmt.Errorf("driver or channel not available after connection attempt")
+	}
+
+	driver := d.driver
+	d.mu.Unlock()
+
+	r, err := driver.SendConfig(config)
 	if err != nil {
 		return "", err
 	}
@@ -217,21 +260,52 @@ func (d *ScrapliDriver) WithContext(ctx context.Context) *ScrapliDriver {
 func (d *ScrapliDriver) Connect() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// 如果已经连接，直接返回
+	if d.driver != nil && d.channel != nil {
+		ylog.Debugf("ScrapliDriver", "already connected: host=%s", d.host)
+		return nil
+	}
+
 	// 确保基础字段初始化
 	if d.ctx == nil {
+		// 如果Factory没有设置context，创建新的
 		d.ctx, d.cancel = context.WithTimeout(context.Background(), d.timeout)
 		ylog.Debugf("ScrapliDriver", "initialized default context: timeout=%v", d.timeout)
+	} else if d.cancel == nil {
+		// 如果Factory设置了context但没有cancel函数，创建cancel函数
+		// 这种情况不应该发生，但为了安全起见处理一下
+		var cancel context.CancelFunc
+		d.ctx, cancel = context.WithCancel(d.ctx)
+		d.cancel = cancel
+		ylog.Debugf("ScrapliDriver", "added cancel function to existing context")
 	}
 
 	// 记录当前状态
 	ylog.Debugf("ScrapliDriver", "connecting with: platform=%s, host=%s, ctx=%p",
 		d.platform, d.host, d.ctx)
+
+	// 如果driver已经存在（由Factory创建），直接打开它
+	if d.driver != nil {
+		if err := d.driver.Open(); err != nil {
+			// 如果打开失败，清理资源
+			d.driver = nil
+			d.channel = nil
+			return fmt.Errorf("open existing driver failed: %w", err)
+		}
+		d.channel = d.driver.Channel
+		ylog.Infof("ScrapliDriver", "successfully opened existing driver: host=%s, platform=%s", d.host, d.platform)
+		return nil
+	}
+
+	// 创建新的driver（兼容旧代码）
 	p, err := platform.NewPlatform(
 		d.platform,
 		d.host,
 		options.WithAuthNoStrictKey(),
 		options.WithAuthUsername(d.username),
 		options.WithAuthPassword(d.password),
+		options.WithTimeoutOps(d.timeout),
 	)
 	if err != nil {
 		return fmt.Errorf("create platform failed: %w", err)
@@ -243,20 +317,43 @@ func (d *ScrapliDriver) Connect() error {
 	}
 
 	if err = d.driver.Open(); err != nil {
+		// 如果打开失败，清理资源
+		d.driver = nil
+		d.channel = nil
 		return fmt.Errorf("open connection failed: %w", err)
 	}
 
 	d.channel = d.driver.Channel
+	ylog.Infof("ScrapliDriver", "successfully connected new driver: host=%s, platform=%s", d.host, d.platform)
 	return nil
 }
 
 // SendInteractive 发送交互式命令
 func (d *ScrapliDriver) SendInteractive(events []*channel.SendInteractiveEvent) ([]byte, error) {
-	if err := d.ensureConnected(); err != nil {
-		return nil, err
+	// 确保连接已建立
+	d.mu.Lock()
+	if d.driver == nil {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("driver not initialized")
 	}
 
-	resp, err := d.channel.SendInteractive(events)
+	if d.channel == nil {
+		d.mu.Unlock()
+		if err := d.Connect(); err != nil {
+			return nil, fmt.Errorf("connection not established: %w", err)
+		}
+		d.mu.Lock()
+	}
+
+	if d.channel == nil {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("channel not available after connection attempt")
+	}
+
+	ch := d.channel
+	d.mu.Unlock()
+
+	resp, err := ch.SendInteractive(events)
 	if err != nil {
 		return nil, fmt.Errorf("send interactive failed: %w", err)
 	}
@@ -265,11 +362,30 @@ func (d *ScrapliDriver) SendInteractive(events []*channel.SendInteractiveEvent) 
 
 // SendCommand 发送普通命令
 func (d *ScrapliDriver) SendCommands(commands []string) (*response.MultiResponse, error) {
-	if err := d.ensureConnected(); err != nil {
-		return nil, err
+	// 确保连接已建立
+	d.mu.Lock()
+	if d.driver == nil {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("driver not initialized")
 	}
 
-	response, err := d.driver.SendCommands(commands)
+	if d.channel == nil {
+		d.mu.Unlock()
+		if err := d.Connect(); err != nil {
+			return nil, fmt.Errorf("connection not established: %w", err)
+		}
+		d.mu.Lock()
+	}
+
+	if d.driver == nil || d.channel == nil {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("driver or channel not available after connection attempt")
+	}
+
+	driver := d.driver
+	d.mu.Unlock()
+
+	response, err := driver.SendCommands(commands)
 	if err != nil {
 		return nil, fmt.Errorf("send command failed: %w", err)
 	}
@@ -278,11 +394,31 @@ func (d *ScrapliDriver) SendCommands(commands []string) (*response.MultiResponse
 
 // GetPrompt 获取设备提示符
 func (d *ScrapliDriver) GetPrompt() (string, error) {
-	if err := d.ensureConnected(); err != nil {
-		return "driver connect failed", err
+	// 确保连接已建立
+	d.mu.Lock()
+	if d.driver == nil {
+		d.mu.Unlock()
+		return "driver not initialized", fmt.Errorf("driver not initialized")
 	}
+
+	if d.channel == nil {
+		d.mu.Unlock()
+		if err := d.Connect(); err != nil {
+			return "driver connect failed", fmt.Errorf("connection not established: %w", err)
+		}
+		d.mu.Lock()
+	}
+
+	if d.driver == nil {
+		d.mu.Unlock()
+		return "driver not available", fmt.Errorf("driver not available")
+	}
+
+	driver := d.driver
+	d.mu.Unlock()
+
 	ylog.Debugf("scrapli", "GetPrompt...")
-	return d.driver.GetPrompt()
+	return driver.GetPrompt()
 }
 
 // Close 关闭连接
@@ -290,26 +426,50 @@ func (d *ScrapliDriver) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// 记录关闭前的状态
+	ylog.Debugf("ScrapliDriver", "closing driver: host=%s, platform=%s, driver=%v, channel=%v",
+		d.host, d.platform, d.driver != nil, d.channel != nil)
+
+	// 先取消上下文，停止所有相关操作
 	if d.cancel != nil {
 		d.cancel() // 取消上下文
+		// 给goroutine一点时间响应取消信号
+		time.Sleep(100 * time.Millisecond)
 	}
+
 	if d.driver == nil {
+		ylog.Debugf("ScrapliDriver", "driver already nil, nothing to close")
+		// 即使driver为nil，也要清理channel
+		d.channel = nil
 		return nil
 	}
-	return d.driver.Close()
-}
 
-// ensureConnected 确保连接已建立
-func (d *ScrapliDriver) ensureConnected() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.driver == nil {
-		if err := d.Connect(); err != nil {
-			return fmt.Errorf("connection not established: %w", err)
+	// 关闭driver（这会自动关闭channel）
+	var err error
+	if d.driver != nil {
+		err = d.driver.Close()
+		if err != nil {
+			ylog.Warnf("ScrapliDriver", "driver.Close() returned error: %v", err)
 		}
 	}
-	return nil
+
+	// 重置连接相关字段，避免重复关闭
+	d.driver = nil
+	d.channel = nil
+
+	// 注意：不重置ctx和cancel，因为Factory可能在其他地方使用它们
+	// 只重置我们创建的临时context
+	if d.ctx != nil && d.ctx.Err() == nil {
+		// 这是一个活动的context，可能是Factory创建的，不重置
+		ylog.Debugf("ScrapliDriver", "keeping factory-created context")
+	} else {
+		// 这是一个已取消或我们创建的context，可以清理
+		d.ctx = nil
+		d.cancel = nil
+	}
+
+	ylog.Infof("ScrapliDriver", "driver closed successfully: host=%s", d.host)
+	return err
 }
 
 // connection/scrapli_driver.go
