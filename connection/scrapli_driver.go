@@ -29,8 +29,9 @@ type ScrapliDriver struct {
 	channel    *channel.Channel   // 独立缓存Channel
 	maxRetries int                // 最大重试次数
 	timeout    time.Duration      // 操作超时时间
-	ctx        context.Context    // 新增上下文字段
+	ctx        context.Context    // 上下文字段
 	cancel     context.CancelFunc // 对应的取消函数
+	closed     bool               // 标记是否已关闭
 }
 
 func (d *ScrapliDriver) ProtocolType() Protocol {
@@ -41,6 +42,12 @@ func (d *ScrapliDriver) ProtocolType() Protocol {
 func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 	// 1. 确保连接已建立（需要锁保护连接状态）
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		ylog.Errorf("ScrapliDriver", "driver already closed: host=%s", d.host)
+		return nil, fmt.Errorf("driver already closed")
+	}
+
 	if d.driver == nil {
 		d.mu.Unlock()
 		ylog.Errorf("ScrapliDriver", "driver not initialized")
@@ -238,9 +245,16 @@ func NewScrapliDriver(platformOS, host, username, password string) *ScrapliDrive
 	panic("NewScrapliDriver is deprecated, use factory pattern instead")
 }
 
+// WithContext 设置上下文
 func (d *ScrapliDriver) WithContext(ctx context.Context) *ScrapliDriver {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// 如果已经关闭，直接返回
+	if d.closed {
+		ylog.Debugf("ScrapliDriver", "cannot set context on closed driver: host=%s", d.host)
+		return d
+	}
 
 	// 取消旧上下文（如果存在）
 	if d.cancel != nil {
@@ -260,6 +274,12 @@ func (d *ScrapliDriver) WithContext(ctx context.Context) *ScrapliDriver {
 func (d *ScrapliDriver) Connect() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// 如果已经关闭，直接返回错误
+	if d.closed {
+		ylog.Errorf("ScrapliDriver", "cannot connect closed driver: host=%s", d.host)
+		return fmt.Errorf("driver already closed")
+	}
 
 	// 如果已经连接，直接返回
 	if d.driver != nil && d.channel != nil {
@@ -332,6 +352,12 @@ func (d *ScrapliDriver) Connect() error {
 func (d *ScrapliDriver) SendInteractive(events []*channel.SendInteractiveEvent) ([]byte, error) {
 	// 确保连接已建立
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		ylog.Errorf("ScrapliDriver", "driver already closed: host=%s", d.host)
+		return nil, fmt.Errorf("driver already closed")
+	}
+
 	if d.driver == nil {
 		d.mu.Unlock()
 		return nil, fmt.Errorf("driver not initialized")
@@ -364,6 +390,12 @@ func (d *ScrapliDriver) SendInteractive(events []*channel.SendInteractiveEvent) 
 func (d *ScrapliDriver) SendCommands(commands []string) (*response.MultiResponse, error) {
 	// 确保连接已建立
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		ylog.Errorf("ScrapliDriver", "driver already closed: host=%s", d.host)
+		return nil, fmt.Errorf("driver already closed")
+	}
+
 	if d.driver == nil {
 		d.mu.Unlock()
 		return nil, fmt.Errorf("driver not initialized")
@@ -396,9 +428,15 @@ func (d *ScrapliDriver) SendCommands(commands []string) (*response.MultiResponse
 func (d *ScrapliDriver) GetPrompt() (string, error) {
 	// 确保连接已建立
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		ylog.Errorf("ScrapliDriver", "driver already closed: host=%s", d.host)
+		return "", fmt.Errorf("driver already closed")
+	}
+
 	if d.driver == nil {
 		d.mu.Unlock()
-		return "driver not initialized", fmt.Errorf("driver not initialized")
+		return "", fmt.Errorf("driver not initialized")
 	}
 
 	if d.channel == nil {
@@ -425,6 +463,15 @@ func (d *ScrapliDriver) GetPrompt() (string, error) {
 func (d *ScrapliDriver) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// 检查是否已经关闭
+	if d.closed {
+		ylog.Debugf("ScrapliDriver", "driver already closed: host=%s", d.host)
+		return nil
+	}
+
+	// 标记为已关闭
+	d.closed = true
 
 	// 记录关闭前的状态
 	ylog.Debugf("ScrapliDriver", "closing driver: host=%s, platform=%s, driver=%v, channel=%v",

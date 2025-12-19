@@ -299,7 +299,7 @@ func NewEnhancedConnectionPool(parentCtx context.Context, config *EnhancedConnec
 		parentCtx:       parentCtx,
 		ctx:             ctx,
 		cancel:          cancel,
-		idleTimeout:     config.IdleTimeout,
+		idleTimeout:     config.MaxIdleTime,
 		maxConnections:  config.MaxConnections,
 		minConnections:  config.MinConnections,
 		healthCheckTime: config.HealthCheckTime,
@@ -361,7 +361,7 @@ func (p *EnhancedConnectionPool) RegisterFactory(proto Protocol, factory Protoco
 		factory:     factory,
 		stats:       &DriverPoolStats{Protocol: proto},
 		healthChecker: &HealthChecker{
-			interval:    120 * time.Second,
+			interval:    p.healthCheckTime,
 			timeout:     10 * time.Second,
 			maxFailures: 10,
 			checkFunc:   p.defaultHealthCheck,

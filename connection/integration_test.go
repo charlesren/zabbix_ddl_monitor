@@ -20,7 +20,7 @@ func TestConnectionSystemIntegration(t *testing.T) {
 		config, err := NewConfigBuilder().
 			WithBasicAuth("192.168.1.100", "netadmin", "secret123").
 			WithProtocol(ProtocolScrapli, PlatformCiscoIOSXE).
-			WithTimeouts(30*time.Second, 15*time.Second, 10*time.Second, 5*time.Minute).
+			WithTimeouts(30*time.Second, 15*time.Second, 10*time.Second).
 			WithConnectionRetryPolicy(3, 1*time.Second, 2.0).
 			WithTaskRetryPolicy(1, 500*time.Millisecond, 1.5).
 			WithConnectionPool(10, 2, 15*time.Minute, 30*time.Second).
@@ -386,7 +386,7 @@ func TestConnectionSystemIntegration(t *testing.T) {
 		config, err := NewConfigBuilder().
 			WithBasicAuth("health-test", "admin", "password").
 			WithProtocol(ProtocolSSH, PlatformCiscoIOSXE).
-			WithTimeouts(5*time.Second, 5*time.Second, 5*time.Second, 100*time.Millisecond).
+			WithTimeouts(5*time.Second, 5*time.Second, 5*time.Second).
 			Build()
 		require.NoError(t, err)
 

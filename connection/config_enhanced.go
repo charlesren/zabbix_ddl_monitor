@@ -21,7 +21,6 @@ type EnhancedConnectionConfig struct {
 	ConnectTimeout time.Duration `json:"connect_timeout" yaml:"connect_timeout"`
 	ReadTimeout    time.Duration `json:"read_timeout" yaml:"read_timeout"`
 	WriteTimeout   time.Duration `json:"write_timeout" yaml:"write_timeout"`
-	IdleTimeout    time.Duration `json:"idle_timeout" yaml:"idle_timeout"`
 
 	// 连接重试配置（用于连接建立）
 	ConnectionMaxRetries    int           `json:"connection_max_retries" yaml:"connection_max_retries"`
@@ -151,7 +150,6 @@ func NewConfigBuilder() *ConfigBuilder {
 			ConnectTimeout:                 30 * time.Second,
 			ReadTimeout:                    30 * time.Second,
 			WriteTimeout:                   10 * time.Second,
-			IdleTimeout:                    30 * time.Second,
 			ConnectionMaxRetries:           2,
 			ConnectionRetryInterval:        2 * time.Second,
 			ConnectionBackoffFactor:        1.5,
@@ -192,7 +190,7 @@ func (b *ConfigBuilder) WithProtocol(protocol Protocol, platform Platform) *Conf
 }
 
 // WithTimeouts 设置超时配置
-func (b *ConfigBuilder) WithTimeouts(connect, read, write, idle time.Duration) *ConfigBuilder {
+func (b *ConfigBuilder) WithTimeouts(connect, read, write time.Duration) *ConfigBuilder {
 	if connect > 0 {
 		b.config.ConnectTimeout = connect
 	}
@@ -201,9 +199,6 @@ func (b *ConfigBuilder) WithTimeouts(connect, read, write, idle time.Duration) *
 	}
 	if write > 0 {
 		b.config.WriteTimeout = write
-	}
-	if idle > 0 {
-		b.config.IdleTimeout = idle
 	}
 	return b
 }
@@ -524,17 +519,15 @@ func (c *EnhancedConnectionConfig) IsSecure() bool {
 }
 
 // GetEffectiveTimeout 获取有效超时时间
-func (c *EnhancedConnectionConfig) GetEffectiveTimeout(operation string) time.Duration {
-	switch operation {
+func (c *EnhancedConnectionConfig) GetEffectiveTimeout(timeoutType string) time.Duration {
+	switch timeoutType {
 	case "connect":
 		return c.ConnectTimeout
 	case "read":
 		return c.ReadTimeout
 	case "write":
 		return c.WriteTimeout
-	case "idle":
-		return c.IdleTimeout
 	default:
-		return c.ConnectTimeout
+		return 0
 	}
 }
