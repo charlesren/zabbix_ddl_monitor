@@ -2,6 +2,7 @@ package task
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ const (
 	StatusParseFailed     = "ParseResultFailed" // 解析失败
 	StatusConnectionError = "ConnectionError"   // 连接错误
 	StatusExecutionError  = "ExecutionError"    // 执行错误（其他错误）
+	StatusRequestTimeout  = "RequestTimeout"    // 请求超时
+	StatusNoRouteToHost   = "NoRouteToHost"     // 无路由到主机
 )
 
 // Zabbix sender错误状态常量
@@ -154,6 +157,36 @@ func (PingTask) Meta() TaskMeta {
 					},
 				},
 			},
+			{
+				Platform: connection.PlatformH3CComware,
+				Protocols: []ProtocolSupport{
+					{
+						Protocol: connection.ProtocolScrapli,
+						CommandTypes: []CommandTypeSupport{
+							{
+								CommandType: connection.CommandTypeInteractiveEvent,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: true},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+									// H3C Comware通常不需要enable_password
+								},
+							},
+							{
+								CommandType: connection.CommandTypeCommands,
+								ImplFactory: func() Task { return &PingTask{} },
+								Params: []ParamSpec{
+									{Name: "target_ip", Type: "string", Required: true},
+									{Name: "repeat", Type: "int", Required: false, Default: 5},
+									{Name: "timeout", Type: "duration", Required: false, Default: 2 * time.Second},
+									// H3C Comware通常不需要enable_password
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -284,6 +317,8 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 			commands = PingTask{}.buildCiscoCommand(targetIP, repeat, timeout, enablePassword)
 		case connection.PlatformHuaweiVRP:
 			commands = PingTask{}.buildHuaweiCommand(targetIP, repeat, timeout)
+		case connection.PlatformH3CComware:
+			commands = PingTask{}.buildH3CCommand(targetIP, repeat, timeout)
 		default:
 			ylog.Errorf("PingTask", "不支持的平台类型: %s", ctx.Platform)
 			return Command{}, fmt.Errorf("unsupported platform for commands: %s", ctx.Platform)
@@ -307,6 +342,8 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 			events = PingTask{}.buildCiscoEvent(targetIP, repeat, timeout, enablePassword)
 		case connection.PlatformHuaweiVRP:
 			events = PingTask{}.buildHuaweiEvent(targetIP, repeat, timeout)
+		case connection.PlatformH3CComware:
+			events = PingTask{}.buildH3CEvent(targetIP, repeat, timeout)
 		default:
 			ylog.Errorf("PingTask", "不支持的平台类型: %s", ctx.Platform)
 			return Command{}, fmt.Errorf("unsupported platform: %s", ctx.Platform)
@@ -351,13 +388,14 @@ func (PingTask) buildCiscoEvent(targetIP string, repeat int, timeout time.Durati
 }
 
 // buildHuaweiEvent 构建华为平台的单个ping命令
+// buildHuaweiEvent 构建华为平台的单个ping命令（交互式）
 func (PingTask) buildHuaweiEvent(targetIP string, repeat int, timeout time.Duration) []*channel.SendInteractiveEvent {
 	ylog.Debugf("PingTask", "构建华为交互式事件, 目标IP: %s", targetIP)
 
 	var events []*channel.SendInteractiveEvent
 
-	// 创建ping命令
-	pingCommand := fmt.Sprintf("ping -c %d -W %d %s", repeat, int(timeout.Seconds()), targetIP)
+	// 创建ping命令，华为VRP使用-t参数表示超时时间（秒）
+	pingCommand := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Seconds()), targetIP)
 	ylog.Debugf("PingTask", "添加华为ping命令: %s", pingCommand)
 
 	events = append(events, &channel.SendInteractiveEvent{
@@ -397,13 +435,46 @@ func (PingTask) buildHuaweiCommand(targetIP string, repeat int, timeout time.Dur
 
 	var commands []string
 
-	// 创建ping命令
-	command := fmt.Sprintf("ping -c %d -W %d %s", repeat, int(timeout.Seconds()), targetIP)
+	// 创建ping命令，华为VRP使用-t参数表示超时时间（秒）
+	command := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Seconds()), targetIP)
 	ylog.Debugf("PingTask", "添加华为ping命令: %s", command)
 	commands = append(commands, command)
 
 	ylog.Debugf("PingTask", "华为非交互式命令构建完成, 命令总数: %d", len(commands))
 	return commands
+}
+
+// buildH3CCommand 构建H3C Comware平台的单个ping命令（非交互式）
+func (PingTask) buildH3CCommand(targetIP string, repeat int, timeout time.Duration) []string {
+	ylog.Debugf("PingTask", "构建H3C非交互式命令, 目标IP: %s", targetIP)
+
+	var commands []string
+	// H3C Comware使用-t参数表示超时时间（秒）
+	command := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Seconds()), targetIP)
+	ylog.Debugf("PingTask", "添加H3C ping命令: %s", command)
+	commands = append(commands, command)
+
+	ylog.Debugf("PingTask", "H3C非交互式命令构建完成, 命令总数: %d", len(commands))
+	return commands
+}
+
+// buildH3CEvent 构建H3C Comware平台的单个ping命令（交互式）
+func (PingTask) buildH3CEvent(targetIP string, repeat int, timeout time.Duration) []*channel.SendInteractiveEvent {
+	ylog.Debugf("PingTask", "构建H3C交互式事件, 目标IP: %s", targetIP)
+
+	var events []*channel.SendInteractiveEvent
+	// H3C Comware使用-t参数表示超时时间（秒）
+	pingCommand := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Seconds()), targetIP)
+	ylog.Debugf("PingTask", "添加H3C ping命令: %s", pingCommand)
+
+	events = append(events, &channel.SendInteractiveEvent{
+		ChannelInput:    pingCommand,
+		ChannelResponse: ">", // H3C Comware通常使用">"作为提示符
+		HideInput:       false,
+	})
+
+	ylog.Debugf("PingTask", "H3C交互式事件构建完成, 事件总数: %d", len(events))
+	return events
 }
 
 //ping 命令输出示例
@@ -542,6 +613,8 @@ func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
 		result.Success = PingTask{}.parseCiscoNxosOutput(output, &result)
 	case connection.PlatformHuaweiVRP:
 		result.Success = PingTask{}.parseHuaweiOutput(output, &result)
+	case connection.PlatformH3CComware:
+		result.Success = PingTask{}.parseH3COutput(output, &result)
 	default:
 		result.Success = PingTask{}.parseGenericOutput(output, &result)
 	}
@@ -752,6 +825,78 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 
 	ylog.Debugf("PingTask", "Huawei parsing: no packet loss info found")
 	ylog.Errorf("PingTask", "Huawei parsing: no packet loss info found")
+	result.Data["status"] = StatusParseFailed
+	return false
+}
+
+// parseH3COutput 解析H3C Comware设备的ping输出
+func (PingTask) parseH3COutput(output string, result *Result) bool {
+	ylog.Debugf("PingTask", "开始解析H3C输出")
+
+	lines := strings.Split(output, "\n")
+
+	// 首先检查特殊情况
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		lowerLine := strings.ToLower(line)
+
+		// 检查请求超时
+		if strings.Contains(lowerLine, "request time out") {
+			result.Data["status"] = StatusRequestTimeout
+			ylog.Debugf("PingTask", "H3C parsing: request timeout detected, 100%% packet loss, status=%s", StatusCheckFinished)
+			return true
+		}
+
+		// 检查主机不可达
+		if strings.Contains(lowerLine, "destination host unreachable") ||
+			strings.Contains(lowerLine, "no route to host") {
+			result.Data["status"] = StatusNoRouteToHost
+			ylog.Debugf("PingTask", "H3C parsing: host unreachable, 100%% packet loss, status=%s", StatusCheckFinished)
+			return true
+		}
+	}
+
+	// 查找包含packet loss的行
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		lowerLine := strings.ToLower(line)
+
+		if strings.Contains(lowerLine, "packet loss") {
+			// 使用正则表达式匹配百分比
+			re := regexp.MustCompile(`(\d+\.?\d*)%\s*packet\s*loss`)
+			if matches := re.FindStringSubmatch(line); len(matches) > 1 {
+				// 解析带小数的百分比
+				if packetLossFloat, err := strconv.ParseFloat(matches[1], 64); err == nil {
+					// 确保值在0-100范围内
+					packetLoss := int(packetLossFloat)
+					if packetLoss < 0 {
+						packetLoss = 0
+					} else if packetLoss > 100 {
+						packetLoss = 100
+					}
+
+					result.Data["packet_loss"] = packetLoss
+					result.Data["success_rate"] = 100 - packetLoss
+					result.Data["status"] = StatusCheckFinished
+					ylog.Debugf("PingTask", "H3C parsing: %s%% packet loss, %d%% success rate, status=%s",
+						matches[1], 100-packetLoss, StatusCheckFinished)
+					return true
+				} else {
+					ylog.Errorf("PingTask", "H3C parsing: 无法解析百分比值: %s", matches[1])
+					result.Data["status"] = StatusParseFailed
+					return false
+				}
+			}
+		}
+
+		// 查找RTT信息
+		if strings.Contains(line, "round-trip") && strings.Contains(line, "min/avg/max") {
+			result.Data["rtt_info"] = line
+			ylog.Debugf("PingTask", "H3C parsing: found RTT info: %s", line)
+		}
+	}
+
+	ylog.Errorf("PingTask", "H3C parsing: no packet loss pattern found")
 	result.Data["status"] = StatusParseFailed
 	return false
 }

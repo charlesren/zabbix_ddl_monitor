@@ -8,6 +8,7 @@ import (
 
 	"github.com/charlesren/zabbix_ddl_monitor/connection"
 	"github.com/scrapli/scrapligo/channel"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestPingTask_Meta(t *testing.T) {
@@ -29,19 +30,30 @@ func TestPingTask_Meta(t *testing.T) {
 	}
 
 	// 验证Cisco IOS-XE平台支持
-	found := false
+	foundCisco := false
+	// 验证H3C Comware平台支持
+	foundH3C := false
 	for _, platform := range meta.Platforms {
 		if platform.Platform == connection.PlatformCiscoIOSXE {
-			found = true
+			foundCisco = true
 			// 验证协议支持
 			if len(platform.Protocols) == 0 {
 				t.Error("Expected at least one protocol for Cisco IOS-XE")
 			}
-			break
+		}
+		if platform.Platform == connection.PlatformH3CComware {
+			foundH3C = true
+			// 验证协议支持
+			if len(platform.Protocols) == 0 {
+				t.Error("Expected at least one protocol for H3C Comware")
+			}
 		}
 	}
-	if !found {
+	if !foundCisco {
 		t.Error("Expected Cisco IOS-XE platform support")
+	}
+	if !foundH3C {
+		t.Error("Expected H3C Comware platform support")
 	}
 }
 
@@ -269,7 +281,7 @@ func TestPingTask_BuildCommand_SingleIP(t *testing.T) {
 				if len(events) != 1 {
 					t.Errorf("Expected 1 event, got %d", len(events))
 				}
-				expectedCmd := "ping -c 4 -W 3 10.1.1.1"
+				expectedCmd := "ping -c 4 -t 3 10.1.1.1"
 				if events[0].ChannelInput != expectedCmd {
 					t.Errorf("Expected '%s', got '%s'", expectedCmd, events[0].ChannelInput)
 				}
@@ -355,7 +367,7 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/4 ms`,
 				Data: map[string]interface{}{
 					"target_ip":    "192.168.1.1",
 					"success_rate": 100,
-					"status":       "success",
+					"status":       "CheckFinished",
 				},
 			},
 		},
@@ -373,11 +385,11 @@ Sending 5, 100-byte ICMP Echos to 192.168.1.1, timeout is 2 seconds:
 Success rate is 0 percent (0/5)`,
 			wantErr: false,
 			wantResult: Result{
-				Success: false,
+				Success: true,
 				Data: map[string]interface{}{
-					"target_ip":    "192.168.1.1",
-					"success_rate": 0,
-					"status":       "failed",
+					"target_ip":   "192.168.1.1",
+					"packet_loss": 100,
+					"status":      "CheckFinished",
 				},
 			},
 		},
@@ -406,7 +418,7 @@ Reply from 10.1.1.1: bytes=56 Sequence=5 ttl=64 time=1 ms
 				Data: map[string]interface{}{
 					"target_ip":   "10.1.1.1",
 					"packet_loss": 0,
-					"status":      "success",
+					"status":      "CheckFinished",
 				},
 			},
 		},
@@ -426,11 +438,11 @@ Reply from 10.1.1.1: bytes=56 Sequence=5 ttl=64 time=1 ms
 100% packet loss`,
 			wantErr: false,
 			wantResult: Result{
-				Success: false,
+				Success: true,
 				Data: map[string]interface{}{
 					"target_ip":   "10.1.1.1",
 					"packet_loss": 100,
-					"status":      "failed",
+					"status":      "CheckFinished",
 				},
 			},
 		},
@@ -460,7 +472,7 @@ Reply from 10.1.1.1: bytes=56 Sequence=5 ttl=64 time=1 ms
 				Data: map[string]interface{}{
 					"target_ip":    "192.168.1.1",
 					"success_rate": 100,
-					"status":       "success",
+					"status":       "CheckFinished",
 				},
 			},
 		},
@@ -726,6 +738,214 @@ func TestPingTask_Integration(t *testing.T) {
 		if !result.Success {
 			t.Error("Expected successful result")
 		}
+	})
+}
+
+func TestPingTask_H3CComware(t *testing.T) {
+	task := &PingTask{}
+
+	// 测试Meta方法
+	meta := task.Meta()
+	found := false
+	for _, platform := range meta.Platforms {
+		if platform.Platform == connection.PlatformH3CComware {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "H3C Comware should be in supported platforms")
+
+	// 测试命令构建 - 非交互式命令
+	t.Run("build_commands", func(t *testing.T) {
+		ctx := TaskContext{
+			Platform:    connection.PlatformH3CComware,
+			CommandType: connection.CommandTypeCommands,
+			Params: map[string]interface{}{
+				"target_ip": "8.8.8.8",
+				"repeat":    3,
+				"timeout":   2 * time.Second,
+			},
+		}
+
+		cmd, err := task.BuildCommand(ctx)
+		assert.NoError(t, err)
+		assert.Equal(t, connection.CommandTypeCommands, cmd.Type)
+
+		commands, ok := cmd.Payload.([]string)
+		assert.True(t, ok)
+		assert.Len(t, commands, 1)
+		assert.Contains(t, commands[0], "ping -c 3 -t 2 8.8.8.8")
+	})
+
+	// 测试命令构建 - 交互式事件
+	t.Run("build_interactive_events", func(t *testing.T) {
+		ctx := TaskContext{
+			Platform:    connection.PlatformH3CComware,
+			CommandType: connection.CommandTypeInteractiveEvent,
+			Params: map[string]interface{}{
+				"target_ip": "192.168.1.1",
+				"repeat":    5,
+				"timeout":   3 * time.Second,
+			},
+		}
+
+		cmd, err := task.BuildCommand(ctx)
+		assert.NoError(t, err)
+		assert.Equal(t, connection.CommandTypeInteractiveEvent, cmd.Type)
+
+		events, ok := cmd.Payload.([]*channel.SendInteractiveEvent)
+		assert.True(t, ok)
+		assert.Len(t, events, 1)
+		assert.Contains(t, events[0].ChannelInput, "ping -c 5 -t 3 192.168.1.1")
+		assert.Equal(t, ">", events[0].ChannelResponse)
+	})
+
+	// 测试输出解析 - 成功情况
+	t.Run("parse_success_output", func(t *testing.T) {
+		ctx := TaskContext{
+			Platform: connection.PlatformH3CComware,
+			Params: map[string]interface{}{
+				"target_ip": "8.8.8.8",
+			},
+		}
+
+		successOutput := `ping -c 3 -t 2 8.8.8.8
+PING 8.8.8.8 (8.8.8.8): 56 data bytes
+64 bytes from 8.8.8.8: icmp_seq=0 ttl=117 time=25.367 ms
+64 bytes from 8.8.8.8: icmp_seq=1 ttl=117 time=25.213 ms
+64 bytes from 8.8.8.8: icmp_seq=2 ttl=117 time=25.296 ms
+
+--- Ping statistics for 8.8.8.8 ---
+3 packet(s) transmitted, 3 packet(s) received, 0.0% packet loss
+round-trip min/avg/max/std-dev = 25.213/25.292/25.367/0.014 ms`
+
+		result, err := task.ParseOutput(ctx, successOutput)
+		assert.NoError(t, err)
+		assert.True(t, result.Success)
+		assert.Equal(t, 0, result.Data["packet_loss"])
+		assert.Equal(t, 100, result.Data["success_rate"])
+		assert.Equal(t, "CheckFinished", result.Data["status"])
+	})
+
+	// 测试输出解析 - 失败情况（100%丢包）
+	t.Run("parse_failure_output_100_percent_loss", func(t *testing.T) {
+		ctx := TaskContext{
+			Platform: connection.PlatformH3CComware,
+			Params: map[string]interface{}{
+				"target_ip": "192.0.2.1",
+			},
+		}
+
+		failOutput := `ping -c 3 -t 2 192.0.2.1
+PING 192.0.2.1 (192.0.2.1): 56 data bytes
+
+--- Ping statistics for 192.0.2.1 ---
+3 packet(s) transmitted, 0 packet(s) received, 100.0% packet loss`
+
+		result, err := task.ParseOutput(ctx, failOutput)
+		assert.NoError(t, err)
+		assert.True(t, result.Success)
+		assert.Equal(t, 100, result.Data["packet_loss"])
+		assert.Equal(t, 0, result.Data["success_rate"])
+		assert.Equal(t, "CheckFinished", result.Data["status"])
+	})
+
+	// 测试输出解析 - 部分丢包
+	t.Run("parse_partial_loss_output", func(t *testing.T) {
+		ctx := TaskContext{
+			Platform: connection.PlatformH3CComware,
+			Params: map[string]interface{}{
+				"target_ip": "10.0.0.1",
+			},
+		}
+
+		partialOutput := `ping -c 5 -t 2 10.0.0.1
+PING 10.0.0.1 (10.0.0.1): 56 data bytes
+64 bytes from 10.0.0.1: icmp_seq=0 ttl=64 time=1.234 ms
+64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=1.345 ms
+64 bytes from 10.0.0.1: icmp_seq=4 ttl=64 time=1.456 ms
+
+--- Ping statistics for 10.0.0.1 ---
+5 packet(s) transmitted, 3 packet(s) received, 40.0% packet loss
+round-trip min/avg/max/std-dev = 1.234/1.345/1.456/0.014 ms`
+
+		result, err := task.ParseOutput(ctx, partialOutput)
+		assert.NoError(t, err)
+		assert.True(t, result.Success)
+		assert.Equal(t, 40, result.Data["packet_loss"])
+		assert.Equal(t, 60, result.Data["success_rate"])
+		assert.Equal(t, "CheckFinished", result.Data["status"])
+	})
+
+	// 测试输出解析 - 请求超时
+	t.Run("parse_timeout_output", func(t *testing.T) {
+		ctx := TaskContext{
+			Platform: connection.PlatformH3CComware,
+			Params: map[string]interface{}{
+				"target_ip": "203.0.113.1",
+			},
+		}
+
+		timeoutOutput := `ping -c 3 -t 2 203.0.113.1
+PING 203.0.113.1 (203.0.113.1): 56 data bytes
+Request time out
+Request time out
+Request time out
+
+--- Ping statistics for 203.0.113.1 ---
+3 packet(s) transmitted, 0 packet(s) received, 100.0% packet loss`
+
+		result, err := task.ParseOutput(ctx, timeoutOutput)
+		assert.NoError(t, err)
+		assert.True(t, result.Success)
+		assert.Equal(t, 100, result.Data["packet_loss"])
+		assert.Equal(t, 0, result.Data["success_rate"])
+		assert.Equal(t, "CheckFinished", result.Data["status"])
+	})
+
+	// 测试输出解析 - 主机不可达
+	t.Run("parse_unreachable_output", func(t *testing.T) {
+		ctx := TaskContext{
+			Platform: connection.PlatformH3CComware,
+			Params: map[string]interface{}{
+				"target_ip": "192.168.99.99",
+			},
+		}
+
+		unreachableOutput := `ping -c 3 -t 2 192.168.99.99
+PING 192.168.99.99 (192.168.99.99): 56 data bytes
+From 192.168.1.1 icmp_seq=0 Destination Host Unreachable
+From 192.168.1.1 icmp_seq=1 Destination Host Unreachable
+From 192.168.1.1 icmp_seq=2 Destination Host Unreachable
+
+--- Ping statistics for 192.168.99.99 ---
+3 packet(s) transmitted, 0 packet(s) received, 100.0% packet loss`
+
+		result, err := task.ParseOutput(ctx, unreachableOutput)
+		assert.NoError(t, err)
+		assert.True(t, result.Success)
+		assert.Equal(t, 100, result.Data["packet_loss"])
+		assert.Equal(t, 0, result.Data["success_rate"])
+		assert.Equal(t, "CheckFinished", result.Data["status"])
+	})
+
+	// 测试参数验证
+	t.Run("validate_params", func(t *testing.T) {
+		validParams := map[string]interface{}{
+			"target_ip": "8.8.8.8",
+			"repeat":    5,
+			"timeout":   2 * time.Second,
+		}
+
+		err := task.ValidateParams(validParams)
+		assert.NoError(t, err)
+
+		// 测试无效参数
+		invalidParams := map[string]interface{}{
+			"repeat": 0, // 小于1
+		}
+		err = task.ValidateParams(invalidParams)
+		assert.Error(t, err)
 	})
 }
 

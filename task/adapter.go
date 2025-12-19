@@ -2,6 +2,8 @@ package task
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,7 +116,7 @@ func (a *HuaweiVRPAdapter) ConvertOutput(raw string) map[string]interface{} {
 func (a *HuaweiVRPAdapter) GetCommandTemplate(taskType TaskType, commandType connection.CommandType) (string, error) {
 	switch taskType {
 	case "ping":
-		return "ping -c {{.repeat}} -W {{.timeout_seconds}} {{.target_ip}}", nil
+		return "ping -c {{.repeat}} -t {{.timeout_seconds}} {{.target_ip}}", nil
 	default:
 		return "", fmt.Errorf("unsupported task type for Huawei VRP: %s", taskType)
 	}
@@ -210,6 +212,15 @@ func (a *H3CComwareAdapter) NormalizeParams(params map[string]interface{}) map[s
 	if _, ok := params["repeat"]; !ok {
 		params["repeat"] = 5
 	}
+	if _, ok := params["timeout"]; !ok {
+		params["timeout"] = 2 * time.Second
+	}
+	// 添加timeout_seconds参数，用于模板渲染
+	if timeout, ok := params["timeout"]; ok {
+		if timeoutDur, ok := timeout.(time.Duration); ok {
+			params["timeout_seconds"] = int(timeoutDur.Seconds())
+		}
+	}
 	return params
 }
 
@@ -220,10 +231,47 @@ func (a *H3CComwareAdapter) ConvertOutput(raw string) map[string]interface{} {
 	}
 
 	// H3C特有的输出解析
+	rawLower := strings.ToLower(raw)
+
 	if strings.Contains(raw, "packet loss") {
-		result["success"] = strings.Contains(raw, "0% packet loss")
+		// 匹配H3C实际格式：0.0% packet loss 或 100.0% packet loss
+		if strings.Contains(raw, "0.0% packet loss") {
+			result["success"] = true
+			result["packet_loss"] = "0%"
+			result["success_rate"] = "100%"
+		} else if strings.Contains(raw, "100.0% packet loss") {
+			result["success"] = false
+			result["packet_loss"] = "100%"
+			result["success_rate"] = "0%"
+		} else {
+			// 提取具体的丢包率 - 匹配带小数的百分比
+			re := regexp.MustCompile(`(\d+\.?\d*)%\s+packet\s+loss`)
+			if matches := re.FindStringSubmatch(raw); len(matches) > 1 {
+				packetLoss := matches[1]
+				result["packet_loss"] = packetLoss + "%"
+				if packetLoss == "0" || packetLoss == "0.0" {
+					result["success"] = true
+					result["success_rate"] = "100%"
+				} else {
+					result["success"] = false
+					// 计算成功率
+					if packetLossFloat, err := strconv.ParseFloat(packetLoss, 64); err == nil {
+						successRate := 100 - int(packetLossFloat)
+						result["success_rate"] = fmt.Sprintf("%d%%", successRate)
+					}
+				}
+			} else {
+				result["success"] = true // 默认认为成功
+			}
+		}
+	} else if strings.Contains(raw, "Request time out") ||
+		strings.Contains(rawLower, "destination host unreachable") ||
+		strings.Contains(rawLower, "no route to host") {
+		result["success"] = false
+		result["packet_loss"] = "100%"
+		result["success_rate"] = "0%"
 	} else {
-		result["success"] = !strings.Contains(strings.ToLower(raw), "failed")
+		result["success"] = !strings.Contains(rawLower, "failed")
 	}
 
 	return result
@@ -232,12 +280,26 @@ func (a *H3CComwareAdapter) ConvertOutput(raw string) map[string]interface{} {
 func (a *H3CComwareAdapter) GetCommandTemplate(taskType TaskType, commandType connection.CommandType) (string, error) {
 	switch taskType {
 	case "ping":
-		return "ping -c {{.repeat}} {{.target_ip}}", nil
+		// H3C Comware使用-t参数表示超时时间（秒）
+		return "ping -c {{.repeat}} -t {{.timeout_seconds}} {{.target_ip}}", nil
 	default:
 		return "", fmt.Errorf("unsupported task type for H3C Comware: %s", taskType)
 	}
 }
 
 func (a *H3CComwareAdapter) ValidatePlatformParams(params map[string]interface{}) error {
+	// H3C Comware特定参数验证
+	if repeat, ok := params["repeat"]; ok {
+		if r, ok := repeat.(int); ok && (r < 1 || r > 100) {
+			return fmt.Errorf("H3C Comware: repeat count must be between 1 and 100")
+		}
+	}
+
+	if timeout, ok := params["timeout"]; ok {
+		if t, ok := timeout.(time.Duration); ok && (t < time.Second || t > 10*time.Second) {
+			return fmt.Errorf("H3C Comware: timeout must be between 1 and 10 seconds")
+		}
+	}
+
 	return nil
 }

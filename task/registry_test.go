@@ -339,10 +339,10 @@ func TestDefaultRegistry_ListPlatforms(t *testing.T) {
 			unexpectedTasks: []TaskType{"ping", "traceroute"},
 		},
 		{
-			name:            "unsupported_platform",
+			name:            "h3c_comware_platform",
 			platform:        connection.PlatformH3CComware,
-			expectedTasks:   []TaskType{},
-			unexpectedTasks: []TaskType{"ping", "traceroute", "show_version"},
+			expectedTasks:   []TaskType{"ping"},
+			unexpectedTasks: []TaskType{"traceroute", "show_version"},
 		},
 	}
 

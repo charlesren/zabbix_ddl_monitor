@@ -658,9 +658,208 @@ func TestH3CComwareAdapter_GetCommandTemplate(t *testing.T) {
 		t.Errorf("Expected no error, got: %v", err)
 	}
 
-	expected := "ping -c {{.repeat}} {{.target_ip}}"
+	expected := "ping -c {{.repeat}} -t {{.timeout_seconds}} {{.target_ip}}"
 	if template != expected {
 		t.Errorf("Expected template '%s', got '%s'", expected, template)
+	}
+
+	_, err = adapter.GetCommandTemplate("invalid", connection.CommandTypeCommands)
+	if err == nil {
+		t.Error("Expected error for invalid task type")
+	}
+}
+
+func TestH3CComwareAdapter_NormalizeParams(t *testing.T) {
+	adapter := &H3CComwareAdapter{}
+
+	// 测试默认值
+	params := map[string]interface{}{
+		"target_ip": "8.8.8.8",
+	}
+	normalized := adapter.NormalizeParams(params)
+
+	if repeat, ok := normalized["repeat"]; !ok || repeat != 5 {
+		t.Errorf("Expected repeat=5, got %v", repeat)
+	}
+
+	if timeout, ok := normalized["timeout"]; !ok || timeout != 2*time.Second {
+		t.Errorf("Expected timeout=2s, got %v", timeout)
+	}
+
+	if timeoutSeconds, ok := normalized["timeout_seconds"]; !ok || timeoutSeconds != 2 {
+		t.Errorf("Expected timeout_seconds=2, got %v", timeoutSeconds)
+	}
+
+	// 测试已有参数不被覆盖
+	paramsWithValues := map[string]interface{}{
+		"target_ip": "8.8.8.8",
+		"repeat":    3,
+		"timeout":   5 * time.Second,
+	}
+	normalizedWithValues := adapter.NormalizeParams(paramsWithValues)
+
+	if repeat, ok := normalizedWithValues["repeat"]; !ok || repeat != 3 {
+		t.Errorf("Expected repeat=3, got %v", repeat)
+	}
+
+	if timeout, ok := normalizedWithValues["timeout"]; !ok || timeout != 5*time.Second {
+		t.Errorf("Expected timeout=5s, got %v", timeout)
+	}
+
+	if timeoutSeconds, ok := normalizedWithValues["timeout_seconds"]; !ok || timeoutSeconds != 5 {
+		t.Errorf("Expected timeout_seconds=5, got %v", timeoutSeconds)
+	}
+}
+
+func TestH3CComwareAdapter_ConvertOutput(t *testing.T) {
+	adapter := &H3CComwareAdapter{}
+
+	tests := []struct {
+		name     string
+		output   string
+		expected bool
+	}{
+		{
+			name:     "success_output",
+			output:   "5 packet(s) transmitted, 5 packet(s) received, 0.0% packet loss",
+			expected: true,
+		},
+		{
+			name:     "failure_output",
+			output:   "5 packet(s) transmitted, 0 packet(s) received, 100.0% packet loss",
+			expected: false,
+		},
+		{
+			name:     "partial_loss_output",
+			output:   "5 packet(s) transmitted, 3 packet(s) received, 40.0% packet loss",
+			expected: false,
+		},
+		{
+			name:     "timeout_output",
+			output:   "Request time out",
+			expected: false,
+		},
+		{
+			name:     "unreachable_output",
+			output:   "Destination host unreachable",
+			expected: false,
+		},
+		{
+			name:     "no_route_output",
+			output:   "No route to host",
+			expected: false,
+		},
+		{
+			name:     "generic_success",
+			output:   "Ping successful",
+			expected: true,
+		},
+		{
+			name:     "generic_failure",
+			output:   "Ping failed",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := adapter.ConvertOutput(tt.output)
+			if success, ok := result["success"].(bool); !ok || success != tt.expected {
+				t.Errorf("Expected success=%v, got %v", tt.expected, result["success"])
+			}
+		})
+	}
+}
+
+func TestH3CComwareAdapter_ValidatePlatformParams(t *testing.T) {
+	adapter := &H3CComwareAdapter{}
+
+	tests := []struct {
+		name    string
+		params  map[string]interface{}
+		wantErr bool
+	}{
+		{
+			name: "valid_params",
+			params: map[string]interface{}{
+				"repeat":  5,
+				"timeout": 2 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid_min_values",
+			params: map[string]interface{}{
+				"repeat":  1,
+				"timeout": 1 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid_max_values",
+			params: map[string]interface{}{
+				"repeat":  100,
+				"timeout": 10 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid_repeat_too_low",
+			params: map[string]interface{}{
+				"repeat": 0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid_repeat_too_high",
+			params: map[string]interface{}{
+				"repeat": 101,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid_timeout_too_low",
+			params: map[string]interface{}{
+				"timeout": 500 * time.Millisecond,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid_timeout_too_high",
+			params: map[string]interface{}{
+				"timeout": 11 * time.Second,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid_repeat_type",
+			params: map[string]interface{}{
+				"repeat": "five",
+			},
+			wantErr: false, // 类型错误不会被ValidatePlatformParams捕获
+		},
+		{
+			name: "invalid_timeout_type",
+			params: map[string]interface{}{
+				"timeout": "two seconds",
+			},
+			wantErr: false, // 类型错误不会被ValidatePlatformParams捕获
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := adapter.ValidatePlatformParams(tt.params)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error but got none")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error but got: %v", err)
+				}
+			}
+		})
 	}
 }
 
