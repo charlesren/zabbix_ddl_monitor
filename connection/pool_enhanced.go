@@ -231,13 +231,12 @@ func (conn *EnhancedPooledConnection) release() {
 	if conn.state == StateAcquired {
 		// 执行状态转换
 		if !conn.transitionStateLocked(StateIdle) {
-			fmt.Printf("[STATE-WARN] 状态转换失败: id=%s, from=%s, to=%s\n",
-				conn.id, conn.state, StateIdle)
+			ylog.Warnf("connection_pool", "状态转换失败: id=%s, from=%s, to=%s", conn.id, conn.state, StateIdle)
 		}
 		conn.setLastUsed(time.Now())
 	} else {
 		// 记录警告，但继续执行
-		fmt.Printf("[STATE-WARN] 尝试释放非获取状态的连接: id=%s, state=%s\n", conn.id, conn.state)
+		ylog.Warnf("connection_pool", "尝试释放非获取状态的连接: id=%s, state=%s", conn.id, conn.state)
 	}
 }
 
@@ -449,8 +448,7 @@ func (conn *EnhancedPooledConnection) canTransitionTo(targetState ConnectionStat
 // transitionStateLocked 执行状态转换（内部方法，调用者必须持有锁）
 func (conn *EnhancedPooledConnection) transitionStateLocked(targetState ConnectionState) bool {
 	if !conn.canTransitionTo(targetState) {
-		fmt.Printf("[STATE-ERROR] 无效状态转换: id=%s, from=%s, to=%s\n",
-			conn.id, conn.state, targetState)
+		ylog.Errorf("connection_pool", "无效状态转换: id=%s, from=%s, to=%s", conn.id, conn.state, targetState)
 		return false
 	}
 
@@ -458,8 +456,7 @@ func (conn *EnhancedPooledConnection) transitionStateLocked(targetState Connecti
 	conn.state = targetState
 
 	// 记录状态转换日志
-	fmt.Printf("[STATE-TRANSITION] 状态转换: id=%s, from=%s, to=%s\n",
-		conn.id, oldState, targetState)
+	ylog.Debugf("connection_pool", "状态转换: id=%s, from=%s, to=%s", conn.id, oldState, targetState)
 
 	return true
 }
@@ -936,8 +933,7 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 	// 第二优先级：需要重建的连接 → 异步重建，先返回可用连接
 	for id, conn := range pool.connections {
 		state, _ := conn.getStatus()
-		fmt.Printf("[REBUILD-DEBUG] getConnectionFromPool: 检查连接: id=%s, state=%s, available=%v\n",
-			conn.id, state, conn.isAvailable())
+		ylog.Debugf("connection_pool", "检查连接: id=%s, state=%s, available=%v", conn.id, state, conn.isAvailable())
 		if conn.isAvailable() {
 			// 检查是否需要重建
 			shouldRebuild := p.shouldRebuildConnection(conn)
@@ -947,8 +943,7 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 			if shouldRebuild {
 				ylog.Infof("connection_pool", "发现需要重建的连接: id=%s, usage=%d, age=%v, state=%s",
 					conn.id, conn.getUsageCount(), time.Since(conn.getCreatedAt()), state)
-				fmt.Printf("[REBUILD-DEBUG] getConnectionFromPool: 发现需要重建的连接: id=%s, usage=%d, state=%s\n",
-					conn.id, conn.getUsageCount(), state)
+				ylog.Debugf("connection_pool", "发现需要重建的连接: id=%s, usage=%d, state=%s", conn.id, conn.getUsageCount(), state)
 
 				// 异步重建，不阻塞当前请求
 				go p.asyncRebuildConnection(pool, id, conn)
@@ -1639,7 +1634,7 @@ func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledCon
 // shouldRebuildConnection 判断连接是否需要智能重建
 func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledConnection) bool {
 	if !p.config.SmartRebuildEnabled {
-		fmt.Printf("[REBUILD-DEBUG] shouldRebuildConnection: SmartRebuildEnabled=false\n")
+		ylog.Debugf("connection_pool", "shouldRebuildConnection: SmartRebuildEnabled=false")
 		return false
 	}
 
@@ -1691,8 +1686,7 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		conn.id, state, health, usageCount, p.config.RebuildMaxUsageCount, createdAt, lastRebuiltAt, p.config.RebuildStrategy, markedForRebuild, p.config.RebuildMinInterval, now.Sub(lastRebuildOrCreate))
 
 	// 直接输出到标准输出，确保调试信息可见
-	fmt.Printf("[REBUILD-DEBUG] shouldRebuildConnection: id=%s, state=%s, health=%v, usage=%d/%d, strategy=%s, marked=%v, shouldRebuild=%v\n",
-		conn.id, state, health, usageCount, p.config.RebuildMaxUsageCount, p.config.RebuildStrategy, markedForRebuild, usageCount >= p.config.RebuildMaxUsageCount)
+	ylog.Debugf("connection_pool", "shouldRebuildConnection: id=%s, state=%s, health=%v, usage=%d/%d, strategy=%s, marked=%v, shouldRebuild=%v", conn.id, state, health, usageCount, p.config.RebuildMaxUsageCount, p.config.RebuildStrategy, markedForRebuild, usageCount >= p.config.RebuildMaxUsageCount)
 
 	// 根据策略判断
 	switch p.config.RebuildStrategy {
