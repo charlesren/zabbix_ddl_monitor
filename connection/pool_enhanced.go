@@ -1512,7 +1512,7 @@ func (p *EnhancedConnectionPool) defaultHealthCheck(driver ProtocolDriver) error
 	var cmd string
 	if scrapliDriver, ok := driver.(*ScrapliDriver); ok {
 		// Scrapli驱动使用GetPrompt（已有超时控制）
-		_, err := scrapliDriver.GetPrompt()
+		_, err := scrapliDriver.GetPromptWithContext(ctx)
 		return err
 	} else {
 		// 其他驱动使用通用命令

@@ -487,6 +487,59 @@ func (d *ScrapliDriver) GetPrompt() (string, error) {
 	return driver.GetPrompt()
 }
 
+// GetPromptWithContext 获取设备提示符（带上下文控制）
+func (d *ScrapliDriver) GetPromptWithContext(ctx context.Context) (string, error) {
+	// 使用传入的上下文，如果为nil则使用默认上下文
+	effectiveCtx := ctx
+	if effectiveCtx == nil {
+		effectiveCtx = context.Background()
+	}
+
+	// 创建带超时的子上下文，专门用于这个执行
+	execCtx, execCancel := context.WithTimeout(effectiveCtx, d.timeout)
+	defer execCancel()
+
+	// 使用goroutine包装GetPrompt，以便可以超时中断
+	resultChan := make(chan struct {
+		prompt string
+		err    error
+	}, 1)
+
+	ylog.Debugf("ScrapliDriver", "getting prompt with timeout control")
+
+	go func() {
+		// 执行获取提示符操作
+		prompt, err := d.GetPrompt()
+
+		// 发送结果前检查上下文，避免goroutine泄漏
+		select {
+		case resultChan <- struct {
+			prompt string
+			err    error
+		}{prompt, err}:
+			// 成功发送结果
+			ylog.Debugf("ScrapliDriver", "get prompt completed and result sent")
+		case <-execCtx.Done():
+			// 上下文已取消，丢弃结果，避免goroutine泄漏
+			ylog.Debugf("ScrapliDriver", "context cancelled before sending result, discarding to prevent goroutine leak")
+		}
+	}()
+
+	select {
+	case <-execCtx.Done():
+		// 上下文超时或取消
+		ylog.Warnf("ScrapliDriver", "get prompt timed out or cancelled: %v", execCtx.Err())
+		return "", execCtx.Err()
+	case result := <-resultChan:
+		if result.err != nil {
+			ylog.Errorf("ScrapliDriver", "get prompt failed: %v", result.err)
+			return "", result.err
+		}
+		ylog.Debugf("ScrapliDriver", "get prompt successful")
+		return result.prompt, nil
+	}
+}
+
 // Close 关闭连接
 func (d *ScrapliDriver) Close() error {
 	d.mu.Lock()
