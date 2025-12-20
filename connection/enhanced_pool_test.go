@@ -254,20 +254,17 @@ func TestEnhancedConnectionPool_LoadBalancing(t *testing.T) {
 		// Create mock connections
 		conn1 := &EnhancedPooledConnection{
 			id:           "conn1",
-			valid:        true,
-			inUse:        false,
+			state:        StateIdle,
 			healthStatus: HealthStatusHealthy,
 		}
 		conn2 := &EnhancedPooledConnection{
 			id:           "conn2",
-			valid:        true,
-			inUse:        false,
+			state:        StateIdle,
 			healthStatus: HealthStatusHealthy,
 		}
 		conn3 := &EnhancedPooledConnection{
 			id:           "conn3",
-			valid:        true,
-			inUse:        true, // This one is in use
+			state:        StateAcquired, // This one is in use
 			healthStatus: HealthStatusHealthy,
 		}
 
@@ -291,15 +288,13 @@ func TestEnhancedConnectionPool_LoadBalancing(t *testing.T) {
 
 		conn1 := &EnhancedPooledConnection{
 			id:           "conn1",
-			valid:        true,
-			inUse:        false,
+			state:        StateIdle,
 			healthStatus: HealthStatusHealthy,
 			usageCount:   10,
 		}
 		conn2 := &EnhancedPooledConnection{
 			id:           "conn2",
-			valid:        true,
-			inUse:        false,
+			state:        StateIdle,
 			healthStatus: HealthStatusHealthy,
 			usageCount:   5, // Less usage
 		}
@@ -601,7 +596,7 @@ func TestMonitoredDriver(t *testing.T) {
 		id:           "test-conn",
 		protocol:     "test",
 		createdAt:    time.Now(),
-		valid:        true,
+		state:        StateIdle,
 		healthStatus: HealthStatusHealthy,
 		labels:       make(map[string]string),
 		metadata:     make(map[string]interface{}),
@@ -671,7 +666,7 @@ func TestHealthChecker(t *testing.T) {
 		conn := &EnhancedPooledConnection{
 			driver:       mockDriver,
 			id:           "test-conn",
-			valid:        true,
+			state:        StateIdle,
 			healthStatus: HealthStatusUnknown,
 		}
 
@@ -691,7 +686,7 @@ func TestHealthChecker(t *testing.T) {
 		conn := &EnhancedPooledConnection{
 			driver:              mockDriver,
 			id:                  "test-conn",
-			valid:               true,
+			state:               StateIdle,
 			healthStatus:        HealthStatusUnknown,
 			consecutiveFailures: 2, // Already has some failures
 		}

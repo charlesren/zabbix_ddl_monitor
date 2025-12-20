@@ -14,7 +14,7 @@ func createTestConnection(usageCount, totalRequests, totalErrors int64, createdA
 	conn := &EnhancedPooledConnection{
 		createdAt:     createdAt,
 		lastRebuiltAt: lastRebuiltAt,
-		valid:         true,
+		state:         StateIdle,
 		healthStatus:  HealthStatusHealthy,
 		labels:        make(map[string]string),
 		metadata:      make(map[string]interface{}),

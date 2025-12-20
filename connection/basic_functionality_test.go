@@ -135,14 +135,12 @@ func TestLoadBalancerBasics(t *testing.T) {
 
 	conn1 := &EnhancedPooledConnection{
 		id:           "conn1",
-		valid:        true,
-		inUse:        false,
+		state:        StateIdle,
 		healthStatus: HealthStatusHealthy,
 	}
 	conn2 := &EnhancedPooledConnection{
 		id:           "conn2",
-		valid:        true,
-		inUse:        false,
+		state:        StateIdle,
 		healthStatus: HealthStatusHealthy,
 	}
 

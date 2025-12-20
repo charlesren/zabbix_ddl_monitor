@@ -194,8 +194,7 @@ func TestSmartRebuildWithDifferentStrategies(t *testing.T) {
 			// 创建测试连接
 			conn := &EnhancedPooledConnection{
 				createdAt: time.Now().Add(-tt.age),
-				valid:     true,
-				inUse:     false,
+				state:     StateIdle,
 			}
 			atomic.StoreInt64(&conn.usageCount, tt.usage)
 
@@ -306,8 +305,7 @@ func TestSimpleSmartRebuildMinInterval(t *testing.T) {
 	// 测试1：新创建连接，未达到最小重建间隔
 	conn1 := &EnhancedPooledConnection{
 		createdAt: now.Add(-100 * time.Millisecond), // 创建100ms前
-		valid:     true,
-		inUse:     false,
+		state:     StateIdle,
 	}
 	atomic.StoreInt64(&conn1.usageCount, 5) // 超过阈值
 
@@ -317,8 +315,7 @@ func TestSimpleSmartRebuildMinInterval(t *testing.T) {
 	conn2 := &EnhancedPooledConnection{
 		createdAt:     now.Add(-1 * time.Hour),          // 创建很久
 		lastRebuiltAt: now.Add(-100 * time.Millisecond), // 但刚重建过100ms
-		valid:         true,
-		inUse:         false,
+		state:         StateIdle,
 	}
 	atomic.StoreInt64(&conn2.usageCount, 5) // 超过阈值
 
@@ -328,8 +325,7 @@ func TestSimpleSmartRebuildMinInterval(t *testing.T) {
 	conn3 := &EnhancedPooledConnection{
 		createdAt:     now.Add(-1 * time.Hour),          // 创建很久
 		lastRebuiltAt: now.Add(-300 * time.Millisecond), // 重建过300ms，超过200ms间隔
-		valid:         true,
-		inUse:         false,
+		state:         StateIdle,
 	}
 	atomic.StoreInt64(&conn3.usageCount, 5) // 超过阈值
 

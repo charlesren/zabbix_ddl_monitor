@@ -12,6 +12,43 @@ import (
 	"github.com/charlesren/ylog"
 )
 
+// 连接状态枚举
+type ConnectionState int
+
+const (
+	// StateIdle 空闲状态：连接可用，未被使用
+	StateIdle ConnectionState = iota
+	// StateAcquired 已获取状态：连接已被获取，正在使用
+	StateAcquired
+	// StateChecking 检查状态：连接正在接受健康检查
+	StateChecking
+	// StateRebuilding 重建状态：连接正在被重建
+	StateRebuilding
+	// StateClosing 关闭中状态：连接正在关闭
+	StateClosing
+	// StateClosed 已关闭状态：连接已关闭
+	StateClosed
+)
+
+func (s ConnectionState) String() string {
+	switch s {
+	case StateIdle:
+		return "Idle"
+	case StateAcquired:
+		return "Acquired"
+	case StateChecking:
+		return "Checking"
+	case StateRebuilding:
+		return "Rebuilding"
+	case StateClosing:
+		return "Closing"
+	case StateClosed:
+		return "Closed"
+	default:
+		return "Unknown"
+	}
+}
+
 // 增强的连接池实现
 type EnhancedConnectionPool struct {
 	config EnhancedConnectionConfig
@@ -133,14 +170,18 @@ type EnhancedDriverPool struct {
 
 // 增强的连接包装
 type EnhancedPooledConnection struct {
+	// 连接级读写锁，保护所有状态字段
+	mu sync.RWMutex
+
 	driver     ProtocolDriver
 	id         string
 	protocol   Protocol
 	createdAt  time.Time
 	lastUsed   time.Time
 	usageCount int64
-	valid      bool
-	inUse      bool
+
+	// 状态管理（使用状态机）
+	state ConnectionState
 
 	// 重建相关
 	lastRebuiltAt    time.Time // 上次重建时间
@@ -158,6 +199,369 @@ type EnhancedPooledConnection struct {
 	// 标签和元数据
 	labels   map[string]string
 	metadata map[string]interface{}
+}
+
+// tryAcquire 尝试获取连接
+// 返回true表示成功获取，false表示连接不可用
+func (conn *EnhancedPooledConnection) tryAcquire() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// 只有空闲且健康的连接可以被获取
+	if conn.state != StateIdle || conn.healthStatus == HealthStatusUnhealthy {
+		return false
+	}
+
+	// 执行状态转换
+	if !conn.transitionStateLocked(StateAcquired) {
+		return false
+	}
+
+	conn.lastUsed = time.Now()
+	atomic.AddInt64(&conn.usageCount, 1)
+	return true
+}
+
+// release 释放连接
+func (conn *EnhancedPooledConnection) release() {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// 只有已获取状态的连接可以被释放
+	if conn.state == StateAcquired {
+		// 执行状态转换
+		if !conn.transitionStateLocked(StateIdle) {
+			fmt.Printf("[STATE-WARN] 状态转换失败: id=%s, from=%s, to=%s\n",
+				conn.id, conn.state, StateIdle)
+		}
+		conn.lastUsed = time.Now()
+	} else {
+		// 记录警告，但继续执行
+		fmt.Printf("[STATE-WARN] 尝试释放非获取状态的连接: id=%s, state=%s\n", conn.id, conn.state)
+	}
+}
+
+// getState 获取连接状态（只读）- 保持向后兼容
+func (conn *EnhancedPooledConnection) getState() (inUse, valid bool, health HealthStatus) {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+
+	// 转换状态机状态为旧的布尔值
+	inUse = conn.state == StateAcquired
+	valid = conn.state != StateClosed && conn.healthStatus != HealthStatusUnhealthy
+
+	return inUse, valid, conn.healthStatus
+}
+
+// getStatus 获取完整状态信息（新方法）
+func (conn *EnhancedPooledConnection) getStatus() (state ConnectionState, health HealthStatus) {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	return conn.state, conn.healthStatus
+}
+
+// setHealth 设置健康状态
+func (conn *EnhancedPooledConnection) setHealth(status HealthStatus, valid bool) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	conn.setHealthLocked(status, valid)
+}
+
+// recordHealthCheck 记录健康检查结果
+func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	conn.lastHealthCheck = time.Now()
+
+	if !success {
+		conn.consecutiveFailures++
+
+		// 根据错误类型和连续失败次数调整状态
+		errorType := classifyHealthCheckError(err)
+		switch errorType {
+		case HealthErrorAuth, HealthErrorProtocol:
+			// 认证或协议错误立即标记为无效
+			conn.setHealthLocked(HealthStatusUnhealthy, false)
+			// 认证/协议错误不立即关闭连接，只是标记为不健康
+			// 连接将在后续清理过程中被关闭
+		default:
+			// 其他错误，连续3次失败标记为不健康
+			if conn.consecutiveFailures >= 3 {
+				conn.setHealthLocked(HealthStatusUnhealthy, false)
+			} else {
+				conn.setHealthLocked(HealthStatusDegraded, true)
+			}
+		}
+	} else {
+		conn.consecutiveFailures = 0
+		conn.setHealthLocked(HealthStatusHealthy, true)
+		// 健康检查成功，如果当前状态是检查中，则转换为空闲状态
+		if conn.state == StateChecking {
+			conn.transitionStateLocked(StateIdle)
+		}
+	}
+}
+
+// setHealthLocked 设置健康状态（内部方法，调用者必须持有锁）
+func (conn *EnhancedPooledConnection) setHealthLocked(status HealthStatus, valid bool) {
+	conn.healthStatus = status
+
+	// 注意：这里不立即设置状态为StateClosing
+	// 连接将在后续清理过程中被关闭（cleanupConnections方法）
+	// 这样可以避免在健康检查失败时立即中断正在使用的连接
+
+	// 重置连续失败计数
+	if status == HealthStatusHealthy {
+		conn.consecutiveFailures = 0
+	}
+}
+
+// incrementUsage 增加使用计数
+func (conn *EnhancedPooledConnection) incrementUsage() {
+	atomic.AddInt64(&conn.usageCount, 1)
+}
+
+// getUsageCount 获取使用计数
+func (conn *EnhancedPooledConnection) getUsageCount() int64 {
+	return atomic.LoadInt64(&conn.usageCount)
+}
+
+// recordRequest 记录请求指标
+func (conn *EnhancedPooledConnection) recordRequest(success bool, duration time.Duration) {
+	atomic.AddInt64(&conn.totalRequests, 1)
+	if !success {
+		atomic.AddInt64(&conn.totalErrors, 1)
+	}
+
+	// 更新平均响应时间
+	if conn.totalRequests > 0 {
+		currentAvg := time.Duration(atomic.LoadInt64((*int64)(&conn.avgResponseTime)))
+		newAvg := (currentAvg*time.Duration(conn.totalRequests-1) + duration) / time.Duration(conn.totalRequests)
+		atomic.StoreInt64((*int64)(&conn.avgResponseTime), int64(newAvg))
+	}
+}
+
+// markForRebuild 标记连接需要重建
+func (conn *EnhancedPooledConnection) markForRebuild() bool {
+	return atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1)
+}
+
+// clearRebuildMark 清除重建标记
+func (conn *EnhancedPooledConnection) clearRebuildMark() {
+	atomic.StoreInt32(&conn.markedForRebuild, 0)
+}
+
+// isMarkedForRebuild 检查是否标记为需要重建
+func (conn *EnhancedPooledConnection) isMarkedForRebuild() bool {
+	return atomic.LoadInt32(&conn.markedForRebuild) != 0
+}
+
+// validateState 验证连接状态一致性
+func (conn *EnhancedPooledConnection) validateState() error {
+	state, health := conn.getStatus()
+
+	// 检查状态一致性
+	if state == StateAcquired && health == HealthStatusUnhealthy {
+		return fmt.Errorf("connection %s is acquired but unhealthy", conn.id)
+	}
+
+	if state == StateClosed && health == HealthStatusHealthy {
+		return fmt.Errorf("connection %s is closed but healthy", conn.id)
+	}
+
+	if !conn.lastRebuiltAt.IsZero() && conn.lastRebuiltAt.Before(conn.createdAt) {
+		return fmt.Errorf("connection %s lastRebuiltAt is before createdAt", conn.id)
+	}
+
+	return nil
+}
+
+// canTransitionTo 检查是否可以从当前状态转换到目标状态
+func (conn *EnhancedPooledConnection) canTransitionTo(targetState ConnectionState) bool {
+	currentState := conn.state
+
+	// 状态转换规则
+	switch currentState {
+	case StateIdle:
+		// 空闲状态可以转换到：已获取、检查中、重建中、关闭中、已关闭
+		return targetState == StateAcquired || targetState == StateChecking ||
+			targetState == StateRebuilding || targetState == StateClosing ||
+			targetState == StateClosed
+	case StateAcquired:
+		// 已获取状态可以转换到：空闲、检查中、关闭中、已关闭
+		return targetState == StateIdle || targetState == StateChecking ||
+			targetState == StateClosing || targetState == StateClosed
+	case StateChecking:
+		// 检查中状态可以转换到：空闲、已获取、关闭中、已关闭
+		return targetState == StateIdle || targetState == StateAcquired ||
+			targetState == StateClosing || targetState == StateClosed
+	case StateRebuilding:
+		// 重建中状态可以转换到：空闲、关闭中、已关闭
+		return targetState == StateIdle || targetState == StateClosing ||
+			targetState == StateClosed
+	case StateClosing:
+		// 关闭中状态只能转换到：已关闭
+		return targetState == StateClosed
+	case StateClosed:
+		// 已关闭状态不能转换到任何其他状态
+		return false
+	default:
+		return false
+	}
+}
+
+// transitionStateLocked 执行状态转换（内部方法，调用者必须持有锁）
+func (conn *EnhancedPooledConnection) transitionStateLocked(targetState ConnectionState) bool {
+	if !conn.canTransitionTo(targetState) {
+		fmt.Printf("[STATE-ERROR] 无效状态转换: id=%s, from=%s, to=%s\n",
+			conn.id, conn.state, targetState)
+		return false
+	}
+
+	oldState := conn.state
+	conn.state = targetState
+
+	// 记录状态转换日志
+	fmt.Printf("[STATE-TRANSITION] 状态转换: id=%s, from=%s, to=%s\n",
+		conn.id, oldState, targetState)
+
+	return true
+}
+
+// transitionState 执行状态转换（线程安全版本）
+func (conn *EnhancedPooledConnection) transitionState(targetState ConnectionState) bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.transitionStateLocked(targetState)
+}
+
+// beginHealthCheck 开始健康检查
+func (conn *EnhancedPooledConnection) beginHealthCheck() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// 只有空闲或已获取状态的连接可以开始健康检查
+	if conn.state != StateIdle && conn.state != StateAcquired {
+		return false
+	}
+
+	return conn.transitionStateLocked(StateChecking)
+}
+
+// completeHealthCheck 完成健康检查
+func (conn *EnhancedPooledConnection) completeHealthCheck(success bool) bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// 只有在检查中状态的连接可以完成健康检查
+	if conn.state != StateChecking {
+		return false
+	}
+
+	// 根据健康检查结果决定目标状态
+	var targetState ConnectionState
+	if success {
+		// 健康检查成功，返回空闲状态
+		targetState = StateIdle
+	} else {
+		// 健康检查失败，如果连接不健康则标记为关闭中
+		if conn.healthStatus == HealthStatusUnhealthy {
+			targetState = StateClosing
+		} else {
+			targetState = StateIdle
+		}
+	}
+
+	return conn.transitionStateLocked(targetState)
+}
+
+// beginRebuild 开始重建连接
+func (conn *EnhancedPooledConnection) beginRebuild() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// 只有空闲状态的连接可以开始重建
+	if conn.state != StateIdle {
+		return false
+	}
+
+	return conn.transitionStateLocked(StateRebuilding)
+}
+
+// completeRebuild 完成重建连接
+func (conn *EnhancedPooledConnection) completeRebuild(success bool) bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// 只有在重建中状态的连接可以完成重建
+	if conn.state != StateRebuilding {
+		return false
+	}
+
+	// 根据重建结果决定目标状态
+	var targetState ConnectionState
+	if success {
+		// 重建成功，返回空闲状态
+		targetState = StateIdle
+	} else {
+		// 重建失败，标记为关闭中
+		targetState = StateClosing
+	}
+
+	return conn.transitionStateLocked(targetState)
+}
+
+// beginClose 开始关闭连接
+func (conn *EnhancedPooledConnection) beginClose() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// 除了已关闭状态，其他状态都可以开始关闭
+	if conn.state == StateClosed {
+		return false
+	}
+
+	return conn.transitionStateLocked(StateClosing)
+}
+
+// completeClose 完成关闭连接
+func (conn *EnhancedPooledConnection) completeClose() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// 只有在关闭中状态的连接可以完成关闭
+	if conn.state != StateClosing {
+		return false
+	}
+
+	return conn.transitionStateLocked(StateClosed)
+}
+
+// isAvailable 检查连接是否可用（空闲且健康）
+func (conn *EnhancedPooledConnection) isAvailable() bool {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+
+	return conn.state == StateIdle && conn.healthStatus != HealthStatusUnhealthy
+}
+
+// isInUse 检查连接是否正在使用
+func (conn *EnhancedPooledConnection) isInUse() bool {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+
+	return conn.state == StateAcquired
+}
+
+// isHealthy 检查连接是否健康
+func (conn *EnhancedPooledConnection) isHealthy() bool {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+
+	// 连接健康的条件：不是不健康状态
+	// HealthStatusUnknown 和 HealthStatusDegraded 都认为是健康的
+	return conn.healthStatus != HealthStatusUnhealthy
 }
 
 // 健康状态
@@ -257,7 +661,8 @@ func (rb *RoundRobinBalancer) SelectConnection(connections []*EnhancedPooledConn
 	// 过滤健康的连接
 	healthy := make([]*EnhancedPooledConnection, 0, len(connections))
 	for _, conn := range connections {
-		if !conn.inUse && conn.valid && conn.healthStatus == HealthStatusHealthy {
+		inUse, valid, health := conn.getState()
+		if !inUse && valid && health == HealthStatusHealthy {
 			healthy = append(healthy, conn)
 		}
 	}
@@ -296,9 +701,11 @@ func (lcb *LeastConnectionsBalancer) SelectConnection(connections []*EnhancedPoo
 	minUsage := int64(^uint64(0) >> 1) // max int64
 
 	for _, conn := range connections {
-		if !conn.inUse && conn.valid && conn.healthStatus == HealthStatusHealthy {
-			if conn.usageCount < minUsage {
-				minUsage = conn.usageCount
+		inUse, valid, health := conn.getState()
+		if !inUse && valid && health == HealthStatusHealthy {
+			usageCount := conn.getUsageCount()
+			if usageCount < minUsage {
+				minUsage = usageCount
 				selected = conn
 			}
 		}
@@ -468,131 +875,52 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 	if p.debugMode {
 		ylog.Debugf("connection_pool", "getConnectionFromPool: total connections=%d, protocol=%s", len(pool.connections), pool.protocol)
 		for id, conn := range pool.connections {
-			ylog.Debugf("connection_pool", "  connection %s: inUse=%v, valid=%v, health=%v, usage=%d",
-				id, conn.inUse, conn.valid, conn.healthStatus, conn.usageCount)
+			state, health := conn.getStatus()
+			ylog.Debugf("connection_pool", "  connection %s: state=%s, health=%v, usage=%d",
+				id, state, health, conn.getUsageCount())
 		}
 	}
 
-	// 第一优先级：健康且不需要重建的连接
+	// 第一优先级：尝试获取健康连接
 	for _, conn := range pool.connections {
-		if !conn.inUse && conn.valid && conn.healthStatus == HealthStatusHealthy {
-			// 检查是否需要重建
-			if !p.shouldRebuildConnection(conn) {
-				// 实时健康检查
-				if err := p.defaultHealthCheck(conn.driver); err != nil {
-					ylog.Debugf("pool", "connection %s health check failed: %v", conn.id, err)
-					conn.valid = false
-					conn.healthStatus = HealthStatusUnhealthy
-					continue // 跳过不健康的连接
-				}
-				ylog.Debugf("connection_pool", "重用健康连接: id=%s, usage=%d", conn.id, conn.usageCount)
-				p.collector.IncrementConnectionsReused(pool.protocol)
-				return conn, nil
+		if conn.tryAcquire() {
+			// 快速健康检查（非阻塞，使用已有状态）
+			if !conn.isHealthy() {
+				conn.release()
+				continue
 			}
+
+			state, _ := conn.getStatus()
+			ylog.Debugf("connection_pool", "重用健康连接: id=%s, usage=%d, state=%s",
+				conn.id, conn.getUsageCount(), state)
+			p.collector.IncrementConnectionsReused(pool.protocol)
+			return conn, nil
 		}
 	}
 
-	// 第二优先级：需要重建的连接 → 立即替换
+	// 第二优先级：需要重建的连接 → 异步重建，先返回可用连接
 	for id, conn := range pool.connections {
-		if !conn.inUse && conn.valid {
-			// 检查是否需要重建，并且在这个过程中会原子性地标记连接为正在重建
-			if p.shouldRebuildConnection(conn) {
-				ylog.Debugf("connection_pool", "发现需要重建的连接: id=%s, usage=%d, age=%v",
-					conn.id, conn.usageCount, time.Since(conn.createdAt))
+		state, _ := conn.getStatus()
+		fmt.Printf("[REBUILD-DEBUG] getConnectionFromPool: 检查连接: id=%s, state=%s, available=%v\n",
+			conn.id, state, conn.isAvailable())
+		if conn.isAvailable() {
+			// 检查是否需要重建
+			shouldRebuild := p.shouldRebuildConnection(conn)
+			ylog.Debugf("connection_pool", "检查连接是否需要重建: id=%s, state=%s, available=%v, shouldRebuild=%v",
+				conn.id, state, conn.isAvailable(), shouldRebuild)
 
-				// 尝试创建新连接替代，最多重试3次
-				var newConn *EnhancedPooledConnection
-				var err error
-				for attempt := 0; attempt < 3; attempt++ {
-					newConn, err = p.createConnection(pool)
-					if err == nil {
-						break
-					}
-					// 重试前等待一段时间
-					if attempt < 2 { // 不在最后一次尝试后等待
-						waitTime := time.Duration(attempt+1) * time.Second
-						ylog.Debugf("connection_pool", "重建连接第%d次尝试失败，%v后重试: %v", attempt+1, waitTime, err)
-						time.Sleep(waitTime)
-					}
-				}
-				if err != nil {
-					// 创建失败，清除重建标记并降级使用旧连接
-					atomic.StoreInt32(&conn.markedForRebuild, 0)
-					ylog.Warnf("connection_pool", "创建新连接失败，降级使用旧连接: %v", err)
-					conn.healthStatus = HealthStatusDegraded
-					p.collector.IncrementConnectionsReused(pool.protocol)
-					// 记录重建错误
-					atomic.AddInt64(&pool.stats.RebuildErrors, 1)
-					return conn, nil
-				}
+			if shouldRebuild {
+				ylog.Infof("connection_pool", "发现需要重建的连接: id=%s, usage=%d, age=%v, state=%s",
+					conn.id, conn.getUsageCount(), time.Since(conn.createdAt), state)
+				fmt.Printf("[REBUILD-DEBUG] getConnectionFromPool: 发现需要重建的连接: id=%s, usage=%d, state=%s\n",
+					conn.id, conn.getUsageCount(), state)
 
-				// 设置重建时间
-				newConn.lastRebuiltAt = time.Now()
+				// 异步重建，不阻塞当前请求
+				go p.asyncRebuildConnection(pool, id, conn)
 
-				// 执行替换
-				delete(pool.connections, id)
-				pool.connections[newConn.id] = newConn
-
-				// 确保新连接不会被标记为正在重建（createConnection已经初始化为0，这里是额外保障）
-				atomic.StoreInt32(&newConn.markedForRebuild, 0)
-				// 更新统计
-				atomic.AddInt64(&pool.stats.CreatedConnections, 1)
-				atomic.AddInt64(&pool.stats.RebuiltConnections, 1)
-				// IdleConnections不变（替换，不是新增）
-				p.collector.IncrementConnectionsCreated(pool.protocol)
-
-				ylog.Infof("connection_pool", "立即替换连接: %s→%s, usage=%d",
-					conn.id, newConn.id, conn.usageCount)
-
-				// 发送重建事件
-				p.sendEvent(EventConnectionRebuilt, conn.protocol, map[string]interface{}{
-					"old_connection_id": conn.id,
-					"new_connection_id": newConn.id,
-					"old_usage_count":   atomic.LoadInt64(&conn.usageCount),
-					"old_age":           time.Since(conn.createdAt).String(),
-					"reason":            p.getRebuildReason(conn),
-				})
-
-				// 异步关闭旧连接，带超时保护
-				go func(oldConn *EnhancedPooledConnection) {
-					defer func() {
-						if r := recover(); r != nil {
-							ylog.Errorf("connection_pool", "关闭连接时发生panic: %v", r)
-						}
-					}()
-
-					// 创建带超时的上下文
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-
-					// 直接执行关闭操作，避免嵌套goroutine
-					errChan := make(chan error, 1)
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								ylog.Errorf("connection_pool", "关闭驱动时发生panic: %v", r)
-								errChan <- fmt.Errorf("panic: %v", r)
-							}
-						}()
-						errChan <- oldConn.driver.Close()
-					}()
-
-					// 等待关闭完成或超时
-					select {
-					case err := <-errChan:
-						if err != nil {
-							ylog.Warnf("connection_pool", "关闭旧连接失败: %v", err)
-						} else {
-							ylog.Debugf("connection_pool", "旧连接成功关闭: %s", oldConn.id)
-						}
-					case <-ctx.Done():
-						ylog.Warnf("connection_pool", "关闭旧连接超时: %s", oldConn.id)
-					}
-
-					atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
-				}(conn)
-
-				return newConn, nil
+				// 注意：我们不获取这个需要重建的连接
+				// 继续查找其他可用连接
+				continue
 			}
 		}
 	}
@@ -610,14 +938,18 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 		atomic.AddInt64(&pool.stats.IdleConnections, 1)
 		p.collector.IncrementConnectionsCreated(pool.protocol)
 
-		return newConn, nil
+		// 尝试获取新创建连接
+		if newConn.tryAcquire() {
+			return newConn, nil
+		}
+		// 如果获取失败（不应该发生），继续尝试其他选项
 	}
 
 	// 第四优先级：返回任何可用连接（降级）
 	for _, conn := range pool.connections {
-		if !conn.inUse && conn.valid {
-			ylog.Debugf("connection_pool", "降级使用连接: id=%s, health=%v", conn.id, conn.healthStatus)
-			conn.healthStatus = HealthStatusDegraded
+		if conn.tryAcquire() {
+			ylog.Debugf("connection_pool", "降级使用连接: id=%s", conn.id)
+			conn.setHealth(HealthStatusDegraded, true)
 			p.collector.IncrementConnectionsReused(pool.protocol)
 			return conn, nil
 		}
@@ -642,7 +974,7 @@ func (p *EnhancedConnectionPool) createConnection(pool *EnhancedDriverPool) (*En
 		lastUsed:         time.Now(),
 		lastRebuiltAt:    time.Time{}, // 初始化为零值，表示从未重建
 		markedForRebuild: 0,           // 新连接不应该标记为正在重建
-		valid:            true,
+		state:            StateIdle,   // 新连接初始状态为空闲
 		healthStatus:     HealthStatusUnknown,
 		labels:           make(map[string]string),
 		metadata:         make(map[string]interface{}),
@@ -659,6 +991,120 @@ func (p *EnhancedConnectionPool) createConnection(pool *EnhancedDriverPool) (*En
 	return conn, nil
 }
 
+// asyncRebuildConnection 异步重建连接
+func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool, oldID string, oldConn *EnhancedPooledConnection) {
+	defer func() {
+		if r := recover(); r != nil {
+			ylog.Errorf("connection_pool", "async rebuild panic: %v", r)
+		}
+	}()
+
+	// 检查旧连接是否还在使用
+	// 由于我们在getConnectionFromPool中不获取需要重建的连接，这里应该不在使用
+	// 但为了安全，仍然检查
+	if oldConn.isInUse() {
+		ylog.Warnf("connection_pool", "连接 %s 正在使用，但被标记为需要重建。等待释放...", oldID)
+		// 不清除标记，稍后重试
+		// 可以在这里实现重试逻辑，但为了简单，先返回
+		return
+	}
+
+	// 开始重建连接（设置状态为重建中）
+	if !oldConn.beginRebuild() {
+		ylog.Debugf("connection_pool", "无法开始重建: connection %s state=%s", oldID, oldConn.state)
+		oldConn.clearRebuildMark()
+		return
+	}
+
+	// 尝试创建新连接，最多重试3次
+	var newConn *EnhancedPooledConnection
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		newConn, err = p.createConnection(pool)
+		if err == nil {
+			break
+		}
+
+		if attempt < 2 {
+			waitTime := time.Duration(attempt+1) * time.Second
+			ylog.Debugf("connection_pool", "重建连接第%d次尝试失败，%v后重试: %v", attempt+1, waitTime, err)
+			time.Sleep(waitTime)
+		}
+	}
+
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	if err != nil {
+		ylog.Warnf("connection_pool", "创建新连接失败，保持旧连接: %v", err)
+		// 重建失败，完成重建状态转换
+		oldConn.completeRebuild(false)
+		oldConn.clearRebuildMark()
+		atomic.AddInt64(&pool.stats.RebuildErrors, 1)
+		return
+	}
+
+	// 设置重建时间
+	newConn.lastRebuiltAt = time.Now()
+
+	// 再次检查旧连接是否还在池中且未被使用
+	if _, exists := pool.connections[oldID]; exists {
+		if !oldConn.isInUse() {
+			// 执行替换
+			delete(pool.connections, oldID)
+			pool.connections[newConn.id] = newConn
+
+			// 更新统计
+			atomic.AddInt64(&pool.stats.CreatedConnections, 1)
+			atomic.AddInt64(&pool.stats.RebuiltConnections, 1)
+			p.collector.IncrementConnectionsCreated(pool.protocol)
+
+			ylog.Infof("connection_pool", "异步替换连接: %s→%s", oldID, newConn.id)
+
+			// 发送重建事件
+			p.sendEvent(EventConnectionRebuilt, oldConn.protocol, map[string]interface{}{
+				"old_connection_id": oldID,
+				"new_connection_id": newConn.id,
+				"old_usage_count":   oldConn.getUsageCount(),
+				"old_age":           time.Since(oldConn.createdAt).String(),
+				"reason":            p.getRebuildReason(oldConn),
+				"old_state":         oldConn.state.String(),
+				"new_state":         newConn.state.String(),
+			})
+
+			// 完成旧连接的重建状态转换（标记为成功）
+			oldConn.completeRebuild(true)
+			// 开始关闭旧连接
+			oldConn.beginClose()
+
+			// 异步关闭旧连接
+			go func() {
+				defer func() {
+					// 完成关闭状态转换
+					oldConn.completeClose()
+				}()
+				oldConn.driver.Close()
+				atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
+			}()
+		} else {
+			// 连接正在使用，不替换
+			ylog.Debugf("connection_pool", "连接 %s 现在正在使用，取消重建", oldID)
+			// 重建失败，完成重建状态转换
+			oldConn.completeRebuild(false)
+			oldConn.clearRebuildMark()
+			// 关闭新创建但未使用的连接
+			newConn.driver.Close()
+		}
+	} else {
+		// 旧连接已不在池中
+		ylog.Debugf("connection_pool", "连接 %s 已不在池中，取消重建", oldID)
+		// 重建失败，完成重建状态转换
+		oldConn.completeRebuild(false)
+		// 关闭新创建但未使用的连接
+		newConn.driver.Close()
+	}
+}
+
 // Release 释放连接
 func (p *EnhancedConnectionPool) Release(driver ProtocolDriver) error {
 	monitored, ok := driver.(*MonitoredDriver)
@@ -672,16 +1118,16 @@ func (p *EnhancedConnectionPool) Release(driver ProtocolDriver) error {
 	}
 
 	pool.mu.Lock()
+	defer pool.mu.Unlock()
 
 	conn := monitored.conn
 
-	// 正常放回连接池
-	conn.inUse = false
-	conn.lastUsed = time.Now()
+	// 释放连接
+	conn.release()
 
 	// 注意：usageCount已经在activateConnection中增加，这里不再重复增加
 	// 只记录当前使用次数用于调试
-	currentUsageCount := atomic.LoadInt64(&conn.usageCount)
+	currentUsageCount := conn.getUsageCount()
 	ylog.Debugf("connection_pool", "连接释放: id=%s, 当前使用次数=%d, 重建阈值=%d",
 		conn.id, currentUsageCount, p.config.RebuildMaxUsageCount)
 
@@ -698,7 +1144,6 @@ func (p *EnhancedConnectionPool) Release(driver ProtocolDriver) error {
 		p.recordConnectionTrace(conn, "released")
 	}
 
-	pool.mu.Unlock()
 	return nil
 }
 
@@ -882,7 +1327,7 @@ func (p *EnhancedConnectionPool) checkIdleConnectionsHealth() {
 		now := time.Now()
 
 		for _, conn := range pool.connections {
-			if !conn.inUse && now.Sub(conn.lastHealthCheck) > p.healthCheckTime/2 {
+			if !conn.isInUse() && now.Sub(conn.lastHealthCheck) > p.healthCheckTime/2 {
 				idleConnections = append(idleConnections, conn)
 			}
 		}
@@ -922,7 +1367,7 @@ func (p *EnhancedConnectionPool) performHealthChecks() {
 		pool.mu.RLock()
 		connections := make([]*EnhancedPooledConnection, 0, len(pool.connections))
 		for _, conn := range pool.connections {
-			if !conn.inUse {
+			if !conn.isInUse() {
 				connections = append(connections, conn)
 			}
 		}
@@ -941,16 +1386,27 @@ func (p *EnhancedConnectionPool) performHealthChecks() {
 
 // checkConnectionHealth 检查单个连接健康状态
 func (p *EnhancedConnectionPool) checkConnectionHealth(proto Protocol, conn *EnhancedPooledConnection) {
+	// 检查连接是否正在使用，跳过正在使用的连接
+	if conn.isInUse() {
+		return
+	}
+
+	// 开始健康检查（设置状态为检查中）
+	if !conn.beginHealthCheck() {
+		state, _ := conn.getStatus()
+		ylog.Debugf("pool", "无法开始健康检查: connection %s state=%s", conn.id, state)
+		return
+	}
+
 	start := time.Now()
 	err := p.defaultHealthCheck(conn.driver)
 	duration := time.Since(start)
 
-	conn.lastHealthCheck = time.Now()
+	success := err == nil
+	conn.recordHealthCheck(success, err)
 
-	if err != nil {
-		conn.consecutiveFailures++
-
-		// 错误分类
+	// 记录指标和事件
+	if !success {
 		errorType := classifyHealthCheckError(err)
 
 		// 根据错误类型记录不同级别的日志
@@ -961,42 +1417,23 @@ func (p *EnhancedConnectionPool) checkConnectionHealth(proto Protocol, conn *Enh
 			ylog.Warnf("pool", "connection %s network error: %v", conn.id, err)
 		case HealthErrorAuth:
 			ylog.Errorf("pool", "connection %s authentication error: %v", conn.id, err)
-			// 认证错误立即标记为无效，因为需要重新认证
-			conn.valid = false
-			conn.healthStatus = HealthStatusUnhealthy
 		case HealthErrorCommand:
 			ylog.Warnf("pool", "connection %s command error: %v", conn.id, err)
 		case HealthErrorProtocol:
 			ylog.Errorf("pool", "connection %s protocol error: %v", conn.id, err)
-			conn.valid = false
-			conn.healthStatus = HealthStatusUnhealthy
 		default:
 			ylog.Warnf("pool", "connection %s health check failed: %v", conn.id, err)
 		}
 
-		// 非认证/协议错误，检查连续失败次数
-		if errorType != HealthErrorAuth && errorType != HealthErrorProtocol {
-			if conn.consecutiveFailures >= 3 {
-				conn.healthStatus = HealthStatusUnhealthy
-				conn.valid = false
-				ylog.Warnf("pool", "connection %s marked as invalid after %d failures", conn.id, conn.consecutiveFailures)
-			} else {
-				conn.healthStatus = HealthStatusDegraded
-				ylog.Debugf("pool", "connection %s degraded (%d/%d failures)", conn.id, conn.consecutiveFailures, 3)
-			}
-		}
-
 		p.collector.IncrementHealthCheckFailed(proto)
+		state, _ := conn.getStatus()
 		p.sendEvent(EventHealthCheckFailed, proto, map[string]interface{}{
 			"connection_id": conn.id,
 			"error":         err.Error(),
 			"error_type":    errorType.String(),
-			"failures":      conn.consecutiveFailures,
+			"state":         state.String(),
 		})
 	} else {
-		conn.consecutiveFailures = 0
-		conn.healthStatus = HealthStatusHealthy
-		conn.valid = true
 		p.collector.IncrementHealthCheckSuccess(proto)
 	}
 
@@ -1085,15 +1522,22 @@ func (p *EnhancedConnectionPool) cleanupConnections() {
 		pool.mu.Lock()
 
 		toRemove := make([]string, 0)
+		toRemoveConns := make([]*EnhancedPooledConnection, 0)
+
 		for id, conn := range pool.connections {
 			if p.shouldCleanupConnection(conn, now) {
-				toRemove = append(toRemove, id)
+				// 尝试原子地获取连接，如果成功获取则标记为清理
+				// 这样可以防止在清理过程中连接被其他goroutine获取
+				if conn.tryAcquire() {
+					toRemove = append(toRemove, id)
+					toRemoveConns = append(toRemoveConns, conn)
+				}
 			}
 		}
 
 		// 移除需要清理的连接
-		for _, id := range toRemove {
-			conn := pool.connections[id]
+		for i, id := range toRemove {
+			conn := toRemoveConns[i]
 			delete(pool.connections, id)
 
 			go func(c *EnhancedPooledConnection) {
@@ -1116,28 +1560,43 @@ func (p *EnhancedConnectionPool) cleanupConnections() {
 
 // shouldCleanupConnection 判断是否应该清理连接
 func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledConnection, now time.Time) bool {
-	if conn.inUse {
+	// 使用线程安全的方法获取连接状态
+	inUse, valid, health := conn.getState()
+
+	// 连接正在使用，不应该清理
+	if inUse {
 		return false
 	}
 
 	// 检查空闲时间
-	if now.Sub(conn.lastUsed) > p.idleTimeout {
+	conn.mu.RLock()
+	lastUsed := conn.lastUsed
+	createdAt := conn.createdAt
+	usageCount := conn.usageCount
+	conn.mu.RUnlock()
+
+	if now.Sub(lastUsed) > p.idleTimeout {
 		return true
 	}
 
 	// 检查连接生命周期
 	lifecycle := p.pools[conn.protocol].connectionLifecycle
-	if now.Sub(conn.createdAt) > lifecycle.maxLifetime {
+	if now.Sub(createdAt) > lifecycle.maxLifetime {
 		return true
 	}
 
 	// 检查使用次数
-	if conn.usageCount > lifecycle.maxUsageCount {
+	if usageCount > lifecycle.maxUsageCount {
 		return true
 	}
 
 	// 检查健康状态
-	if conn.healthStatus == HealthStatusUnhealthy {
+	if health == HealthStatusUnhealthy {
+		return true
+	}
+
+	// 检查连接有效性
+	if !valid {
 		return true
 	}
 
@@ -1147,6 +1606,7 @@ func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledCon
 // shouldRebuildConnection 判断连接是否需要智能重建
 func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledConnection) bool {
 	if !p.config.SmartRebuildEnabled {
+		fmt.Printf("[REBUILD-DEBUG] shouldRebuildConnection: SmartRebuildEnabled=false\n")
 		return false
 	}
 
@@ -1154,11 +1614,16 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 
 	// 避免频繁重建：检查最小重建间隔
 	// 使用lastRebuiltAt（如果存在）或createdAt作为"当前版本开始时间"
+	conn.mu.RLock()
+	lastRebuiltAt := conn.lastRebuiltAt
+	createdAt := conn.createdAt
+	conn.mu.RUnlock()
+
 	var lastRebuildOrCreate time.Time
-	if !conn.lastRebuiltAt.IsZero() {
-		lastRebuildOrCreate = conn.lastRebuiltAt
+	if !lastRebuiltAt.IsZero() {
+		lastRebuildOrCreate = lastRebuiltAt
 	} else {
-		lastRebuildOrCreate = conn.createdAt
+		lastRebuildOrCreate = createdAt
 	}
 
 	if now.Sub(lastRebuildOrCreate) < p.config.RebuildMinInterval {
@@ -1167,33 +1632,46 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		return false
 	}
 
-	// 检查连接是否正在使用，避免重建正在使用的连接
-	if conn.inUse {
-		ylog.Debugf("connection_pool", "连接正在使用，跳过重建: id=%s", conn.id)
+	// 检查连接状态，避免重建正在使用或无效的连接
+	state, _ := conn.getStatus()
+	if conn.isInUse() || state == StateRebuilding || state == StateClosing || state == StateClosed {
+		ylog.Debugf("connection_pool", "连接状态不适合重建: id=%s, state=%s", conn.id, state)
+		return false
+	}
+
+	// 检查健康状态
+	if !conn.isHealthy() {
+		ylog.Debugf("connection_pool", "连接不健康，跳过重建: id=%s", conn.id)
 		return false
 	}
 
 	// 检查是否已经标记为正在重建，防止并发重建
 	// 使用原子操作确保只有一个goroutine能将连接标记为重建
-	if atomic.LoadInt32(&conn.markedForRebuild) != 0 {
+	if conn.isMarkedForRebuild() {
 		ylog.Debugf("connection_pool", "连接已标记为正在重建: id=%s", conn.id)
 		return false
 	}
 
 	// 调试：打印连接详细信息
-	usageCount := atomic.LoadInt64(&conn.usageCount)
-	ylog.Debugf("connection_pool", "检查连接重建条件: id=%s, inUse=%v, valid=%v, health=%v, usage=%d, createdAt=%v, lastRebuiltAt=%v",
-		conn.id, conn.inUse, conn.valid, conn.healthStatus, usageCount, conn.createdAt, conn.lastRebuiltAt)
+	usageCount := conn.getUsageCount()
+	markedForRebuild := conn.isMarkedForRebuild()
+	state, health := conn.getStatus()
+	ylog.Debugf("connection_pool", "检查连接重建条件: id=%s, state=%s, health=%v, usage=%d/%d, createdAt=%v, lastRebuiltAt=%v, strategy=%s, marked=%v, minInterval=%v, actualInterval=%v",
+		conn.id, state, health, usageCount, p.config.RebuildMaxUsageCount, createdAt, lastRebuiltAt, p.config.RebuildStrategy, markedForRebuild, p.config.RebuildMinInterval, now.Sub(lastRebuildOrCreate))
+
+	// 直接输出到标准输出，确保调试信息可见
+	fmt.Printf("[REBUILD-DEBUG] shouldRebuildConnection: id=%s, state=%s, health=%v, usage=%d/%d, strategy=%s, marked=%v, shouldRebuild=%v\n",
+		conn.id, state, health, usageCount, p.config.RebuildMaxUsageCount, p.config.RebuildStrategy, markedForRebuild, usageCount >= p.config.RebuildMaxUsageCount)
 
 	// 根据策略判断
 	switch p.config.RebuildStrategy {
 	case "usage":
 		// 仅基于使用次数
-		usageCount := atomic.LoadInt64(&conn.usageCount)
+		usageCount := conn.getUsageCount()
 		shouldRebuild := usageCount >= p.config.RebuildMaxUsageCount
 		if shouldRebuild {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
-			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+			if conn.markForRebuild() {
 				ylog.Debugf("connection_pool", "usage策略检查: id=%s, usage=%d, max=%d, rebuild=%v (已标记)",
 					conn.id, usageCount, p.config.RebuildMaxUsageCount, shouldRebuild)
 				return true
@@ -1213,7 +1691,7 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		shouldRebuild := age >= p.config.RebuildMaxAge
 		if shouldRebuild {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
-			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+			if conn.markForRebuild() {
 				ylog.Debugf("connection_pool", "age策略检查: id=%s, age=%v, max=%v, rebuild=%v (已标记)",
 					conn.id, age, p.config.RebuildMaxAge, shouldRebuild)
 				return true
@@ -1390,7 +1868,7 @@ func (p *EnhancedConnectionPool) updateMetrics() {
 		var active, idle, total int64
 		for _, conn := range pool.connections {
 			total++
-			if conn.inUse {
+			if conn.isInUse() {
 				active++
 			} else {
 				idle++
@@ -1647,33 +2125,130 @@ func (p *EnhancedConnectionPool) getRebuildReason(conn *EnhancedPooledConnection
 	return ""
 }
 
+// ShutdownGraceful 优雅关闭连接池
+func (p *EnhancedConnectionPool) ShutdownGraceful(timeout time.Duration) error {
+	// 1. 标记为正在关闭，停止接受新请求
+	atomic.StoreInt32(&p.isShuttingDown, 1)
+
+	// 2. 等待正在使用的连接完成（如果配置了超时）
+	if timeout > 0 {
+		deadline := time.Now().Add(timeout)
+		for p.getActiveConnectionCount() > 0 && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// 检查是否还有活动连接
+		activeCount := p.getActiveConnectionCount()
+		if activeCount > 0 {
+			ylog.Warnf("connection_pool", "优雅关闭超时，仍有 %d 个活动连接", activeCount)
+		}
+	}
+
+	// 3. 执行正常关闭（Close方法会发送关闭事件）
+	return p.Close()
+}
+
+// getActiveConnectionCount 获取活动连接数量
+func (p *EnhancedConnectionPool) getActiveConnectionCount() int {
+	total := 0
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	for _, pool := range p.pools {
+		pool.mu.RLock()
+		for _, conn := range pool.connections {
+			inUse, _, _ := conn.getState()
+			if inUse {
+				total++
+			}
+		}
+		pool.mu.RUnlock()
+	}
+
+	return total
+}
+
 // Close 关闭连接池
 func (p *EnhancedConnectionPool) Close() error {
+	// 1. 标记为正在关闭，停止接受新请求
 	atomic.StoreInt32(&p.isShuttingDown, 1)
+
+	// 2. 取消上下文，通知所有后台任务停止
 	p.cancel()
 
-	// 发送关闭事件（此时事件通道仍然打开）
+	// 3. 发送关闭事件（此时事件通道仍然打开）
 	p.sendEvent(EventPoolShutdown, "", nil)
 
-	// 关闭事件通道，让事件处理任务可以退出
+	// 4. 关闭事件通道，让事件处理任务可以退出
 	close(p.eventChan)
 
-	// 等待后台任务退出
+	// 5. 等待后台任务退出
 	p.wg.Wait()
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	// 6. 关闭所有连接
 	var errors []error
 	for proto, pool := range p.pools {
 		pool.mu.Lock()
-		for _, conn := range pool.connections {
-			if err := conn.driver.Close(); err != nil {
-				errors = append(errors, fmt.Errorf("protocol %s: %w", proto, err))
+
+		// 收集需要关闭的连接
+		toClose := make([]*EnhancedPooledConnection, 0, len(pool.connections))
+		for id, conn := range pool.connections {
+			// 检查连接是否正在使用
+			inUse, _, _ := conn.getState()
+			if inUse {
+				ylog.Warnf("connection_pool", "关闭连接池时发现正在使用的连接: id=%s, protocol=%s", id, proto)
+				// 尝试释放连接
+				conn.release()
 			}
+			toClose = append(toClose, conn)
 		}
+
+		// 清空连接池
 		pool.connections = make(map[string]*EnhancedPooledConnection)
 		pool.mu.Unlock()
+
+		// 并发关闭连接，但限制并发数
+		const maxConcurrentClose = 5
+		sem := make(chan struct{}, maxConcurrentClose)
+		var closeWg sync.WaitGroup
+		var closeErrorsMu sync.Mutex
+
+		for _, conn := range toClose {
+			sem <- struct{}{}
+			closeWg.Add(1)
+
+			go func(c *EnhancedPooledConnection) {
+				defer func() {
+					<-sem
+					closeWg.Done()
+
+					// 恢复panic，避免整个程序崩溃
+					if r := recover(); r != nil {
+						ylog.Errorf("connection_pool", "关闭连接时发生panic: %v", r)
+						closeErrorsMu.Lock()
+						errors = append(errors, fmt.Errorf("protocol %s, connection %s: panic during close: %v", proto, c.id, r))
+						closeErrorsMu.Unlock()
+					}
+				}()
+
+				// 设置连接为无效状态
+				c.setHealth(HealthStatusUnhealthy, false)
+
+				// 关闭底层驱动
+				if err := c.driver.Close(); err != nil {
+					closeErrorsMu.Lock()
+					errors = append(errors, fmt.Errorf("protocol %s, connection %s: %w", proto, c.id, err))
+					closeErrorsMu.Unlock()
+				}
+
+				// 更新统计
+				atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
+				p.collector.IncrementConnectionsDestroyed(proto)
+			}(conn)
+		}
+
+		// 等待所有连接关闭完成
+		closeWg.Wait()
 	}
 
 	if len(errors) > 0 {
@@ -1773,30 +2348,17 @@ func (md *MonitoredDriver) Close() error {
 }
 
 // activateConnection 统一激活连接并返回监控包装器
+// 注意：连接已经在getConnectionFromPool中通过tryAcquire()获取
 func (p *EnhancedConnectionPool) activateConnection(conn *EnhancedPooledConnection) ProtocolDriver {
-	conn.inUse = true
-	conn.lastUsed = time.Now()
-	atomic.AddInt64(&conn.usageCount, 1)
+	// 连接已经在tryAcquire()中标记为inUse=true并更新了lastUsed和usageCount
+	// 这里只需要更新池统计和创建监控包装器
 
-	// 更新统计信息
 	pool := p.getDriverPool(conn.protocol)
 	if pool != nil {
 		atomic.AddInt64(&pool.stats.ActiveConnections, 1)
+		atomic.AddInt64(&pool.stats.IdleConnections, -1)
 		atomic.AddInt64(&pool.stats.ReuseCount, 1)
 	}
-
-	// 检查连接是否有效
-	if !conn.valid || conn.healthStatus == HealthStatusUnhealthy {
-		// 连接无效，返回错误
-		return nil
-	}
-
-	// 标记连接为正在使用
-	conn.inUse = true
-
-	// 更新统计信息
-	atomic.AddInt64(&pool.stats.ActiveConnections, 1)
-	atomic.AddInt64(&pool.stats.IdleConnections, -1)
 
 	// 记录调试信息
 	if p.debugMode {
