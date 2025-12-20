@@ -217,7 +217,7 @@ func (conn *EnhancedPooledConnection) tryAcquire() bool {
 		return false
 	}
 
-	conn.lastUsed = time.Now()
+	conn.setLastUsed(time.Now())
 	atomic.AddInt64(&conn.usageCount, 1)
 	return true
 }
@@ -234,7 +234,7 @@ func (conn *EnhancedPooledConnection) release() {
 			fmt.Printf("[STATE-WARN] 状态转换失败: id=%s, from=%s, to=%s\n",
 				conn.id, conn.state, StateIdle)
 		}
-		conn.lastUsed = time.Now()
+		conn.setLastUsed(time.Now())
 	} else {
 		// 记录警告，但继续执行
 		fmt.Printf("[STATE-WARN] 尝试释放非获取状态的连接: id=%s, state=%s\n", conn.id, conn.state)
@@ -327,6 +327,41 @@ func (conn *EnhancedPooledConnection) getUsageCount() int64 {
 	return atomic.LoadInt64(&conn.usageCount)
 }
 
+// getLastUsed 获取最后使用时间
+func (conn *EnhancedPooledConnection) getLastUsed() time.Time {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	return conn.lastUsed
+}
+
+// getCreatedAt 获取创建时间
+func (conn *EnhancedPooledConnection) getCreatedAt() time.Time {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	return conn.createdAt
+}
+
+// setLastRebuiltAt 设置最后重建时间
+func (conn *EnhancedPooledConnection) setLastRebuiltAt(t time.Time) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	conn.lastRebuiltAt = t
+}
+
+// getLastRebuiltAt 获取最后重建时间
+func (conn *EnhancedPooledConnection) getLastRebuiltAt() time.Time {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	return conn.lastRebuiltAt
+}
+
+// setLastUsed 设置最后使用时间
+func (conn *EnhancedPooledConnection) setLastUsed(t time.Time) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	conn.lastUsed = t
+}
+
 // recordRequest 记录请求指标
 func (conn *EnhancedPooledConnection) recordRequest(success bool, duration time.Duration) {
 	atomic.AddInt64(&conn.totalRequests, 1)
@@ -370,7 +405,7 @@ func (conn *EnhancedPooledConnection) validateState() error {
 		return fmt.Errorf("connection %s is closed but healthy", conn.id)
 	}
 
-	if !conn.lastRebuiltAt.IsZero() && conn.lastRebuiltAt.Before(conn.createdAt) {
+	if !conn.getLastRebuiltAt().IsZero() && conn.getLastRebuiltAt().Before(conn.getCreatedAt()) {
 		return fmt.Errorf("connection %s lastRebuiltAt is before createdAt", conn.id)
 	}
 
@@ -911,7 +946,7 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 
 			if shouldRebuild {
 				ylog.Infof("connection_pool", "发现需要重建的连接: id=%s, usage=%d, age=%v, state=%s",
-					conn.id, conn.getUsageCount(), time.Since(conn.createdAt), state)
+					conn.id, conn.getUsageCount(), time.Since(conn.getCreatedAt()), state)
 				fmt.Printf("[REBUILD-DEBUG] getConnectionFromPool: 发现需要重建的连接: id=%s, usage=%d, state=%s\n",
 					conn.id, conn.getUsageCount(), state)
 
@@ -1045,7 +1080,7 @@ func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool
 	}
 
 	// 设置重建时间
-	newConn.lastRebuiltAt = time.Now()
+	newConn.setLastRebuiltAt(time.Now())
 
 	// 再次检查旧连接是否还在池中且未被使用
 	if _, exists := pool.connections[oldID]; exists {
@@ -1569,11 +1604,9 @@ func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledCon
 	}
 
 	// 检查空闲时间
-	conn.mu.RLock()
-	lastUsed := conn.lastUsed
-	createdAt := conn.createdAt
-	usageCount := conn.usageCount
-	conn.mu.RUnlock()
+	lastUsed := conn.getLastUsed()
+	createdAt := conn.getCreatedAt()
+	usageCount := conn.getUsageCount()
 
 	if now.Sub(lastUsed) > p.idleTimeout {
 		return true
@@ -1614,10 +1647,8 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 
 	// 避免频繁重建：检查最小重建间隔
 	// 使用lastRebuiltAt（如果存在）或createdAt作为"当前版本开始时间"
-	conn.mu.RLock()
-	lastRebuiltAt := conn.lastRebuiltAt
-	createdAt := conn.createdAt
-	conn.mu.RUnlock()
+	lastRebuiltAt := conn.getLastRebuiltAt()
+	createdAt := conn.getCreatedAt()
 
 	var lastRebuildOrCreate time.Time
 	if !lastRebuiltAt.IsZero() {
@@ -1687,7 +1718,7 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 
 	case "age":
 		// 仅基于连接年龄
-		age := now.Sub(conn.createdAt)
+		age := now.Sub(conn.getCreatedAt())
 		shouldRebuild := age >= p.config.RebuildMaxAge
 		if shouldRebuild {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
@@ -1744,7 +1775,7 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 				conn.id, usageCount, p.config.RebuildMaxUsageCount)
 		}
 
-		age := now.Sub(conn.createdAt)
+		age := now.Sub(conn.getCreatedAt())
 		if age >= p.config.RebuildMaxAge {
 			conditions++
 			ylog.Debugf("connection_pool", "all策略: id=%s, age条件满足: %v >= %v",
@@ -1798,7 +1829,7 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 			}
 		}
 
-		age := now.Sub(conn.createdAt)
+		age := now.Sub(conn.getCreatedAt())
 		if age >= p.config.RebuildMaxAge {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
 			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
@@ -2086,7 +2117,7 @@ func (p *EnhancedConnectionPool) getRebuildReason(conn *EnhancedPooledConnection
 		return fmt.Sprintf("usage_exceeded(%d>=%d)", usageCount, p.config.RebuildMaxUsageCount)
 	}
 
-	age := now.Sub(conn.createdAt)
+	age := now.Sub(conn.getCreatedAt())
 	if age >= p.config.RebuildMaxAge {
 		return fmt.Sprintf("age_exceeded(%v>=%v)", age, p.config.RebuildMaxAge)
 	}
