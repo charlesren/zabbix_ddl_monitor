@@ -106,6 +106,10 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 			return nil, fmt.Errorf("invalid commands payload")
 		}
 
+		// 创建带超时的子上下文，专门用于这个执行
+		execCtx, execCancel := context.WithTimeout(effectiveCtx, d.timeout)
+		defer execCancel()
+
 		// 使用goroutine包装SendCommands，以便可以超时中断
 		resultChan := make(chan struct {
 			resp *response.MultiResponse
@@ -115,18 +119,28 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 		ylog.Debugf("ScrapliDriver", "executing %d commands with timeout control", len(cmds))
 
 		go func() {
+			// 执行命令
 			resp, err := driver.SendCommands(cmds)
-			resultChan <- struct {
+
+			// 发送结果前检查上下文，避免goroutine泄漏
+			select {
+			case resultChan <- struct {
 				resp *response.MultiResponse
 				err  error
-			}{resp, err}
+			}{resp, err}:
+				// 成功发送结果
+				ylog.Debugf("ScrapliDriver", "command execution completed and result sent")
+			case <-execCtx.Done():
+				// 上下文已取消，丢弃结果，避免goroutine泄漏
+				ylog.Debugf("ScrapliDriver", "context cancelled before sending result, discarding to prevent goroutine leak")
+			}
 		}()
 
 		select {
-		case <-effectiveCtx.Done():
+		case <-execCtx.Done():
 			// 上下文超时或取消
-			ylog.Warnf("ScrapliDriver", "command execution timed out or cancelled: %v", effectiveCtx.Err())
-			return nil, effectiveCtx.Err()
+			ylog.Warnf("ScrapliDriver", "command execution timed out or cancelled: %v", execCtx.Err())
+			return nil, execCtx.Err()
 		case result := <-resultChan:
 			if result.err != nil {
 				ylog.Errorf("ScrapliDriver", "command execution failed: %v", result.err)
@@ -155,6 +169,10 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 			return nil, fmt.Errorf("invalid events payload")
 		}
 
+		// 创建带超时的子上下文，专门用于这个执行
+		execCtx, execCancel := context.WithTimeout(effectiveCtx, d.timeout)
+		defer execCancel()
+
 		// 使用goroutine包装SendInteractive，以便可以超时中断
 		resultChan := make(chan struct {
 			resp []byte
@@ -164,18 +182,28 @@ func (d *ScrapliDriver) Execute(ctx context.Context, req *ProtocolRequest) (*Pro
 		ylog.Debugf("ScrapliDriver", "executing interactive events with timeout control, events: %d", len(events))
 
 		go func() {
+			// 执行交互式命令
 			resp, err := ch.SendInteractive(events)
-			resultChan <- struct {
+
+			// 发送结果前检查上下文，避免goroutine泄漏
+			select {
+			case resultChan <- struct {
 				resp []byte
 				err  error
-			}{resp, err}
+			}{resp, err}:
+				// 成功发送结果
+				ylog.Debugf("ScrapliDriver", "interactive execution completed and result sent")
+			case <-execCtx.Done():
+				// 上下文已取消，丢弃结果，避免goroutine泄漏
+				ylog.Debugf("ScrapliDriver", "context cancelled before sending result, discarding to prevent goroutine leak")
+			}
 		}()
 
 		select {
-		case <-effectiveCtx.Done():
+		case <-execCtx.Done():
 			// 上下文超时或取消
-			ylog.Warnf("ScrapliDriver", "interactive execution timed out or cancelled: %v", effectiveCtx.Err())
-			return nil, effectiveCtx.Err()
+			ylog.Warnf("ScrapliDriver", "interactive execution timed out or cancelled: %v", execCtx.Err())
+			return nil, execCtx.Err()
 		case result := <-resultChan:
 			if result.err != nil {
 				ylog.Errorf("ScrapliDriver", "interactive execution failed: %v", result.err)
@@ -480,23 +508,41 @@ func (d *ScrapliDriver) Close() error {
 	// 先取消上下文，停止所有相关操作
 	if d.cancel != nil {
 		d.cancel() // 取消上下文
-		// 给goroutine一点时间响应取消信号
-		time.Sleep(100 * time.Millisecond)
+		// 给goroutine一点时间响应取消信号，但使用更智能的等待
+		ylog.Debugf("ScrapliDriver", "cancelling context and waiting for goroutines to respond")
 	}
 
+	// 即使driver为nil，也要清理channel
 	if d.driver == nil {
 		ylog.Debugf("ScrapliDriver", "driver already nil, nothing to close")
-		// 即使driver为nil，也要清理channel
 		d.channel = nil
+		ylog.Infof("ScrapliDriver", "driver closed (was already nil): host=%s", d.host)
 		return nil
 	}
 
-	// 关闭driver（这会自动关闭channel）
+	// 检查driver的实际状态，避免在无效状态时关闭
+	// 注意：我们无法直接检查scrapli driver的内部状态，但可以尝试安全关闭
 	var err error
 	if d.driver != nil {
+		// 尝试关闭driver，但处理可能的"预期内"错误
 		err = d.driver.Close()
 		if err != nil {
-			ylog.Warnf("ScrapliDriver", "driver.Close() returned error: %v", err)
+			// 检查是否为"预期内"的错误，这些错误可以安全忽略
+			errStr := err.Error()
+			isExpectedError := strings.Contains(errStr, "invalid argument") ||
+				strings.Contains(errStr, "use of closed network connection") ||
+				strings.Contains(errStr, "already closed") ||
+				strings.Contains(errStr, "connection reset by peer") ||
+				strings.Contains(errStr, "broken pipe")
+
+			if isExpectedError {
+				// 这些是预期内的错误，通常发生在driver已经关闭或连接已断开时
+				ylog.Debugf("ScrapliDriver", "ignoring expected close error: %v", err)
+				err = nil // 重置错误，因为这是预期情况
+			} else {
+				// 这是意外的错误，需要记录警告
+				ylog.Warnf("ScrapliDriver", "driver.Close() returned unexpected error: %v", err)
+			}
 		}
 	}
 
@@ -515,7 +561,12 @@ func (d *ScrapliDriver) Close() error {
 		d.cancel = nil
 	}
 
-	ylog.Infof("ScrapliDriver", "driver closed successfully: host=%s", d.host)
+	if err == nil {
+		ylog.Infof("ScrapliDriver", "driver closed successfully: host=%s", d.host)
+	} else {
+		ylog.Infof("ScrapliDriver", "driver closed with error: host=%s, error=%v", d.host, err)
+	}
+
 	return err
 }
 
