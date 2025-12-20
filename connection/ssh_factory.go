@@ -3,6 +3,7 @@ package connection
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -40,13 +41,24 @@ func (f *SSHFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver, er
 		return nil, fmt.Errorf("创建会话失败: %v", err)
 	}
 
-	return NewSSHDriver(session), nil
+	// 使用配置的ReadTimeout作为命令执行超时
+	// 如果ReadTimeout为0，使用默认值
+	timeout := config.ReadTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	return NewSSHDriver(session).WithTimeout(timeout), nil
 }
 
 func (f *SSHFactory) HealthCheck(driver ProtocolDriver) bool {
-	_, err := driver.Execute(context.Background(), &ProtocolRequest{
+	// 使用默认超时5秒
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := driver.Execute(ctx, &ProtocolRequest{
 		CommandType: CommandTypeCommands,
-		Payload:     []string{"echo healthcheck"},
+		Payload:     []string{"show clock"}, // 更通用的命令
 	})
 	return err == nil
 }

@@ -170,6 +170,35 @@ const (
 	HealthStatusUnhealthy
 )
 
+// 健康检查错误类型
+type HealthCheckErrorType int
+
+const (
+	HealthErrorUnknown HealthCheckErrorType = iota
+	HealthErrorTimeout
+	HealthErrorNetwork
+	HealthErrorAuth
+	HealthErrorCommand
+	HealthErrorProtocol
+)
+
+func (t HealthCheckErrorType) String() string {
+	switch t {
+	case HealthErrorTimeout:
+		return "timeout"
+	case HealthErrorNetwork:
+		return "network"
+	case HealthErrorAuth:
+		return "authentication"
+	case HealthErrorCommand:
+		return "command"
+	case HealthErrorProtocol:
+		return "protocol"
+	default:
+		return "unknown"
+	}
+}
+
 // 驱动池统计信息
 type DriverPoolStats struct {
 	Protocol             Protocol
@@ -885,6 +914,10 @@ func (p *EnhancedConnectionPool) healthCheckTask() {
 
 // performHealthChecks 执行健康检查
 func (p *EnhancedConnectionPool) performHealthChecks() {
+	// 限制并发检查数量（最多10个）
+	const maxConcurrentChecks = 10
+	sem := make(chan struct{}, maxConcurrentChecks)
+
 	for proto, pool := range p.pools {
 		pool.mu.RLock()
 		connections := make([]*EnhancedPooledConnection, 0, len(pool.connections))
@@ -895,9 +928,13 @@ func (p *EnhancedConnectionPool) performHealthChecks() {
 		}
 		pool.mu.RUnlock()
 
-		// 并发进行健康检查
+		// 并发进行健康检查，但有限制
 		for _, conn := range connections {
-			go p.checkConnectionHealth(proto, conn)
+			sem <- struct{}{}
+			go func(proto Protocol, conn *EnhancedPooledConnection) {
+				defer func() { <-sem }()
+				p.checkConnectionHealth(proto, conn)
+			}(proto, conn)
 		}
 	}
 }
@@ -912,36 +949,113 @@ func (p *EnhancedConnectionPool) checkConnectionHealth(proto Protocol, conn *Enh
 
 	if err != nil {
 		conn.consecutiveFailures++
-		if conn.consecutiveFailures >= 3 {
+
+		// 错误分类
+		errorType := classifyHealthCheckError(err)
+
+		// 根据错误类型记录不同级别的日志
+		switch errorType {
+		case HealthErrorTimeout:
+			ylog.Warnf("pool", "connection %s health check timeout: %v", conn.id, err)
+		case HealthErrorNetwork:
+			ylog.Warnf("pool", "connection %s network error: %v", conn.id, err)
+		case HealthErrorAuth:
+			ylog.Errorf("pool", "connection %s authentication error: %v", conn.id, err)
+			// 认证错误立即标记为无效，因为需要重新认证
+			conn.valid = false
 			conn.healthStatus = HealthStatusUnhealthy
-			conn.valid = false // 关键：标记为无效
-			ylog.Warnf("pool", "connection %s marked as invalid after %d failures", conn.id, conn.consecutiveFailures)
-		} else {
-			conn.healthStatus = HealthStatusDegraded
-			ylog.Debugf("pool", "connection %s degraded (%d/%d failures)", conn.id, conn.consecutiveFailures, 3)
+		case HealthErrorCommand:
+			ylog.Warnf("pool", "connection %s command error: %v", conn.id, err)
+		case HealthErrorProtocol:
+			ylog.Errorf("pool", "connection %s protocol error: %v", conn.id, err)
+			conn.valid = false
+			conn.healthStatus = HealthStatusUnhealthy
+		default:
+			ylog.Warnf("pool", "connection %s health check failed: %v", conn.id, err)
+		}
+
+		// 非认证/协议错误，检查连续失败次数
+		if errorType != HealthErrorAuth && errorType != HealthErrorProtocol {
+			if conn.consecutiveFailures >= 3 {
+				conn.healthStatus = HealthStatusUnhealthy
+				conn.valid = false
+				ylog.Warnf("pool", "connection %s marked as invalid after %d failures", conn.id, conn.consecutiveFailures)
+			} else {
+				conn.healthStatus = HealthStatusDegraded
+				ylog.Debugf("pool", "connection %s degraded (%d/%d failures)", conn.id, conn.consecutiveFailures, 3)
+			}
 		}
 
 		p.collector.IncrementHealthCheckFailed(proto)
 		p.sendEvent(EventHealthCheckFailed, proto, map[string]interface{}{
 			"connection_id": conn.id,
 			"error":         err.Error(),
+			"error_type":    errorType.String(),
 			"failures":      conn.consecutiveFailures,
 		})
 	} else {
 		conn.consecutiveFailures = 0
 		conn.healthStatus = HealthStatusHealthy
-		conn.valid = true // 确保健康连接标记为有效
+		conn.valid = true
 		p.collector.IncrementHealthCheckSuccess(proto)
 	}
 
 	p.collector.RecordHealthCheckDuration(proto, duration)
 }
 
+// classifyHealthCheckError 分类健康检查错误
+func classifyHealthCheckError(err error) HealthCheckErrorType {
+	if err == nil {
+		return HealthErrorUnknown
+	}
+
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") ||
+		strings.Contains(errStr, "context deadline exceeded"):
+		return HealthErrorTimeout
+	case strings.Contains(errStr, "network") || strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "reset by peer") || strings.Contains(errStr, "broken pipe"):
+		return HealthErrorNetwork
+	case strings.Contains(errStr, "authentication") || strings.Contains(errStr, "password") ||
+		strings.Contains(errStr, "login") || strings.Contains(errStr, "auth"):
+		return HealthErrorAuth
+	case strings.Contains(errStr, "command") || strings.Contains(errStr, "syntax") ||
+		strings.Contains(errStr, "invalid command"):
+		return HealthErrorCommand
+	case strings.Contains(errStr, "protocol") || strings.Contains(errStr, "unsupported"):
+		return HealthErrorProtocol
+	default:
+		return HealthErrorUnknown
+	}
+}
+
 // defaultHealthCheck 默认健康检查
 func (p *EnhancedConnectionPool) defaultHealthCheck(driver ProtocolDriver) error {
-	_, err := driver.Execute(context.Background(), &ProtocolRequest{
+	// 使用配置的超时时间，默认5秒
+	timeout := p.config.HealthCheckTimeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// 平台适配的健康检查命令
+	var cmd string
+	if scrapliDriver, ok := driver.(*ScrapliDriver); ok {
+		// Scrapli驱动使用GetPrompt（已有超时控制）
+		_, err := scrapliDriver.GetPrompt()
+		return err
+	} else {
+		// 其他驱动使用通用命令
+		// 尝试show clock，大多数网络设备都支持
+		cmd = "show clock"
+	}
+
+	_, err := driver.Execute(ctx, &ProtocolRequest{
 		CommandType: CommandTypeCommands,
-		Payload:     []string{"echo healthcheck"},
+		Payload:     []string{cmd},
 	})
 	return err
 }

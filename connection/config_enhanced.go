@@ -33,10 +33,11 @@ type EnhancedConnectionConfig struct {
 	TaskBackoffFactor float64       `json:"task_backoff_factor" yaml:"task_backoff_factor"`
 
 	// 连接池配置
-	MaxConnections  int           `json:"max_connections" yaml:"max_connections"`
-	MinConnections  int           `json:"min_connections" yaml:"min_connections"`
-	MaxIdleTime     time.Duration `json:"max_idle_time" yaml:"max_idle_time"`
-	HealthCheckTime time.Duration `json:"health_check_time" yaml:"health_check_time"`
+	MaxConnections     int           `json:"max_connections" yaml:"max_connections"`
+	MinConnections     int           `json:"min_connections" yaml:"min_connections"`
+	MaxIdleTime        time.Duration `json:"max_idle_time" yaml:"max_idle_time"`
+	HealthCheckTime    time.Duration `json:"health_check_time" yaml:"health_check_time"`
+	HealthCheckTimeout time.Duration `json:"health_check_timeout" yaml:"health_check_timeout"`
 
 	// SSH特定配置
 	SSHConfig *SSHConfig `json:"ssh_config,omitempty" yaml:"ssh_config,omitempty"`
@@ -160,6 +161,7 @@ func NewConfigBuilder() *ConfigBuilder {
 			MinConnections:                 2,
 			MaxIdleTime:                    2 * time.Minute,
 			HealthCheckTime:                30 * time.Second,
+			HealthCheckTimeout:             5 * time.Second, // 默认5秒超时
 			Extensions:                     make(map[string]interface{}),
 			Labels:                         make(map[string]string),
 			Metadata:                       make(map[string]interface{}),
@@ -225,6 +227,12 @@ func (b *ConfigBuilder) WithConnectionPool(max, min int, maxIdle, healthCheck ti
 	b.config.MinConnections = min
 	b.config.MaxIdleTime = maxIdle
 	b.config.HealthCheckTime = healthCheck
+	return b
+}
+
+// WithHealthCheckTimeout 设置健康检查超时时间
+func (b *ConfigBuilder) WithHealthCheckTimeout(timeout time.Duration) *ConfigBuilder {
+	b.config.HealthCheckTimeout = timeout
 	return b
 }
 

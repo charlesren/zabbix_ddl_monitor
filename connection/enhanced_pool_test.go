@@ -137,7 +137,7 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 				CloseFunc:        func() error { return nil },
 				ExecuteFunc: func(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 					// 检查是否是健康检查请求
-					if payload, ok := req.Payload.([]string); ok && len(payload) == 1 && payload[0] == "echo healthcheck" {
+					if payload, ok := req.Payload.([]string); ok && len(payload) == 1 && payload[0] == "show clock" {
 						atomic.AddInt32(&healthCheckCount, 1)
 						fmt.Printf("Health check called, count: %d\n", atomic.LoadInt32(&healthCheckCount))
 					} else {
