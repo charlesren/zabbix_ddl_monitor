@@ -29,31 +29,31 @@ type Executor struct {
 
 // task/executor.go
 func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
-	ylog.Infof(logModule, "starting task %s on %s (%s) with params: %+v", ctx.TaskType, ctx.Platform, ctx.Protocol, ctx.Params)
+	ylog.Infof(logModule, "开始执行任务 %s on %s (%s) with params: %+v", ctx.TaskType, ctx.Platform, ctx.Protocol, ctx.Params)
 	start := time.Now()
 	if conn == nil {
-		ylog.Errorf(logModule, "connection driver is nil for task %s on %s", ctx.TaskType, ctx.Platform)
+		ylog.Errorf(logModule, "连接驱动为空，任务 %s on %s 无法执行", ctx.TaskType, ctx.Platform)
 		return Result{Error: "connection driver is nil"}, fmt.Errorf("connection driver is nil")
 	}
 
 	cmd, err := task.BuildCommand(ctx)
 	if err != nil {
-		ylog.Errorf(logModule, "failed to build command for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
+		ylog.Errorf(logModule, "构建命令失败 for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
 		return Result{
 			Success: false,
 			Error:   err.Error(),
 			Data:    map[string]interface{}{"status": StatusExecutionError},
 		}, err
 	}
-	ylog.Debugf(logModule, "built command for %s: type=%s, payload=%T", ctx.TaskType, cmd.Type, cmd.Payload)
+	ylog.Debugf(logModule, "命令构建完成 for %s: type=%s, payload=%T", ctx.TaskType, cmd.Type, cmd.Payload)
 
 	// 详细记录命令内容
 	switch v := cmd.Payload.(type) {
 	case []string:
-		ylog.Debugf(logModule, "sending commands to %s: %v", ctx.Platform, v)
+		ylog.Debugf(logModule, "发送命令到 %s: %v", ctx.Platform, v)
 	case []*channel.SendInteractiveEvent:
 		for i, event := range v {
-			ylog.Debugf(logModule, "interactive event %d to %s: input=%s, response=%s",
+			ylog.Debugf(logModule, "交互事件 %d to %s: input=%s, response=%s",
 				i, ctx.Platform, event.ChannelInput, event.ChannelResponse)
 		}
 	}
@@ -62,24 +62,24 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	var payload interface{}
 	switch v := cmd.Payload.(type) {
 	case []string:
-		ylog.Debugf(logModule, "sending %d commands to %s: %v", len(v), ctx.Platform, v)
+		ylog.Debugf(logModule, "发送 %d 条命令到 %s: %v", len(v), ctx.Platform, v)
 		payload = v
 	case []*channel.SendInteractiveEvent:
-		ylog.Debugf(logModule, "sending %d interactive events to %s", len(v), ctx.Platform)
+		ylog.Debugf(logModule, "发送 %d 个交互事件到 %s", len(v), ctx.Platform)
 		for i, event := range v {
-			ylog.Debugf(logModule, "interactive event %d: channelInput=%s", i, event.ChannelInput)
+			ylog.Debugf(logModule, "交互事件 %d: channelInput=%s", i, event.ChannelInput)
 		}
 		payload = v
 	default:
-		ylog.Errorf(logModule, "unsupported payload type %T for task %s on %s", cmd.Payload, ctx.TaskType, ctx.Platform)
+		ylog.Errorf(logModule, "不支持的载荷类型 %T for task %s on %s", cmd.Payload, ctx.TaskType, ctx.Platform)
 		return Result{
 			Success: false,
 			Error:   "unsupported payload type",
 			Data:    map[string]interface{}{"status": StatusExecutionError},
 		}, fmt.Errorf("unsupported payload type")
 	}
-	ylog.Debugf(logModule, "executing %s command on %s", cmd.Type, ctx.Platform)
-	ylog.Debugf(logModule, "executing %s command on %s with payload: %+v", cmd.Type, ctx.Platform, payload)
+	ylog.Debugf(logModule, "执行 %s 命令 on %s", cmd.Type, ctx.Platform)
+	ylog.Debugf(logModule, "执行 %s 命令 on %s with payload: %+v", cmd.Type, ctx.Platform, payload)
 	resp, err := conn.Execute(ctx.Ctx, &connection.ProtocolRequest{
 		CommandType: cmd.Type,
 		Payload:     payload,
@@ -87,7 +87,7 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 
 	if err != nil {
 		duration := time.Since(start)
-		ylog.Errorf(logModule, "execution failed for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
+		ylog.Errorf(logModule, "执行失败 for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
 		// 检查错误类型，设置相应的状态
 		status := StatusExecutionError
 		if ctx.Ctx != nil && ctx.Ctx.Err() == context.DeadlineExceeded {
@@ -105,7 +105,7 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 	}
 
 	// 统一使用原始数据解析
-	ylog.Debugf(logModule, "task %s completed on %s, received %d bytes of raw output", ctx.TaskType, ctx.Platform, len(resp.RawData))
+	ylog.Debugf(logModule, "任务 %s 在 %s 上完成, 接收到 %d 字节的原始输出", ctx.TaskType, ctx.Platform, len(resp.RawData))
 
 	// 记录原始输出内容（截断过长的输出）
 	if len(resp.RawData) > 0 {
@@ -113,13 +113,13 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 		if len(outputPreview) > 500 {
 			outputPreview = outputPreview[:500] + "...[truncated]"
 		}
-		ylog.Debugf(logModule, "raw output from %s: %s", ctx.Platform, outputPreview)
+		ylog.Debugf(logModule, "原始输出 from %s: %s", ctx.Platform, outputPreview)
 	}
 	result, err := task.ParseOutput(ctx, resp.RawData)
 	duration := time.Since(start)
 
 	if err != nil {
-		ylog.Errorf(logModule, "failed to parse output for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
+		ylog.Errorf(logModule, "解析输出失败 for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
 		// 如果解析失败，确保有status字段
 		if result.Data == nil {
 			result.Data = make(map[string]interface{})
@@ -128,7 +128,7 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 			result.Data["status"] = StatusParseFailed
 		}
 	} else if !result.Success {
-		ylog.Warnf(logModule, "task %s on %s completed with failure after %v: %s", ctx.TaskType, ctx.Platform, duration, result.Error)
+		ylog.Warnf(logModule, "任务 %s on %s 执行完成但失败 after %v: %s", ctx.TaskType, ctx.Platform, duration, result.Error)
 		// 确保失败的结果也有status字段
 		if result.Data == nil {
 			result.Data = make(map[string]interface{})
@@ -137,7 +137,7 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 			result.Data["status"] = StatusExecutionError
 		}
 	} else {
-		ylog.Infof(logModule, "task %s on %s completed successfully in %v", ctx.TaskType, ctx.Platform, duration)
+		ylog.Infof(logModule, "任务 %s on %s 执行成功 in %v", ctx.TaskType, ctx.Platform, duration)
 		// 确保成功的结果也有status字段
 		if result.Data == nil {
 			result.Data = make(map[string]interface{})

@@ -210,11 +210,11 @@ func (s *RouterScheduler) Start() {
 func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	// 获取任务快照
 	lines := q.GetTasksSnapshot()
-	ylog.Infof("scheduler", "executeTasksAsync called: router=%s, interval=%v, lines=%d",
+	ylog.Infof("scheduler", "开始执行任务: 路由器=%s, 间隔=%v, 专线数量=%d",
 		s.router.IP, q.interval, len(lines))
 
 	if len(lines) == 0 {
-		ylog.Debugf("scheduler", "no tasks to execute (router=%s, interval=%v)", s.router.IP, q.interval)
+		ylog.Debugf("scheduler", "没有任务需要执行 (路由器=%s, 间隔=%v)", s.router.IP, q.interval)
 		return
 	}
 
@@ -223,7 +223,7 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	for _, line := range lines {
 		ips = append(ips, line.IP)
 	}
-	ylog.Infof("scheduler", "executing individual ping tasks for IPs: %v (router=%s, interval=%v)",
+	ylog.Infof("scheduler", "执行单个ping任务 for IPs: %v (路由器=%s, 间隔=%v)",
 		ips, s.router.IP, q.interval)
 
 	// 获取预加载的能力信息（带降级逻辑）
@@ -238,7 +238,7 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	if supportedCmdTypes == nil {
 		conn, err := s.connection.Get(s.router.Protocol)
 		if err != nil {
-			ylog.Errorf("scheduler", "router=%s get connection failed: %v", s.router.IP, err)
+			ylog.Errorf("scheduler", "路由器=%s 获取连接失败: %v", s.router.IP, err)
 			return
 		}
 		supportedCmdTypes = conn.GetCapability().CommandTypesSupport
@@ -261,7 +261,7 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	}
 
 	if matchedTask == nil {
-		ylog.Errorf("scheduler", "no matching task for router=%s (supported=%v)",
+		ylog.Errorf("scheduler", "没有匹配的任务 for 路由器=%s (支持的命令类型=%v)",
 			s.router.IP, supportedCmdTypes)
 		return
 	}
@@ -278,15 +278,16 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 	select {
 	case s.connSemaphore <- struct{}{}:
 		// 成功获取信号量
-		ylog.Debugf("scheduler", "router=%s acquired semaphore for line %s", s.router.IP, line.IP)
+		ylog.Debugf("scheduler", "路由器=%s 获取信号量 for 专线 %s", s.router.IP, line.IP)
 	case <-s.routerCtx.Done():
+		ylog.Debugf("scheduler", "路由器=%s 上下文已完成", s.router.IP)
 		return
 	}
 
 	// 2. 获取连接
 	conn, err := s.connection.Get(s.router.Protocol)
 	if err != nil {
-		ylog.Debugf("scheduler", "router=%s connection failed for line %s: %v", s.router.IP, line.IP, err)
+		ylog.Debugf("scheduler", "路由器=%s 连接失败 for 专线 %s: %v", s.router.IP, line.IP, err)
 		<-s.connSemaphore // 释放信号量
 		return
 	}
@@ -319,9 +320,9 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 
 		// 处理结果
 		if err != nil {
-			ylog.Debugf("scheduler", "ping failed for line %s after %v: %v", line.IP, duration, err)
+			ylog.Debugf("scheduler", "ping任务失败 for 专线 %s after %v: %v", line.IP, duration, err)
 		} else {
-			ylog.Debugf("scheduler", "ping completed for line %s in %v", line.IP, duration)
+			ylog.Debugf("scheduler", "ping任务完成 for 专线 %s in %v", line.IP, duration)
 		}
 
 		// 检查status字段，基于status决定是否提交给聚合器
@@ -333,20 +334,20 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
 					ylog.Debugf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
 				}
-				ylog.Debugf("scheduler", "提交结果给聚合器: line=%s, status=%s, success=%v", line.IP, status, result.Success)
+				ylog.Debugf("scheduler", "提交结果给聚合器: 专线=%s, 状态=%s, 成功=%v", line.IP, status, result.Success)
 			} else {
 				// 没有status字段，也提交给聚合器
 				// Zabbix sender会检测到缺少status字段并发送相应的错误状态
 				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
 					ylog.Debugf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
 				}
-				ylog.Warnf("scheduler", "提交缺少status字段的结果给聚合器: line=%s, success=%v", line.IP, result.Success)
+				ylog.Warnf("scheduler", "提交缺少status字段的结果给聚合器: 专线=%s, 成功=%v", line.IP, result.Success)
 			}
 		}
 	})
 
 	if err != nil {
-		ylog.Debugf("scheduler", "submit failed for line %s: %v", line.IP, err)
+		ylog.Debugf("scheduler", "提交任务失败 for 专线 %s: %v", line.IP, err)
 		s.connection.Release(conn)
 		<-s.connSemaphore
 	}
@@ -355,7 +356,7 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 // 停止调度器（阻塞等待所有任务完成）
 func (s *RouterScheduler) Stop() {
 	// 先关闭stopChan通知所有goroutine退出
-	ylog.Infof("scheduler", "stopping router scheduler (router=%s)", s.router.IP)
+	ylog.Infof("scheduler", "正在停止路由器调度器 (路由器=%s)", s.router.IP)
 	select {
 	case <-s.stopChan:
 		// Already closed
@@ -379,7 +380,7 @@ func (s *RouterScheduler) Stop() {
 	// 等待所有goroutine完成
 	s.wg.Wait()
 
-	ylog.Infof("scheduler", "router scheduler fully stopped (router=%s)", s.router.IP)
+	ylog.Infof("scheduler", "路由器调度器已完全停止 (路由器=%s)", s.router.IP)
 	// 关闭连接池
 	if s.connection != nil {
 		_ = s.connection.Close()
