@@ -65,8 +65,8 @@ func (m *Manager) runWithContext(name string, fn func()) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		ylog.Debugf("manager", "启动goroutine: %s", name)
-		defer ylog.Debugf("manager", "退出goroutine: %s", name)
+		ylog.Infof("manager", "启动goroutine: %s", name)
+		defer ylog.Infof("manager", "退出goroutine: %s", name)
 
 		fn()
 	}()

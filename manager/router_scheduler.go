@@ -110,7 +110,7 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 		scheduler.connCapability = &capability
 		scheduler.capabilityMu.Unlock()
 		scheduler.connection.Release(conn)
-		ylog.Debugf("scheduler", "preloaded capabilities for %s", scheduler.router.IP)
+		ylog.Infof("scheduler", "preloaded capabilities for %s", scheduler.router.IP)
 	}
 
 	// 7. 初始化队列
@@ -139,7 +139,7 @@ func (s *RouterScheduler) initializeQueues() {
 		s.router.IP, len(s.lines))
 
 	for _, line := range s.lines {
-		ylog.Debugf("scheduler", "processing line: id=%s, ip=%s, interval=%v",
+		ylog.Infof("scheduler", "processing line: id=%s, ip=%s, interval=%v",
 			line.ID, line.IP, line.Interval)
 
 		// 创建间隔队列（如果不存在）
@@ -150,7 +150,7 @@ func (s *RouterScheduler) initializeQueues() {
 		}
 		// 添加任务
 		s.queues[line.Interval].Add(line)
-		ylog.Debugf("scheduler", "added line %s to queue %v", line.ID, line.Interval)
+		ylog.Infof("scheduler", "added line %s to queue %v", line.ID, line.Interval)
 	}
 
 	// 验证队列分布
@@ -183,7 +183,7 @@ func (s *RouterScheduler) Start() {
 		ylog.Infof("scheduler", "queue details: router=%s, interval=%v, lines=%d",
 			s.router.IP, interval, len(lines))
 		for _, line := range lines {
-			ylog.Debugf("scheduler", "  line: id=%s, ip=%s, interval=%v",
+			ylog.Infof("scheduler", "  line: id=%s, ip=%s, interval=%v",
 				line.ID, line.IP, line.Interval)
 		}
 	}
@@ -191,15 +191,15 @@ func (s *RouterScheduler) Start() {
 	for _, q := range s.queues {
 		s.wg.Add(1)
 		go func(q *IntervalTaskQueue) {
-			ylog.Debugf("scheduler", "queue worker started (router=%s, interval=%v)", s.router.IP, q.interval)
+			ylog.Infof("scheduler", "queue worker started (router=%s, interval=%v)", s.router.IP, q.interval)
 			defer s.wg.Done()
 			for {
 				select {
 				case <-s.stopChan:
-					ylog.Debugf("scheduler", "queue worker stopped (router=%s, interval=%v)", s.router.IP, q.interval)
+					ylog.Infof("scheduler", "queue worker stopped (router=%s, interval=%v)", s.router.IP, q.interval)
 					return
 				case <-q.ExecNotify(): // 监听执行信号
-					ylog.Debugf("scheduler", "executing tasks (router=%s, interval=%v)", s.router.IP, q.interval)
+					ylog.Infof("scheduler", "executing tasks (router=%s, interval=%v)", s.router.IP, q.interval)
 					s.executeTasksAsync(q)
 				}
 			}
@@ -214,7 +214,7 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 		s.router.IP, q.interval, len(lines))
 
 	if len(lines) == 0 {
-		ylog.Debugf("scheduler", "没有任务需要执行 (路由器=%s, 间隔=%v)", s.router.IP, q.interval)
+		ylog.Infof("scheduler", "没有任务需要执行 (路由器=%s, 间隔=%v)", s.router.IP, q.interval)
 		return
 	}
 
@@ -278,16 +278,16 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 	select {
 	case s.connSemaphore <- struct{}{}:
 		// 成功获取信号量
-		ylog.Debugf("scheduler", "路由器=%s 获取信号量 for 专线 %s", s.router.IP, line.IP)
+		ylog.Infof("scheduler", "路由器=%s 获取信号量 for 专线 %s", s.router.IP, line.IP)
 	case <-s.routerCtx.Done():
-		ylog.Debugf("scheduler", "路由器=%s 上下文已完成", s.router.IP)
+		ylog.Infof("scheduler", "路由器=%s 上下文已完成", s.router.IP)
 		return
 	}
 
 	// 2. 获取连接
 	conn, err := s.connection.Get(s.router.Protocol)
 	if err != nil {
-		ylog.Debugf("scheduler", "路由器=%s 连接失败 for 专线 %s: %v", s.router.IP, line.IP, err)
+		ylog.Warnf("scheduler", "路由器=%s 连接失败 for 专线 %s: %v", s.router.IP, line.IP, err)
 		<-s.connSemaphore // 释放信号量
 		return
 	}
@@ -320,9 +320,9 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 
 		// 处理结果
 		if err != nil {
-			ylog.Debugf("scheduler", "ping任务失败 for 专线 %s after %v: %v", line.IP, duration, err)
+			ylog.Warnf("scheduler", "ping任务失败 for 专线 %s after %v: %v", line.IP, duration, err)
 		} else {
-			ylog.Debugf("scheduler", "ping任务完成 for 专线 %s in %v", line.IP, duration)
+			ylog.Infof("scheduler", "ping任务完成 for 专线 %s in %v", line.IP, duration)
 		}
 
 		// 检查status字段，基于status决定是否提交给聚合器
@@ -332,22 +332,22 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 				// 无论status是什么，都提交给聚合器
 				// Zabbix sender会根据status决定发送哪个监控项
 				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
-					ylog.Debugf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
+					ylog.Warnf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
 				}
-				ylog.Debugf("scheduler", "提交结果给聚合器: 专线=%s, 状态=%s, 成功=%v", line.IP, status, result.Success)
+				ylog.Infof("scheduler", "提交结果给聚合器: 专线=%s, 状态=%s, 成功=%v", line.IP, status, result.Success)
 			} else {
 				// 没有status字段，也提交给聚合器
 				// Zabbix sender会检测到缺少status字段并发送相应的错误状态
 				if aggErr := s.manager.aggregator.SubmitTaskResult(line, "ping", result, duration); aggErr != nil {
-					ylog.Debugf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
+					ylog.Warnf("scheduler", "aggregator error for %s: %v", line.IP, aggErr)
 				}
-				ylog.Warnf("scheduler", "提交缺少status字段的结果给聚合器: 专线=%s, 成功=%v", line.IP, result.Success)
+				ylog.Errorf("scheduler", "提交缺少status字段的结果给聚合器: 专线=%s, 成功=%v", line.IP, result.Success)
 			}
 		}
 	})
 
 	if err != nil {
-		ylog.Debugf("scheduler", "提交任务失败 for 专线 %s: %v", line.IP, err)
+		ylog.Warnf("scheduler", "提交任务失败 for 专线 %s: %v", line.IP, err)
 		s.connection.Release(conn)
 		<-s.connSemaphore
 	}
@@ -367,7 +367,7 @@ func (s *RouterScheduler) Stop() {
 	// 停止异步执行器和聚合器
 	if s.asyncExecutor != nil {
 		s.asyncExecutor.Stop()
-		ylog.Debugf("scheduler", "async executor stopped (router=%s)", s.router.IP)
+		ylog.Infof("scheduler", "async executor stopped (router=%s)", s.router.IP)
 	}
 
 	// 停止所有队列
@@ -408,7 +408,7 @@ func (s *RouterScheduler) OnLineCreated(line syncer.Line) {
 	// 添加任务并记录
 	s.queues[line.Interval].Add(line)
 	s.lines = append(s.lines, line)
-	ylog.Debugf("scheduler", "added line %s to %v queue (router=%s)",
+	ylog.Infof("scheduler", "added line %s to %v queue (router=%s)",
 		line.ID, line.Interval, s.router.IP)
 }
 
@@ -430,7 +430,7 @@ func (s *RouterScheduler) OnLineUpdated(oldLine, newLine syncer.Line) {
 		// 从旧队列移除
 		if oldQueue, exists := s.queues[oldLine.Interval]; exists {
 			oldQueue.Remove(oldLine.IP)
-			ylog.Debugf("scheduler", "moved line %s from %v to %v queue (router=%s)",
+			ylog.Infof("scheduler", "moved line %s from %v to %v queue (router=%s)",
 				oldLine.ID, oldLine.Interval, newLine.Interval, s.router.IP)
 		}
 
@@ -453,7 +453,7 @@ func (s *RouterScheduler) OnLineUpdated(oldLine, newLine syncer.Line) {
 			break
 		}
 	}
-	ylog.Debugf("scheduler", "updated line %s (router=%s)", newLine.ID, s.router.IP)
+	ylog.Infof("scheduler", "updated line %s (router=%s)", newLine.ID, s.router.IP)
 }
 
 // 专线删除处理（带防御性检查）
@@ -470,7 +470,7 @@ func (s *RouterScheduler) OnLineDeleted(line syncer.Line) {
 		}
 
 		queue.Remove(line.IP)
-		ylog.Debugf("scheduler", "removed line %s from %v queue (router=%s)",
+		ylog.Infof("scheduler", "removed line %s from %v queue (router=%s)",
 			line.ID, line.Interval, s.router.IP)
 
 		// 延迟销毁空队列（10分钟）
@@ -578,21 +578,21 @@ func (s *RouterScheduler) listenToPoolEvents() {
 			// 根据事件类型记录日志
 			switch event.Type {
 			case connection.EventConnectionCreated:
-				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接创建成功", s.router.IP)
+				ylog.Infof("scheduler", "连接池事件 router=%s: 连接创建成功", s.router.IP)
 			case connection.EventConnectionDestroyed:
-				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接销毁", s.router.IP)
+				ylog.Infof("scheduler", "连接池事件 router=%s: 连接销毁", s.router.IP)
 			case connection.EventConnectionFailed:
 				ylog.Warnf("scheduler", "连接池事件 router=%s: 连接失败，将使用配置的重试策略自动重试", s.router.IP)
 			case connection.EventHealthCheckFailed:
 				ylog.Warnf("scheduler", "连接池事件 router=%s: 健康检查失败", s.router.IP)
 			case connection.EventPoolWarmupStarted:
-				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接池预热开始", s.router.IP)
+				ylog.Infof("scheduler", "连接池事件 router=%s: 连接池预热开始", s.router.IP)
 			case connection.EventPoolWarmupCompleted:
-				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接池预热完成", s.router.IP)
+				ylog.Infof("scheduler", "连接池事件 router=%s: 连接池预热完成", s.router.IP)
 			case connection.EventConnectionRebuilt:
 				ylog.Infof("scheduler", "连接池事件 router=%s: 连接重建 (后台自动重试)", s.router.IP)
 			default:
-				ylog.Debugf("scheduler", "连接池事件 router=%s: 未知事件类型 %d", s.router.IP, event.Type)
+				ylog.Warnf("scheduler", "连接池事件 router=%s: 未知事件类型 %d", s.router.IP, event.Type)
 			}
 		}
 	}
