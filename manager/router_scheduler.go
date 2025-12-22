@@ -96,25 +96,29 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 		ylog.Warnf("scheduler", "system will continue with available connections, performance may be degraded")
 	}
 
-	// 同步预加载Connection能力
-	conn, err := scheduler.connection.Get(scheduler.router.Protocol)
-	if err != nil {
-		ylog.Warnf("scheduler", "preload capability failed: %v", err)
-		// 设置默认能力以防止nil指针
-		defaultCapability := connection.ProtocolCapability{
-			CommandTypesSupport: []connection.CommandType{"commands"},
+	// 设置默认能力，避免nil指针
+	// 预加载能力改为惰性加载，避免阻塞调度器创建
+	defaultCapability := connection.ProtocolCapability{
+		CommandTypesSupport: []connection.CommandType{"commands"},
+	}
+	scheduler.capabilityMu.Lock()
+	scheduler.connCapability = &defaultCapability
+	scheduler.capabilityMu.Unlock()
+
+	// 异步预加载能力（可选优化）
+	go func() {
+		conn, err := scheduler.connection.Get(scheduler.router.Protocol)
+		if err != nil {
+			ylog.Debugf("scheduler", "异步预加载能力失败: %v (router=%s)", err, scheduler.router.IP)
+			return
 		}
-		scheduler.capabilityMu.Lock()
-		scheduler.connCapability = &defaultCapability
-		scheduler.capabilityMu.Unlock()
-	} else {
 		capability := conn.GetCapability()
 		scheduler.capabilityMu.Lock()
 		scheduler.connCapability = &capability
 		scheduler.capabilityMu.Unlock()
 		scheduler.connection.Release(conn)
-		ylog.Infof("scheduler", "preloaded capabilities for %s", scheduler.router.IP)
-	}
+		ylog.Debugf("scheduler", "异步预加载能力完成: router=%s", scheduler.router.IP)
+	}()
 
 	// 7. 初始化队列
 	scheduler.initializeQueues()
@@ -177,8 +181,17 @@ func (s *RouterScheduler) initializeQueues() {
 
 // 启动调度循环
 func (s *RouterScheduler) Start() {
+	ylog.Infof("scheduler", "调度器Start方法开始执行: router=%s", s.router.IP)
+
 	// 启动异步执行器和聚合器
 	ylog.Infof("scheduler", "starting router scheduler (router=%s, queues=%d)", s.router.IP, len(s.queues))
+
+	// 检查asyncExecutor是否为空
+	if s.asyncExecutor == nil {
+		ylog.Errorf("scheduler", "asyncExecutor is nil! router=%s", s.router.IP)
+		return
+	}
+
 	s.asyncExecutor.Start()
 
 	// 记录每个队列的详细信息
@@ -197,23 +210,26 @@ func (s *RouterScheduler) Start() {
 	for interval, q := range s.queues {
 		s.wg.Add(1)
 		workerCount++
-		go func(interval time.Duration, q *IntervalTaskQueue) {
-			ylog.Infof("scheduler", "队列worker启动: router=%s, interval=%v", s.router.IP, interval)
+		// 创建局部变量副本，避免goroutine闭包问题
+		intervalCopy := interval
+		qCopy := q
+		go func() {
+			ylog.Infof("scheduler", "队列worker启动: router=%s, interval=%v", s.router.IP, intervalCopy)
 			defer func() {
 				s.wg.Done()
-				ylog.Infof("scheduler", "队列worker停止: router=%s, interval=%v", s.router.IP, interval)
+				ylog.Infof("scheduler", "队列worker停止: router=%s, interval=%v", s.router.IP, intervalCopy)
 			}()
 			for {
 				select {
 				case <-s.stopChan:
-					ylog.Infof("scheduler", "队列worker收到停止信号: router=%s, interval=%v", s.router.IP, interval)
+					ylog.Infof("scheduler", "队列worker收到停止信号: router=%s, interval=%v", s.router.IP, intervalCopy)
 					return
-				case <-q.ExecNotify(): // 监听执行信号
-					ylog.Infof("scheduler", "执行任务: router=%s, interval=%v", s.router.IP, interval)
-					s.executeTasksAsync(q)
+				case <-qCopy.ExecNotify(): // 监听执行信号
+					ylog.Infof("scheduler", "执行任务: router=%s, interval=%v", s.router.IP, intervalCopy)
+					s.executeTasksAsync(qCopy)
 				}
 			}
-		}(interval, q)
+		}()
 	}
 	ylog.Infof("scheduler", "已启动%d个队列worker", workerCount)
 }
@@ -295,7 +311,19 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 		return
 	}
 
-	// 2. 获取连接
+	// 2. 获取连接（带上下文检查）
+	ylog.Infof("scheduler", "开始获取连接: 路由器=%s, 专线=%s, 协议=%s", s.router.IP, line.IP, s.router.Protocol)
+
+	// 检查上下文是否已取消
+	select {
+	case <-s.routerCtx.Done():
+		ylog.Infof("scheduler", "获取连接前上下文已取消: 路由器=%s, 专线=%s", s.router.IP, line.IP)
+		<-s.connSemaphore // 释放信号量
+		return
+	default:
+		// 上下文正常，继续
+	}
+
 	conn, err := s.connection.Get(s.router.Protocol)
 	if err != nil {
 		ylog.Errorf("scheduler", "连接失败: 路由器=%s, 专线=%s, 错误=%v", s.router.IP, line.IP, err)

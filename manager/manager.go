@@ -497,9 +497,14 @@ func (m *Manager) fullSync() {
 
 	// 更新调度器
 	schedulerCount := 0
+	totalRouters := len(newRouterLines)
+	ylog.Infof("manager", "开始创建调度器，总共需要创建%d个路由器调度器", totalRouters)
+
 	for routerIP, lines := range newRouterLines {
+		ylog.Infof("manager", "正在创建第%d/%d个调度器: router=%s", schedulerCount+1, totalRouters, routerIP)
 		m.ensureScheduler(routerIP, lines)
 		schedulerCount++
+		ylog.Infof("manager", "已完成第%d/%d个调度器创建", schedulerCount, totalRouters)
 	}
 	ylog.Infof("manager", "调度器更新完成: 创建/更新了%d个调度器", schedulerCount)
 
@@ -672,10 +677,11 @@ func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 			return
 		}
 		m.schedulers[routerIP] = scheduler
+		ylog.Infof("manager", "调度器已添加到map: router=%s", routerIP)
 		go func() {
-			ylog.Infof("manager", "启动调度器: router=%s", routerIP)
+			ylog.Infof("manager", "启动调度器goroutine开始: router=%s", routerIP)
 			m.safeExecute("scheduler.Start", scheduler.Start)
-			ylog.Infof("manager", "调度器已启动: router=%s", routerIP)
+			ylog.Infof("manager", "调度器goroutine结束: router=%s", routerIP)
 		}()
 
 		// 记录调度器创建
