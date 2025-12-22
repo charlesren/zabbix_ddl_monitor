@@ -11,6 +11,17 @@ import (
 type SSHFactory struct{}
 
 func (f *SSHFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver, error) {
+	return f.CreateWithContext(context.Background(), config)
+}
+
+func (f *SSHFactory) CreateWithContext(ctx context.Context, config EnhancedConnectionConfig) (ProtocolDriver, error) {
+	// 检查上下文
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	// 设置默认值
 	// 创建临时副本避免修改原始配置
 	configCopy := config

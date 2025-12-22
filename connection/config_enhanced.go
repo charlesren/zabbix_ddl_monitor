@@ -18,9 +18,10 @@ type EnhancedConnectionConfig struct {
 	Platform Platform `json:"platform" yaml:"platform" validate:"required"`
 
 	// 超时配置
-	ConnectTimeout time.Duration `json:"connect_timeout" yaml:"connect_timeout"`
-	ReadTimeout    time.Duration `json:"read_timeout" yaml:"read_timeout"`
-	WriteTimeout   time.Duration `json:"write_timeout" yaml:"write_timeout"`
+	ConnectTimeout time.Duration `json:"connect_timeout" yaml:"connect_timeout"` // 单次连接建立超时
+	ReadTimeout    time.Duration `json:"read_timeout" yaml:"read_timeout"`       // 读取操作超时
+	WriteTimeout   time.Duration `json:"write_timeout" yaml:"write_timeout"`     // 写入操作超时
+	TaskTimeout    time.Duration `json:"task_timeout" yaml:"task_timeout"`       // 单次任务执行超时
 
 	// 连接重试配置（用于连接建立）
 	ConnectionMaxRetries    int           `json:"connection_max_retries" yaml:"connection_max_retries"`
@@ -151,6 +152,7 @@ func NewConfigBuilder() *ConfigBuilder {
 			ConnectTimeout:                 30 * time.Second,
 			ReadTimeout:                    30 * time.Second,
 			WriteTimeout:                   10 * time.Second,
+			TaskTimeout:                    30 * time.Second, // 默认任务超时30秒
 			ConnectionMaxRetries:           2,
 			ConnectionRetryInterval:        2 * time.Second,
 			ConnectionBackoffFactor:        1.5,
@@ -192,7 +194,7 @@ func (b *ConfigBuilder) WithProtocol(protocol Protocol, platform Platform) *Conf
 }
 
 // WithTimeouts 设置超时配置
-func (b *ConfigBuilder) WithTimeouts(connect, read, write time.Duration) *ConfigBuilder {
+func (b *ConfigBuilder) WithTimeouts(connect, read, write, task time.Duration) *ConfigBuilder {
 	if connect > 0 {
 		b.config.ConnectTimeout = connect
 	}
@@ -201,6 +203,9 @@ func (b *ConfigBuilder) WithTimeouts(connect, read, write time.Duration) *Config
 	}
 	if write > 0 {
 		b.config.WriteTimeout = write
+	}
+	if task > 0 {
+		b.config.TaskTimeout = task
 	}
 	return b
 }

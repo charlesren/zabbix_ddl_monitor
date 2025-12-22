@@ -805,11 +805,17 @@ func createConnectionRetryExecutor(config *EnhancedConnectionConfig) *ResilientE
 		Jitter:        true,
 	}
 
+	// 计算连接重试总超时：ConnectTimeout × (ConnectionMaxRetries + 1)
+	connectionRetryTimeout := config.ConnectTimeout * time.Duration(maxAttempts)
+	if connectionRetryTimeout == 0 {
+		connectionRetryTimeout = 30 * time.Second // 默认值
+	}
+
 	// 创建带重试回调的Retrier，用于记录重试事件
-	retrier := NewRetrier(retryPolicy, 30*time.Second).
+	retrier := NewRetrier(retryPolicy, connectionRetryTimeout).
 		WithRetryCallback(func(attempt int, err error) {
-			ylog.Debugf("EnhancedConnectionPool", "连接重试 attempt=%d/%d, error=%v, nextDelay=%v",
-				attempt, maxAttempts, err, retryPolicy.NextDelay(attempt))
+			ylog.Debugf("EnhancedConnectionPool", "连接重试 attempt=%d/%d, timeout=%v, error=%v, nextDelay=%v",
+				attempt, maxAttempts, connectionRetryTimeout, err, retryPolicy.NextDelay(attempt))
 		})
 
 	return NewResilientExecutor().WithRetrier(retrier)
@@ -881,7 +887,7 @@ func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Proto
 	var err error
 
 	err = p.resilientExecutor.Execute(mergedCtx, func() error {
-		conn, err = p.getConnectionFromPool(pool)
+		conn, err = p.getConnectionFromPool(mergedCtx, pool)
 		return err
 	})
 
@@ -899,9 +905,16 @@ func (p *EnhancedConnectionPool) Get(proto Protocol) (ProtocolDriver, error) {
 }
 
 // getConnectionFromPool 从池中获取连接
-func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool) (*EnhancedPooledConnection, error) {
+func (p *EnhancedConnectionPool) getConnectionFromPool(ctx context.Context, pool *EnhancedDriverPool) (*EnhancedPooledConnection, error) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+
+	// 在关键点检查上下文
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
 
 	// 调试：打印连接池状态
 	if p.debugMode {
@@ -915,6 +928,13 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 
 	// 第一优先级：尝试获取健康连接
 	for _, conn := range pool.connections {
+		// 检查上下文
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
 		if conn.tryAcquire() {
 			// 快速健康检查（非阻塞，使用已有状态）
 			if !conn.isHealthy() {
@@ -957,7 +977,7 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 
 	// 第三优先级：连接池未满时创建新连接
 	if len(pool.connections) < p.maxConnections {
-		newConn, err := p.createConnection(pool)
+		newConn, err := p.createConnection(ctx, pool)
 		if err != nil {
 			return nil, err
 		}
@@ -990,8 +1010,23 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(pool *EnhancedDriverPool)
 }
 
 // createConnection 创建新连接
-func (p *EnhancedConnectionPool) createConnection(pool *EnhancedDriverPool) (*EnhancedPooledConnection, error) {
-	driver, err := pool.factory.Create(p.config)
+func (p *EnhancedConnectionPool) createConnection(ctx context.Context, pool *EnhancedDriverPool) (*EnhancedPooledConnection, error) {
+	// 检查上下文
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// 使用配置的连接超时
+	if p.config.ConnectTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.config.ConnectTimeout)
+		defer cancel()
+	}
+
+	// 使用带上下文的工厂方法
+	driver, err := pool.factory.CreateWithContext(ctx, p.config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection: %w", err)
 	}
@@ -1050,7 +1085,8 @@ func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool
 	var newConn *EnhancedPooledConnection
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		newConn, err = p.createConnection(pool)
+		// 异步重建使用background上下文，但应用配置超时
+		newConn, err = p.createConnection(context.Background(), pool)
 		if err == nil {
 			break
 		}
@@ -1219,7 +1255,7 @@ func (p *EnhancedConnectionPool) WarmUp(proto Protocol, targetCount int) error {
 					time.Sleep(waitTime)
 				}
 
-				newConn, err := p.createConnection(pool)
+				newConn, err := p.createConnection(context.Background(), pool)
 				if err == nil {
 					// 将新创建的连接添加到连接池中
 					pool.mu.Lock()

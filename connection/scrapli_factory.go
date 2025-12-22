@@ -14,6 +14,17 @@ import (
 type ScrapliFactory struct{}
 
 func (f *ScrapliFactory) Create(config EnhancedConnectionConfig) (ProtocolDriver, error) {
+	return f.CreateWithContext(context.Background(), config)
+}
+
+func (f *ScrapliFactory) CreateWithContext(ctx context.Context, config EnhancedConnectionConfig) (ProtocolDriver, error) {
+	// 检查上下文
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	ylog.Debugf("scrapli", "creating driver with config: %+v", config)
 
 	// 1. 检查platform字段存在性

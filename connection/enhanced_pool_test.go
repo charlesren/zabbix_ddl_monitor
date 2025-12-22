@@ -121,7 +121,7 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 	config, err := NewConfigBuilder().
 		WithBasicAuth("192.168.1.1", "admin", "password").
 		WithProtocol(ProtocolSSH, PlatformCiscoIOSXE).
-		WithTimeouts(5*time.Second, 5*time.Second, 5*time.Second).
+		WithTimeouts(5*time.Second, 5*time.Second, 5*time.Second, 30*time.Second).
 		Build()
 
 	require.NoError(t, err)
@@ -461,7 +461,7 @@ func TestEnhancedConnectionPool_ConnectionLifecycle(t *testing.T) {
 	config, err := NewConfigBuilder().
 		WithBasicAuth("192.168.1.1", "admin", "password").
 		WithProtocol(ProtocolSSH, PlatformCiscoIOSXE).
-		WithTimeouts(5*time.Second, 5*time.Second, 5*time.Second).
+		WithTimeouts(5*time.Second, 5*time.Second, 5*time.Second, 30*time.Second).
 		Build()
 
 	require.NoError(t, err)

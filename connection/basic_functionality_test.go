@@ -14,7 +14,7 @@ func TestBasicConnectionPoolFunctionality(t *testing.T) {
 	config, err := NewConfigBuilder().
 		WithBasicAuth("192.168.1.1", "admin", "password").
 		WithProtocol(ProtocolSSH, PlatformCiscoIOSXE).
-		WithTimeouts(10*time.Second, 10*time.Second, 5*time.Second).
+		WithTimeouts(10*time.Second, 10*time.Second, 5*time.Second, 30*time.Second).
 		WithConnectionPool(5, 1, 5*time.Minute, 30*time.Second).
 		Build()
 

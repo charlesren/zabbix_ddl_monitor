@@ -124,12 +124,12 @@ func NewRouterScheduler(parentCtx context.Context, router *syncer.Router, initia
 	scheduler.initializeQueues()
 
 	// 8. 创建异步执行器，使用配置中的任务重试策略（指数退避）
-	ylog.Infof("scheduler", "创建异步执行器 router=%s，使用任务重试策略：maxRetries=%d, baseDelay=%v, backoff=%.1f (前台任务重试)",
-		router.IP, config.TaskMaxRetries, config.TaskRetryInterval, config.TaskBackoffFactor)
+	ylog.Infof("scheduler", "创建异步执行器 router=%s，任务超时=%v，任务重试策略：maxRetries=%d, baseDelay=%v, backoff=%.1f (前台任务重试)",
+		router.IP, config.TaskTimeout, config.TaskMaxRetries, config.TaskRetryInterval, config.TaskBackoffFactor)
 
 	scheduler.asyncExecutor = task.NewAsyncExecutor(
 		3,
-		task.WithSmartTimeout(60*time.Second),
+		task.WithSmartTimeout(config.TaskTimeout),
 		// 使用配置中的任务重试策略（指数退避）
 		task.WithExponentialRetry(config.TaskMaxRetries, config.TaskRetryInterval, config.TaskBackoffFactor),
 	)
