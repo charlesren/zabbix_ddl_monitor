@@ -23,33 +23,37 @@ func NewIntervalTaskQueue(interval time.Duration) *IntervalTaskQueue {
 	// 确保间隔至少为1纳秒以避免time.NewTicker panic
 	if interval <= 0 {
 		interval = time.Nanosecond
+		ylog.Warnf("queue", "间隔为0，使用默认值1纳秒")
 	}
-	ylog.Infof("queue", "creating new task queue (interval=%v)", interval)
+	ylog.Infof("queue", "创建新的任务队列 (间隔=%v)", interval)
 	q := &IntervalTaskQueue{
 		interval:   interval,
 		execNotify: make(chan struct{}, 200), // 缓冲防止阻塞
 		ticker:     time.NewTicker(interval),
 		stopChan:   make(chan struct{}),
 	}
+	ylog.Infof("queue", "启动队列调度器 (间隔=%v)", interval)
 	go q.schedule()
 	return q
 }
 
 // 内部调度循环
 func (q *IntervalTaskQueue) schedule() {
-	ylog.Infof("queue", "scheduler started (interval=%v)", q.interval)
+	ylog.Infof("queue", "队列调度器启动 (间隔=%v)", q.interval)
+	tickerCount := 0
 	for {
 		select {
 		case <-q.ticker.C:
-			ylog.Infof("queue", "ticker fired for interval %v", q.interval)
+			tickerCount++
+			ylog.Infof("queue", "ticker触发 #%d (间隔=%v)", tickerCount, q.interval)
 			select {
 			case q.execNotify <- struct{}{}: // 非阻塞发送信号
-				ylog.Infof("queue", "sent exec signal (interval=%v)", q.interval)
+				ylog.Infof("queue", "发送执行信号 (间隔=%v)", q.interval)
 			default:
-				ylog.Warnf("queue", "exec signal dropped - channel blocked (interval=%v)", q.interval)
+				ylog.Warnf("queue", "执行信号丢弃 - 通道阻塞 (间隔=%v)", q.interval)
 			}
 		case <-q.stopChan:
-			ylog.Infof("queue", "scheduler stopping (interval=%v)", q.interval)
+			ylog.Infof("queue", "队列调度器停止 (间隔=%v, 总共触发%d次)", q.interval, tickerCount)
 			return
 		}
 	}

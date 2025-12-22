@@ -414,7 +414,8 @@ func (cs *ConfigSyncer) fetchLines() (map[string]Line, error) {
 		}
 		line.ComputeHash()
 		lines[line.IP] = line
-		ylog.Debugf("syncer", "get lines ip: %v, associated router: %v", line.IP, line.Router.IP)
+		ylog.Infof("syncer", "专线详情: 专线IP=%v, 路由器IP=%v, 间隔=%v, 平台=%v, 协议=%v",
+			line.IP, line.Router.IP, line.Interval, line.Router.Platform, line.Router.Protocol)
 	}
 	ylog.Infof("syncer", "processed %d/%d valid lines", len(lines), len(hosts))
 	return lines, nil

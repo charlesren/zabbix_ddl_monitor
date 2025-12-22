@@ -478,8 +478,16 @@ func (m *Manager) fullSync() {
 	newRouterLines := make(map[string][]syncer.Line)
 
 	// 按路由器分组专线
+	routerCounts := make(map[string]int)
 	for _, line := range lines {
 		newRouterLines[line.Router.IP] = append(newRouterLines[line.Router.IP], line)
+		routerCounts[line.Router.IP]++
+	}
+
+	// 记录路由器分布情况
+	ylog.Infof("manager", "路由器分组统计: 总共%d个路由器", len(routerCounts))
+	for routerIP, count := range routerCounts {
+		ylog.Infof("manager", "  - 路由器 %s: %d条专线", routerIP, count)
 	}
 
 	// 更新专线列表
@@ -488,9 +496,12 @@ func (m *Manager) fullSync() {
 	m.routerLines = newRouterLines
 
 	// 更新调度器
+	schedulerCount := 0
 	for routerIP, lines := range newRouterLines {
 		m.ensureScheduler(routerIP, lines)
+		schedulerCount++
 	}
+	ylog.Infof("manager", "调度器更新完成: 创建/更新了%d个调度器", schedulerCount)
 
 	// 清理无专线的调度器
 	for routerIP := range m.schedulers {
@@ -653,6 +664,7 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 // 确保调度器存在
 func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 	if _, exists := m.schedulers[routerIP]; !exists {
+		ylog.Infof("manager", "开始创建调度器: router=%s, lines=%d", routerIP, len(lines))
 		scheduler := m.createScheduler(&lines[0].Router, lines)
 		if scheduler == nil {
 			ylog.Errorf("manager", "scheduler creation failed for %s", routerIP)
@@ -661,11 +673,15 @@ func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 		}
 		m.schedulers[routerIP] = scheduler
 		go func() {
+			ylog.Infof("manager", "启动调度器: router=%s", routerIP)
 			m.safeExecute("scheduler.Start", scheduler.Start)
+			ylog.Infof("manager", "调度器已启动: router=%s", routerIP)
 		}()
 
 		// 记录调度器创建
-		ylog.Infof("manager", "创建调度器: router=%s, lines=%d", routerIP, len(lines))
+		ylog.Infof("manager", "创建调度器完成: router=%s, lines=%d", routerIP, len(lines))
+	} else {
+		ylog.Debugf("manager", "调度器已存在: router=%s", routerIP)
 	}
 }
 
@@ -673,6 +689,8 @@ func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 func (m *Manager) createScheduler(router *syncer.Router, lines []syncer.Line) Scheduler {
 	var scheduler Scheduler
 	var err error
+
+	ylog.Infof("manager", "开始创建调度器: router=%s, lines=%d", router.IP, len(lines))
 
 	// 使用安全执行创建调度器
 	func() {
@@ -687,10 +705,17 @@ func (m *Manager) createScheduler(router *syncer.Router, lines []syncer.Line) Sc
 	}()
 
 	if err != nil {
-		ylog.Errorf("manager", "failed to create scheduler for %s: %v", router.IP, err)
+		ylog.Errorf("manager", "创建调度器失败: router=%s, 错误=%v", router.IP, err)
 		m.recordError("scheduler_init_error")
 		return nil
 	}
+
+	if scheduler == nil {
+		ylog.Errorf("manager", "调度器创建返回nil: router=%s", router.IP)
+		return nil
+	}
+
+	ylog.Infof("manager", "调度器创建成功: router=%s", router.IP)
 	return scheduler
 }
 

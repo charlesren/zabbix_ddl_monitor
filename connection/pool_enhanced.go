@@ -880,7 +880,7 @@ func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Proto
 	var conn *EnhancedPooledConnection
 	var err error
 
-	err = p.resilientExecutor.Execute(p.ctx, func() error {
+	err = p.resilientExecutor.Execute(mergedCtx, func() error {
 		conn, err = p.getConnectionFromPool(pool)
 		return err
 	})
