@@ -62,9 +62,14 @@ func (f *SSHFactory) CreateWithContext(ctx context.Context, config EnhancedConne
 	return NewSSHDriver(session).WithTimeout(timeout), nil
 }
 
-func (f *SSHFactory) HealthCheck(driver ProtocolDriver) bool {
-	// 使用默认超时5秒
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (f *SSHFactory) HealthCheck(driver ProtocolDriver, config EnhancedConnectionConfig) bool {
+	// 使用配置的健康检查超时，默认5秒
+	timeout := config.HealthCheckTimeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	_, err := driver.Execute(ctx, &ProtocolRequest{

@@ -61,7 +61,7 @@ func (m *MockProtocolFactory) CreateWithContext(ctx context.Context, config Enha
 	return nil, errors.New("mock not implemented")
 }
 
-func (m *MockProtocolFactory) HealthCheck(driver ProtocolDriver) bool {
+func (m *MockProtocolFactory) HealthCheck(driver ProtocolDriver, config EnhancedConnectionConfig) bool {
 	if m.HealthCheckFunc != nil {
 		return m.HealthCheckFunc(driver)
 	}

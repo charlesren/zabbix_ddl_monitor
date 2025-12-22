@@ -73,7 +73,8 @@ func (f *ScrapliFactory) CreateWithContext(ctx context.Context, config EnhancedC
 	}
 
 	// 创建context，确保与driver生命周期一致
-	ctx, cancel := context.WithCancel(context.Background())
+	// 使用传入的上下文作为父上下文
+	driverCtx, cancel := context.WithCancel(ctx)
 
 	// 创建driver实例但不立即打开连接
 	scrapliDriver := &ScrapliDriver{
@@ -85,7 +86,7 @@ func (f *ScrapliFactory) CreateWithContext(ctx context.Context, config EnhancedC
 		platform:   platformOS,
 		maxRetries: 3,
 		timeout:    config.ConnectTimeout,
-		ctx:        ctx,
+		ctx:        driverCtx,
 		cancel:     cancel,
 	}
 
@@ -94,11 +95,21 @@ func (f *ScrapliFactory) CreateWithContext(ctx context.Context, config EnhancedC
 
 }
 
-func (f *ScrapliFactory) HealthCheck(driver ProtocolDriver) bool {
+func (f *ScrapliFactory) HealthCheck(driver ProtocolDriver, config EnhancedConnectionConfig) bool {
 	scrapliDriver, ok := driver.(*ScrapliDriver)
 	if !ok {
 		return false
 	}
-	_, err := scrapliDriver.GetPrompt()
+
+	// 使用配置的健康检查超时，默认5秒
+	timeout := config.HealthCheckTimeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	_, err := scrapliDriver.GetPromptWithContext(ctx)
 	return err == nil
 }
