@@ -301,19 +301,22 @@ func (d *ScrapliDriver) WithContext(ctx context.Context) *ScrapliDriver {
 // Connect 使用platform方式建立连接
 func (d *ScrapliDriver) Connect() error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	// 如果已经关闭，直接返回错误
 	if d.closed {
+		d.mu.Unlock()
 		ylog.Errorf("ScrapliDriver", "cannot connect closed driver: host=%s", d.host)
 		return fmt.Errorf("driver already closed")
 	}
 
 	// 如果已经连接，直接返回
 	if d.driver != nil && d.channel != nil {
+		d.mu.Unlock()
 		ylog.Debugf("ScrapliDriver", "already connected: host=%s", d.host)
 		return nil
 	}
+
+	d.mu.Unlock()
 
 	// 确保基础字段初始化
 	if d.ctx == nil {
@@ -571,10 +574,10 @@ func (d *ScrapliDriver) Close() error {
 		d.cancel() // 取消上下文
 		// 给goroutine一点时间响应取消信号
 		ylog.Infof("ScrapliDriver", "cancelling context and waiting for goroutines to respond")
-		// 短暂等待，让goroutine有机会响应取消信号
+		// 重要：等待Scrapli内部goroutine退出
 		// 注意：这里不能持有锁等待，所以先释放锁再等待
 		d.mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // 增加等待时间，让Scrapli内部goroutine有足够时间退出
 		d.mu.Lock()
 
 		// 重新检查状态，因为可能在等待期间发生了变化

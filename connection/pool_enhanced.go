@@ -1099,10 +1099,21 @@ func (p *EnhancedConnectionPool) checkConnectionHealth(proto Protocol, conn *Enh
 		return
 	}
 
+	// 检查连接是否太新，避免对刚创建的连接进行健康检查（新增）
+	// 给Scrapli内部goroutine足够时间启动，避免健康检查失败导致连接被立即清理
+	minAgeForHealthCheck := 15 * time.Second
+	now := time.Now()
+	createdAt := conn.getCreatedAt()
+	if now.Sub(createdAt) < minAgeForHealthCheck {
+		ylog.Infof("pool", "跳过健康检查：连接 %s 太新（%v < %v）",
+			conn.id, now.Sub(createdAt), minAgeForHealthCheck)
+		return
+	}
+
 	// 开始健康检查（设置状态为检查中）
 	if !conn.beginHealthCheck() {
 		state, _ := conn.getStatus()
-		ylog.Debugf("pool", "无法开始健康检查: connection %s state=%s", conn.id, state)
+		ylog.Infof("pool", "无法开始健康检查: connection %s state=%s", conn.id, state)
 		return
 	}
 
@@ -1947,6 +1958,51 @@ type MonitoredDriver struct {
 	useCount int // 使用计数，用于调试和监控
 }
 
+func (md *MonitoredDriver) Connect() error {
+	// 增加连接使用计数
+	md.conn.acquireUse()
+	defer md.conn.releaseUse()
+
+	// 状态转换：到StateConnecting
+	oldState, _ := md.conn.getStatus()
+	if !md.conn.transitionState(StateConnecting) {
+		ylog.Warnf("MonitoredDriver", "无法转换到连接状态: 当前状态=%s", oldState)
+		return fmt.Errorf("cannot transition to connecting state: current=%s", oldState)
+	}
+
+	ylog.Debugf("MonitoredDriver", "状态转换: %s -> %s", oldState, StateConnecting)
+
+	// 调用底层驱动的Connect（需要类型断言，因为ProtocolDriver接口没有Connect方法）
+	// 注意：ScrapliDriver和SSHDriver都有Connect方法，但接口中没有定义
+	var err error
+	if scrapliDriver, ok := md.ProtocolDriver.(interface{ Connect() error }); ok {
+		err = scrapliDriver.Connect()
+	} else if sshDriver, ok := md.ProtocolDriver.(interface{ Connect() error }); ok {
+		err = sshDriver.Connect()
+	} else {
+		// 如果驱动没有Connect方法，记录警告但继续
+		ylog.Warnf("MonitoredDriver", "底层驱动没有Connect方法: %T", md.ProtocolDriver)
+		// 不返回错误，因为有些驱动可能不需要显式连接
+	}
+
+	// 根据连接结果更新状态
+	if err == nil {
+		// 连接成功，转换到StateAcquired
+		if !md.conn.transitionState(StateAcquired) {
+			ylog.Warnf("MonitoredDriver", "连接成功但无法转换到Acquired状态")
+		} else {
+			ylog.Debugf("MonitoredDriver", "连接成功，状态转换: %s -> %s", StateConnecting, StateAcquired)
+		}
+	} else {
+		// 连接失败，回到StateIdle
+		if md.conn.transitionState(StateIdle) {
+			ylog.Debugf("MonitoredDriver", "连接失败，状态恢复: %s -> %s", StateConnecting, StateIdle)
+		}
+	}
+
+	return err
+}
+
 func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
 	// 增加连接使用计数
 	md.conn.acquireUse()
@@ -1954,7 +2010,30 @@ func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*
 	// 确保在函数退出时减少使用计数
 	defer md.conn.releaseUse()
 
-	// 状态转换：从Acquired到Executing
+	// 关键：在调用底层驱动之前，确保连接已建立
+	// 检查当前状态，如果不在执行相关状态，需要先建立连接
+	currentState, _ := md.conn.getStatus()
+
+	switch currentState {
+	case StateIdle:
+		// 连接空闲，需要先获取并建立连接
+		ylog.Debugf("MonitoredDriver", "连接空闲，需要建立连接: state=%s", currentState)
+		// 注意：这里不转换状态，因为tryAcquire()已经转换到StateAcquired
+		// 实际连接建立会在ScrapliDriver.Execute()中触发
+
+	case StateAcquired:
+		// 连接已获取，准备执行
+		ylog.Debugf("MonitoredDriver", "连接已获取，准备执行: state=%s", currentState)
+
+	case StateConnecting:
+		// 连接正在建立中，等待完成
+		ylog.Debugf("MonitoredDriver", "连接正在建立中: state=%s", currentState)
+
+	default:
+		ylog.Warnf("MonitoredDriver", "连接在非常规状态下执行: state=%s", currentState)
+	}
+
+	// 状态转换：从Acquired到Executing（只有已获取的连接才能执行）
 	oldState, _ := md.conn.getStatus()
 	if oldState == StateAcquired {
 		if md.conn.transitionState(StateExecuting) {
@@ -1986,7 +2065,7 @@ func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*
 
 	md.inUse = true
 	md.useCount++
-	currentUse := md.useCount
+	currentUse := md.useCount // 重新声明，因为之前的声明在if块内
 	md.mu.Unlock()
 
 	// 确保在函数退出时释放使用标志
@@ -1997,7 +2076,7 @@ func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*
 	}()
 
 	// 记录调试信息
-	currentState, _ := md.conn.getStatus()
+	currentState, _ = md.conn.getStatus() // 使用赋值，不是声明
 	ylog.Infof("MonitoredDriver", "driver %s executing (state=%s, use count=%d, connection use count=%d)",
 		md.conn.id, currentState, currentUse, md.conn.getUseCount())
 

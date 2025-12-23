@@ -463,23 +463,27 @@ func (conn *EnhancedPooledConnection) getUseCount() int32 {
 
 // safeClose 安全关闭连接，等待使用计数归零
 func (conn *EnhancedPooledConnection) safeClose() error {
-	// 在关闭前检查使用计数
-	useCount := conn.getUseCount()
-	if useCount > 0 {
-		ylog.Infof("EnhancedPooledConnection", "safeClose: 连接 %s 仍有 %d 个使用，等待归零", conn.id, useCount)
+	// 关键：先增加使用计数，防止TOCTOU竞态条件
+	conn.acquireUse()
+	defer conn.releaseUse()
 
-		// 等待使用计数归零（最多等待2秒）
+	// 现在检查是否有其他使用者（使用计数>1表示除了我们之外还有其他人使用）
+	useCount := conn.getUseCount()
+	if useCount > 1 {
+		ylog.Infof("EnhancedPooledConnection", "safeClose: 连接 %s 仍有 %d 个其他使用，等待归零", conn.id, useCount-1)
+
+		// 等待其他使用者完成（最多等待2秒）
 		deadline := time.Now().Add(2 * time.Second)
-		for conn.getUseCount() > 0 && time.Now().Before(deadline) {
+		for conn.getUseCount() > 1 && time.Now().Before(deadline) {
 			time.Sleep(50 * time.Millisecond)
 		}
 
-		// 再次检查使用计数，如果仍然大于0，返回错误而不关闭
+		// 再次检查，如果仍有其他使用者，返回错误而不关闭
 		finalUseCount := conn.getUseCount()
-		if finalUseCount > 0 {
+		if finalUseCount > 1 {
 			ylog.Warnf("EnhancedPooledConnection",
-				"safeClose: 连接 %s 仍有 %d 个使用，跳过关闭", conn.id, finalUseCount)
-			return fmt.Errorf("connection still in use: useCount=%d", finalUseCount)
+				"safeClose: 连接 %s 仍有 %d 个其他使用，跳过关闭", conn.id, finalUseCount-1)
+			return fmt.Errorf("connection still in use by others: useCount=%d", finalUseCount-1)
 		}
 	}
 

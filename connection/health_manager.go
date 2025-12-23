@@ -139,10 +139,21 @@ func (hm *HealthManager) CheckConnectionHealth(proto Protocol, conn *EnhancedPoo
 		return
 	}
 
+	// 检查连接是否太新，避免对刚创建的连接进行健康检查（新增）
+	// 给Scrapli内部goroutine足够时间启动，避免健康检查失败导致连接被立即清理
+	minAgeForHealthCheck := 15 * time.Second
+	now := time.Now()
+	createdAt := conn.getCreatedAt()
+	if now.Sub(createdAt) < minAgeForHealthCheck {
+		ylog.Infof("health_manager", "跳过健康检查：连接 %s 太新（%v < %v）",
+			conn.id, now.Sub(createdAt), minAgeForHealthCheck)
+		return
+	}
+
 	// 开始健康检查（设置状态为检查中）
 	if !conn.beginHealthCheck() {
 		state, _ := conn.getStatus()
-		ylog.Debugf("health_manager", "无法开始健康检查: connection %s state=%s", conn.id, state)
+		ylog.Infof("health_manager", "无法开始健康检查: connection %s state=%s", conn.id, state)
 		return
 	}
 
