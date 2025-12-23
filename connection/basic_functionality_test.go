@@ -274,20 +274,6 @@ func TestHealthStatus(t *testing.T) {
 	assert.Equal(t, "unhealthy", HealthStatusUnhealthy.String())
 }
 
-// Add missing String method for HealthStatus
-func (hs HealthStatus) String() string {
-	switch hs {
-	case HealthStatusHealthy:
-		return "healthy"
-	case HealthStatusDegraded:
-		return "degraded"
-	case HealthStatusUnhealthy:
-		return "unhealthy"
-	default:
-		return "unknown"
-	}
-}
-
 func TestWarmupStatus(t *testing.T) {
 	// Test warmup state constants
 	assert.Equal(t, WarmupStateNotStarted, WarmupState(0))

@@ -20,11 +20,10 @@ func createTestConnection(usageCount, totalRequests, totalErrors int64, createdA
 		metadata:      make(map[string]interface{}),
 	}
 
-	// 使用原子操作设置字段
+	// 在同一包内可以直接访问私有字段，但原子字段需要使用原子操作
 	atomic.StoreInt64(&conn.usageCount, usageCount)
 	atomic.StoreInt64(&conn.totalRequests, totalRequests)
 	atomic.StoreInt64(&conn.totalErrors, totalErrors)
-	// 重置重建标记
 	atomic.StoreInt32(&conn.markedForRebuild, 0)
 
 	return conn
@@ -44,6 +43,8 @@ func TestSmartRebuildDecision(t *testing.T) {
 	pool := &EnhancedConnectionPool{
 		config: *config,
 	}
+	// 创建rebuildManager
+	pool.rebuildManager = NewRebuildManager(config, nil, nil)
 
 	now := time.Now()
 
@@ -316,6 +317,8 @@ func TestGetRebuildReason(t *testing.T) {
 	pool := &EnhancedConnectionPool{
 		config: *config,
 	}
+	// 创建rebuildManager
+	pool.rebuildManager = NewRebuildManager(config, nil, nil)
 
 	now := time.Now()
 
