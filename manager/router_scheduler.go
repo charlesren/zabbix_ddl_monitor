@@ -324,7 +324,7 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 		// 上下文正常，继续
 	}
 
-	conn, err := s.connection.Get(s.router.Protocol)
+	conn, err := s.connection.GetWithContext(s.routerCtx, s.router.Protocol)
 	if err != nil {
 		ylog.Errorf("scheduler", "连接失败: 路由器=%s, 专线=%s, 错误=%v", s.router.IP, line.IP, err)
 		<-s.connSemaphore // 释放信号量
