@@ -547,7 +547,7 @@ func (d *ScrapliDriver) Close() error {
 
 	// 检查是否已经关闭
 	if d.closed {
-		ylog.Debugf("ScrapliDriver", "driver already closed: host=%s", d.host)
+		ylog.Infof("ScrapliDriver", "driver already closed: host=%s", d.host)
 		return nil
 	}
 
@@ -555,30 +555,54 @@ func (d *ScrapliDriver) Close() error {
 	d.closed = true
 
 	// 记录关闭前的状态
-	ylog.Debugf("ScrapliDriver", "closing driver: host=%s, platform=%s, driver=%v, channel=%v",
+	ylog.Infof("ScrapliDriver", "closing driver: host=%s, platform=%s, driver=%v, channel=%v",
 		d.host, d.platform, d.driver != nil, d.channel != nil)
+
+	// 即使driver为nil，也要清理channel
+	if d.driver == nil {
+		ylog.Infof("ScrapliDriver", "driver already nil, nothing to close")
+		d.channel = nil
+		ylog.Infof("ScrapliDriver", "driver closed (was already nil): host=%s", d.host)
+		return nil
+	}
 
 	// 先取消上下文，停止所有相关操作
 	if d.cancel != nil {
 		d.cancel() // 取消上下文
-		// 给goroutine一点时间响应取消信号，但使用更智能的等待
-		ylog.Debugf("ScrapliDriver", "cancelling context and waiting for goroutines to respond")
-	}
+		// 给goroutine一点时间响应取消信号
+		ylog.Infof("ScrapliDriver", "cancelling context and waiting for goroutines to respond")
+		// 短暂等待，让goroutine有机会响应取消信号
+		// 注意：这里不能持有锁等待，所以先释放锁再等待
+		d.mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		d.mu.Lock()
 
-	// 即使driver为nil，也要清理channel
-	if d.driver == nil {
-		ylog.Debugf("ScrapliDriver", "driver already nil, nothing to close")
-		d.channel = nil
-		ylog.Infof("ScrapliDriver", "driver closed (was already nil): host=%s", d.host)
-		return nil
+		// 重新检查状态，因为可能在等待期间发生了变化
+		if d.closed && d.driver == nil {
+			// 已经在等待期间被其他goroutine关闭了
+			ylog.Infof("ScrapliDriver", "driver already closed during wait period")
+			return nil
+		}
 	}
 
 	// 检查driver的实际状态，避免在无效状态时关闭
 	// 注意：我们无法直接检查scrapli driver的内部状态，但可以尝试安全关闭
 	var err error
 	if d.driver != nil {
-		// 尝试关闭driver，但处理可能的"预期内"错误
-		err = d.driver.Close()
+		// 使用recover保护，防止scrapligo内部panic导致整个程序崩溃
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					ylog.Errorf("ScrapliDriver", "panic during driver.Close(): %v", r)
+					err = fmt.Errorf("panic during close: %v", r)
+					// 即使发生panic，也要继续清理资源
+				}
+			}()
+
+			// 尝试关闭driver，但处理可能的"预期内"错误
+			err = d.driver.Close()
+		}()
+
 		if err != nil {
 			// 检查是否为"预期内"的错误，这些错误可以安全忽略
 			errStr := err.Error()
@@ -586,11 +610,12 @@ func (d *ScrapliDriver) Close() error {
 				strings.Contains(errStr, "use of closed network connection") ||
 				strings.Contains(errStr, "already closed") ||
 				strings.Contains(errStr, "connection reset by peer") ||
-				strings.Contains(errStr, "broken pipe")
+				strings.Contains(errStr, "broken pipe") ||
+				strings.Contains(errStr, "send on closed channel") // 添加对特定错误的处理
 
 			if isExpectedError {
 				// 这些是预期内的错误，通常发生在driver已经关闭或连接已断开时
-				ylog.Debugf("ScrapliDriver", "ignoring expected close error: %v", err)
+				ylog.Infof("ScrapliDriver", "ignoring expected close error: %v", err)
 				err = nil // 重置错误，因为这是预期情况
 			} else {
 				// 这是意外的错误，需要记录警告
@@ -607,7 +632,7 @@ func (d *ScrapliDriver) Close() error {
 	// 只重置我们创建的临时context
 	if d.ctx != nil && d.ctx.Err() == nil {
 		// 这是一个活动的context，可能是Factory创建的，不重置
-		ylog.Debugf("ScrapliDriver", "keeping factory-created context")
+		ylog.Infof("ScrapliDriver", "keeping factory-created context")
 	} else {
 		// 这是一个已取消或我们创建的context，可以清理
 		d.ctx = nil

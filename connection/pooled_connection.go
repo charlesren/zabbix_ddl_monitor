@@ -38,6 +38,9 @@ type EnhancedPooledConnection struct {
 	totalRequests   int64
 	totalErrors     int64
 
+	// 使用保护（新增）
+	usingCount int32 // 原子操作，记录有多少地方在使用此连接
+
 	// 标签和元数据
 	labels   map[string]string
 	metadata map[string]interface{}
@@ -426,4 +429,21 @@ func (conn *EnhancedPooledConnection) isHealthy() bool {
 	// 连接健康的条件：不是不健康状态
 	// HealthStatusUnknown 和 HealthStatusDegraded 都认为是健康的
 	return conn.healthStatus != HealthStatusUnhealthy
+}
+
+// 使用计数相关方法（新增）
+
+// acquireUse 增加使用计数
+func (conn *EnhancedPooledConnection) acquireUse() int32 {
+	return atomic.AddInt32(&conn.usingCount, 1)
+}
+
+// releaseUse 减少使用计数
+func (conn *EnhancedPooledConnection) releaseUse() int32 {
+	return atomic.AddInt32(&conn.usingCount, -1)
+}
+
+// getUseCount 获取使用计数
+func (conn *EnhancedPooledConnection) getUseCount() int32 {
+	return atomic.LoadInt32(&conn.usingCount)
 }

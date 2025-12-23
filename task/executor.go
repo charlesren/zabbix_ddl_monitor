@@ -38,7 +38,10 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 
 	cmd, err := task.BuildCommand(ctx)
 	if err != nil {
-		ylog.Errorf(logModule, "构建命令失败 for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
+		ylog.Errorf(logModule, "ExecutionError: 构建命令失败, task=%s, platform=%s, protocol=%s, error=%v",
+			ctx.TaskType, ctx.Platform, ctx.Protocol, err)
+		ylog.Infof(logModule, "命令构建失败详情: target_ip=%v, command_type=%s, params=%+v",
+			ctx.Params["target_ip"], ctx.CommandType, ctx.Params)
 		return Result{
 			Success: false,
 			Error:   err.Error(),
@@ -71,7 +74,10 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 		}
 		payload = v
 	default:
-		ylog.Errorf(logModule, "不支持的载荷类型 %T for task %s on %s", cmd.Payload, ctx.TaskType, ctx.Platform)
+		ylog.Errorf(logModule, "ExecutionError: 不支持的载荷类型, task=%s, platform=%s, protocol=%s, payload_type=%T",
+			ctx.TaskType, ctx.Platform, ctx.Protocol, cmd.Payload)
+		ylog.Infof(logModule, "不支持的载荷类型详情: target_ip=%v, command_type=%s, expected_types=[[]string, []*channel.SendInteractiveEvent]",
+			ctx.Params["target_ip"], ctx.CommandType)
 		return Result{
 			Success: false,
 			Error:   "unsupported payload type",
@@ -87,16 +93,28 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 
 	if err != nil {
 		duration := time.Since(start)
-		ylog.Errorf(logModule, "执行失败 for %s on %s after %v: %v", ctx.TaskType, ctx.Platform, duration, err)
 		// 检查错误类型，设置相应的状态
 		status := StatusExecutionError
 		if ctx.Ctx != nil && ctx.Ctx.Err() == context.DeadlineExceeded {
 			status = StatusCheckTimeout
+			ylog.Errorf(logModule, "CheckTimeout: 任务执行超时, task=%s, platform=%s, protocol=%s, duration=%v, timeout_reason=%v, error=%v",
+				ctx.TaskType, ctx.Platform, ctx.Protocol, duration, ctx.Ctx.Err(), err)
+			ylog.Infof(logModule, "CheckTimeout详情: target_ip=%v, params=%+v",
+				ctx.Params["target_ip"], ctx.Params)
 		} else if strings.Contains(strings.ToLower(err.Error()), "connection") ||
 			strings.Contains(strings.ToLower(err.Error()), "connect") ||
 			strings.Contains(strings.ToLower(err.Error()), "timeout") {
 			status = StatusConnectionError
+			ylog.Errorf(logModule, "ConnectionError: 连接错误, task=%s, platform=%s, protocol=%s, duration=%v, error=%v",
+				ctx.TaskType, ctx.Platform, ctx.Protocol, duration, err)
+		} else {
+			// ExecutionError
+			ylog.Errorf(logModule, "ExecutionError: 执行错误, task=%s, platform=%s, protocol=%s, duration=%v, error=%v",
+				ctx.TaskType, ctx.Platform, ctx.Protocol, duration, err)
+			ylog.Infof(logModule, "ExecutionError详情: target_ip=%v, command_type=%s, params=%+v",
+				ctx.Params["target_ip"], ctx.CommandType, ctx.Params)
 		}
+
 		return Result{
 			Success: false,
 			Error:   err.Error(),
@@ -128,13 +146,17 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 			result.Data["status"] = StatusParseFailed
 		}
 	} else if !result.Success {
-		ylog.Warnf(logModule, "任务 %s on %s 执行完成但失败 after %v: %s", ctx.TaskType, ctx.Platform, duration, result.Error)
+		ylog.Warnf(logModule, "ExecutionError: 任务执行完成但失败, task=%s, platform=%s, protocol=%s, duration=%v, error=%s",
+			ctx.TaskType, ctx.Platform, ctx.Protocol, duration, result.Error)
+		ylog.Infof(logModule, "任务失败详情: target_ip=%v, command_type=%s, result_data=%+v",
+			ctx.Params["target_ip"], ctx.CommandType, result.Data)
 		// 确保失败的结果也有status字段
 		if result.Data == nil {
 			result.Data = make(map[string]interface{})
 		}
 		if _, hasStatus := result.Data["status"]; !hasStatus {
 			result.Data["status"] = StatusExecutionError
+			ylog.Infof(logModule, "设置默认状态为ExecutionError: task=%s, platform=%s", ctx.TaskType, ctx.Platform)
 		}
 	} else {
 		ylog.Infof(logModule, "任务 %s on %s 执行成功 in %v", ctx.TaskType, ctx.Platform, duration)
@@ -154,7 +176,10 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 	ylog.Debugf(logModule, "creating new executor with %d middlewares", len(middlewares))
 	core := func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
 		if err := task.ValidateParams(ctx.Params); err != nil {
-			ylog.Errorf(logModule, "parameter validation failed for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
+			ylog.Errorf(logModule, "ExecutionError: 参数验证失败, task=%s, platform=%s, protocol=%s, error=%v",
+				ctx.TaskType, ctx.Platform, ctx.Protocol, err)
+			ylog.Infof(logModule, "参数验证失败详情: target_ip=%v, command_type=%s, params=%+v",
+				ctx.Params["target_ip"], ctx.CommandType, ctx.Params)
 			return Result{
 				Success: false,
 				Error:   err.Error(),
@@ -174,7 +199,10 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 
 		cmd, err := task.BuildCommand(ctx)
 		if err != nil {
-			ylog.Errorf(logModule, "failed to build command for %s on %s: %v", ctx.TaskType, ctx.Platform, err)
+			ylog.Errorf(logModule, "ExecutionError: 构建命令失败, task=%s, platform=%s, protocol=%s, error=%v",
+				ctx.TaskType, ctx.Platform, ctx.Protocol, err)
+			ylog.Infof(logModule, "命令构建失败详情: target_ip=%v, command_type=%s, params=%+v",
+				ctx.Params["target_ip"], ctx.CommandType, ctx.Params)
 			return Result{
 				Success: false,
 				Error:   err.Error(),
@@ -191,6 +219,10 @@ func NewExecutor(callback func(Result, error), middlewares ...Middleware) *Execu
 		case []*channel.SendInteractiveEvent:
 			payload = v
 		default:
+			ylog.Errorf(logModule, "ExecutionError: 不支持的载荷类型, task=%s, platform=%s, protocol=%s, payload_type=%T",
+				ctx.TaskType, ctx.Platform, ctx.Protocol, cmd.Payload)
+			ylog.Infof(logModule, "不支持的载荷类型详情: target_ip=%v, command_type=%s, expected_types=[[]string, []*channel.SendInteractiveEvent]",
+				ctx.Params["target_ip"], ctx.CommandType)
 			return Result{
 				Success: false,
 				Error:   "unsupported payload type",

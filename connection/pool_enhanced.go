@@ -634,6 +634,7 @@ func (p *EnhancedConnectionPool) createConnection(ctx context.Context, pool *Enh
 		lastUsed:         time.Now(),
 		lastRebuiltAt:    time.Time{}, // 初始化为零值，表示从未重建
 		markedForRebuild: 0,           // 新连接不应该标记为正在重建
+		usingCount:       0,           // 新连接使用计数为0（新增）
 		state:            StateIdle,   // 新连接初始状态为空闲
 		healthStatus:     HealthStatusUnknown,
 		labels:           make(map[string]string),
@@ -1287,6 +1288,12 @@ func (p *EnhancedConnectionPool) cleanupConnections() {
 
 // shouldCleanupConnection 判断是否应该清理连接
 func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledConnection, now time.Time) bool {
+	// 第一层检查：使用计数 > 0 的连接不应该清理
+	if conn.getUseCount() > 0 {
+		ylog.Infof("connection_pool", "跳过清理：连接 %s 使用计数=%d", conn.id, conn.getUseCount())
+		return false
+	}
+
 	// 使用线程安全的方法获取连接状态
 	inUse, valid, health := conn.getState()
 
@@ -1902,6 +1909,12 @@ type MonitoredDriver struct {
 }
 
 func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*ProtocolResponse, error) {
+	// 增加连接使用计数
+	md.conn.acquireUse()
+
+	// 确保在函数退出时减少使用计数
+	defer md.conn.releaseUse()
+
 	// 并发保护：检查driver是否正在被使用
 	md.mu.Lock()
 	if md.inUse {
@@ -1929,7 +1942,8 @@ func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*
 	}()
 
 	// 记录调试信息
-	ylog.Debugf("MonitoredDriver", "driver %s executing (use count=%d)", md.conn.id, currentUse)
+	ylog.Infof("MonitoredDriver", "driver %s executing (use count=%d, connection use count=%d)",
+		md.conn.id, currentUse, md.conn.getUseCount())
 
 	start := time.Now()
 	resp, err := md.ProtocolDriver.Execute(ctx, req)
