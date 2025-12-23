@@ -570,7 +570,7 @@ func (p *EnhancedConnectionPool) tryCreateNewConnection(ctx context.Context, poo
 	// 双重检查：连接数是否仍然未满
 	if len(pool.connections) >= p.maxConnections {
 		ylog.Debugf("EnhancedConnectionPool", "tryCreateNewConnection: 连接池在创建过程中已满，关闭新连接")
-		newConn.driver.Close()
+		newConn.safeClose()
 		return nil, nil
 	}
 
@@ -580,7 +580,7 @@ func (p *EnhancedConnectionPool) tryCreateNewConnection(ctx context.Context, poo
 	for _, existingConn := range pool.connections {
 		if existingConn.id == newConn.id {
 			ylog.Infof("EnhancedConnectionPool", "tryCreateNewConnection: 连接已存在，关闭重复连接: id=%s", newConn.id)
-			newConn.driver.Close()
+			newConn.safeClose()
 			return nil, nil
 		}
 	}
@@ -699,7 +699,7 @@ func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool
 	replaced := p.replaceConnectionWithLock(pool, oldID, oldConn, newConn)
 	if !replaced {
 		// 替换失败，关闭新连接
-		newConn.driver.Close()
+		newConn.safeClose()
 		return
 	}
 
@@ -712,10 +712,18 @@ func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool
 
 // canStartRebuild 检查是否可以开始重建（快速检查，不持有锁）
 func (p *EnhancedConnectionPool) canStartRebuild(oldConn *EnhancedPooledConnection, oldID string) bool {
+	// 检查连接是否正在使用（状态检查）
 	if oldConn.isInUse() {
 		ylog.Infof("connection_pool", "连接 %s 正在使用，跳过重建", oldID)
 		return false
 	}
+
+	// 检查使用计数
+	if oldConn.getUseCount() > 0 {
+		ylog.Infof("connection_pool", "连接 %s 使用计数=%d，跳过重建", oldID, oldConn.getUseCount())
+		return false
+	}
+
 	return true
 }
 
@@ -811,7 +819,7 @@ func (p *EnhancedConnectionPool) cleanupOldConnection(pool *EnhancedDriverPool, 
 		}
 	}()
 
-	oldConn.driver.Close()
+	oldConn.safeClose()
 	atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
 	oldConn.completeClose()
 }
@@ -1098,8 +1106,17 @@ func (p *EnhancedConnectionPool) checkConnectionHealth(proto Protocol, conn *Enh
 		return
 	}
 
+	// 创建MonitoredDriver来包装driver，以便正确管理使用计数
+	monitoredDriver := &MonitoredDriver{
+		ProtocolDriver: conn.driver,
+		conn:           conn,
+		pool:           p,
+		protocol:       conn.protocol,
+		startTime:      time.Now(),
+	}
+
 	start := time.Now()
-	err := p.defaultHealthCheck(conn.driver)
+	err := p.defaultHealthCheck(monitoredDriver)
 	duration := time.Since(start)
 
 	success := err == nil
@@ -1264,7 +1281,9 @@ func (p *EnhancedConnectionPool) cleanupConnections() {
 								}
 							}()
 
-							c.driver.Close()
+							if err := c.safeClose(); err != nil {
+								ylog.Warnf("connection_pool", "安全关闭连接失败: id=%s, error=%v", c.id, err)
+							}
 							atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
 							p.collector.IncrementConnectionsDestroyed(proto)
 							p.sendEvent(EventConnectionDestroyed, proto, c)
@@ -1294,12 +1313,32 @@ func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledCon
 		return false
 	}
 
-	// 使用线程安全的方法获取连接状态
-	inUse, valid, health := conn.getState()
+	// 获取连接状态
+	state, health := conn.getStatus()
 
-	// 连接正在使用，不应该清理
-	if inUse {
-		return false
+	// 第二层检查：以下状态的连接不应该被清理
+	nonCleanableStates := []ConnectionState{
+		StateConnecting, // 连接中
+		StateAcquired,   // 已获取
+		StateExecuting,  // 执行中
+		StateChecking,   // 检查中
+		StateRebuilding, // 重建中
+		StateClosing,    // 关闭中
+	}
+
+	for _, s := range nonCleanableStates {
+		if state == s {
+			ylog.Debugf("connection_pool", "跳过清理：连接 %s 状态=%s", conn.id, state)
+			return false
+		}
+	}
+
+	// 只有 StateIdle 状态的连接可以被清理
+	// 检查连接有效性（StateClosed 状态也应该被清理）
+	valid := state != StateClosed && state != StateClosing
+	if !valid {
+		ylog.Debugf("connection_pool", "连接无效需要清理：%s 状态=%s", conn.id, state)
+		return true
 	}
 
 	// 检查空闲时间
@@ -1869,8 +1908,8 @@ func (p *EnhancedConnectionPool) Close() error {
 				// 设置连接为无效状态
 				c.setHealth(HealthStatusUnhealthy, false)
 
-				// 关闭底层驱动
-				if err := c.driver.Close(); err != nil {
+				// 安全关闭底层驱动
+				if err := c.safeClose(); err != nil {
 					closeErrorsMu.Lock()
 					errors = append(errors, fmt.Errorf("protocol %s, connection %s: %w", proto, c.id, err))
 					closeErrorsMu.Unlock()
@@ -1915,6 +1954,22 @@ func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*
 	// 确保在函数退出时减少使用计数
 	defer md.conn.releaseUse()
 
+	// 状态转换：从Acquired到Executing
+	oldState, _ := md.conn.getStatus()
+	if oldState == StateAcquired {
+		if md.conn.transitionState(StateExecuting) {
+			// 确保在函数退出时恢复状态
+			defer func() {
+				md.conn.transitionState(StateAcquired)
+			}()
+			ylog.Debugf("MonitoredDriver", "状态转换: %s -> %s", oldState, StateExecuting)
+		} else {
+			ylog.Warnf("MonitoredDriver", "无法转换到执行状态: 当前状态=%s", oldState)
+		}
+	} else {
+		ylog.Debugf("MonitoredDriver", "保持当前状态执行: %s", oldState)
+	}
+
 	// 并发保护：检查driver是否正在被使用
 	md.mu.Lock()
 	if md.inUse {
@@ -1942,8 +1997,9 @@ func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*
 	}()
 
 	// 记录调试信息
-	ylog.Infof("MonitoredDriver", "driver %s executing (use count=%d, connection use count=%d)",
-		md.conn.id, currentUse, md.conn.getUseCount())
+	currentState, _ := md.conn.getStatus()
+	ylog.Infof("MonitoredDriver", "driver %s executing (state=%s, use count=%d, connection use count=%d)",
+		md.conn.id, currentState, currentUse, md.conn.getUseCount())
 
 	start := time.Now()
 	resp, err := md.ProtocolDriver.Execute(ctx, req)

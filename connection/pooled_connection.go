@@ -51,6 +51,12 @@ func (conn *EnhancedPooledConnection) tryAcquire() bool {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
+	// 第一层检查：使用计数 > 0 的连接不应该被获取（用于清理）
+	if conn.getUseCount() > 0 {
+		ylog.Infof("EnhancedPooledConnection", "tryAcquire: 连接正在使用中: id=%s, useCount=%d", conn.id, conn.getUseCount())
+		return false
+	}
+
 	// 检查连接是否可用
 	if conn.state != StateIdle {
 		ylog.Debugf("EnhancedPooledConnection", "tryAcquire: 连接不可用: id=%s, state=%s", conn.id, conn.state)
@@ -266,6 +272,13 @@ func (conn *EnhancedPooledConnection) canTransitionTo(targetState ConnectionStat
 	return CanTransition(conn.state, targetState)
 }
 
+// transitionState 转换连接状态（线程安全）
+func (conn *EnhancedPooledConnection) transitionState(targetState ConnectionState) bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.transitionStateLocked(targetState)
+}
+
 // beginHealthCheck 开始健康检查
 func (conn *EnhancedPooledConnection) beginHealthCheck() bool {
 	conn.mu.Lock()
@@ -446,4 +459,30 @@ func (conn *EnhancedPooledConnection) releaseUse() int32 {
 // getUseCount 获取使用计数
 func (conn *EnhancedPooledConnection) getUseCount() int32 {
 	return atomic.LoadInt32(&conn.usingCount)
+}
+
+// safeClose 安全关闭连接，等待使用计数归零
+func (conn *EnhancedPooledConnection) safeClose() error {
+	// 在关闭前检查使用计数
+	useCount := conn.getUseCount()
+	if useCount > 0 {
+		ylog.Infof("EnhancedPooledConnection", "safeClose: 连接 %s 仍有 %d 个使用，等待归零", conn.id, useCount)
+
+		// 等待使用计数归零（最多等待2秒）
+		deadline := time.Now().Add(2 * time.Second)
+		for conn.getUseCount() > 0 && time.Now().Before(deadline) {
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		// 再次检查使用计数，如果仍然大于0，返回错误而不关闭
+		finalUseCount := conn.getUseCount()
+		if finalUseCount > 0 {
+			ylog.Warnf("EnhancedPooledConnection",
+				"safeClose: 连接 %s 仍有 %d 个使用，跳过关闭", conn.id, finalUseCount)
+			return fmt.Errorf("connection still in use: useCount=%d", finalUseCount)
+		}
+	}
+
+	// 执行关闭
+	return conn.driver.Close()
 }
