@@ -1,7 +1,6 @@
 package connection
 
 import (
-	"context"
 	"strings"
 	"time"
 
@@ -95,136 +94,14 @@ func (hm *HealthManager) WithMaxConcurrentChecks(max int) *HealthManager {
 	return hm
 }
 
-// PerformHealthChecks 执行健康检查
-func (hm *HealthManager) PerformHealthChecks(pools map[Protocol]*EnhancedDriverPool) {
-	if len(pools) == 0 {
-		return
-	}
-
-	// 限制并发检查数量
-	sem := make(chan struct{}, hm.maxConcurrentChecks)
-
-	for proto, pool := range pools {
-		// 快速收集需要检查的连接（使用读锁，最小化持有时间）
-		pool.mu.RLock()
-		connections := make([]*EnhancedPooledConnection, 0, len(pool.connections))
-		for _, conn := range pool.connections {
-			if !conn.isInUse() {
-				connections = append(connections, conn)
-			}
-		}
-		pool.mu.RUnlock()
-
-		if len(connections) == 0 {
-			continue
-		}
-
-		ylog.Debugf("health_manager", "准备健康检查 %d 个连接: protocol=%s", len(connections), proto)
-
-		// 并发进行健康检查，但有限制
-		for _, conn := range connections {
-			sem <- struct{}{}
-			go func(proto Protocol, conn *EnhancedPooledConnection) {
-				defer func() { <-sem }()
-				hm.CheckConnectionHealth(proto, conn)
-			}(proto, conn)
-		}
-	}
+// GetHealthCheckTime 获取健康检查间隔时间
+func (hm *HealthManager) GetHealthCheckTime() time.Duration {
+	return hm.healthCheckTime
 }
 
-// CheckConnectionHealth 检查单个连接健康状态
-func (hm *HealthManager) CheckConnectionHealth(proto Protocol, conn *EnhancedPooledConnection) {
-	// 检查连接是否正在使用，跳过正在使用的连接
-	if conn.isInUse() {
-		return
-	}
-
-	// 检查连接是否太新，避免对刚创建的连接进行健康检查（新增）
-	// 给Scrapli内部goroutine足够时间启动，避免健康检查失败导致连接被立即清理
-	minAgeForHealthCheck := 15 * time.Second
-	now := time.Now()
-	createdAt := conn.getCreatedAt()
-	if now.Sub(createdAt) < minAgeForHealthCheck {
-		ylog.Infof("health_manager", "跳过健康检查：连接 %s 太新（%v < %v）",
-			conn.id, now.Sub(createdAt), minAgeForHealthCheck)
-		return
-	}
-
-	// 开始健康检查（设置状态为检查中）
-	if !conn.beginHealthCheck() {
-		state, _ := conn.getStatus()
-		ylog.Infof("health_manager", "无法开始健康检查: connection %s state=%s", conn.id, state)
-		return
-	}
-
-	start := time.Now()
-	err := hm.DefaultHealthCheck(conn.driver)
-	duration := time.Since(start)
-
-	success := err == nil
-	conn.recordHealthCheck(success, err)
-
-	// 记录指标和事件
-	if !success {
-		errorType := hm.ClassifyHealthCheckError(err)
-
-		// 根据错误类型记录不同级别的日志
-		switch errorType {
-		case HealthErrorTimeout:
-			ylog.Warnf("health_manager", "connection %s health check timeout: %v", conn.id, err)
-		case HealthErrorNetwork:
-			ylog.Warnf("health_manager", "connection %s network error: %v", conn.id, err)
-		case HealthErrorAuth:
-			ylog.Errorf("health_manager", "connection %s authentication error: %v", conn.id, err)
-		case HealthErrorCommand:
-			ylog.Warnf("health_manager", "connection %s command error: %v", conn.id, err)
-		case HealthErrorProtocol:
-			ylog.Errorf("health_manager", "connection %s protocol error: %v", conn.id, err)
-		default:
-			ylog.Warnf("health_manager", "connection %s health check failed: %v", conn.id, err)
-		}
-
-		hm.collector.IncrementHealthCheckFailed(proto)
-		state, _ := conn.getStatus()
-		hm.sendEvent(EventHealthCheckFailed, proto, map[string]interface{}{
-			"connection_id": conn.id,
-			"error":         err.Error(),
-			"error_type":    errorType.String(),
-			"state":         state.String(),
-		})
-	} else {
-		hm.collector.IncrementHealthCheckSuccess(proto)
-	}
-
-	hm.collector.RecordHealthCheckDuration(proto, duration)
-}
-
-// DefaultHealthCheck 默认健康检查
-func (hm *HealthManager) DefaultHealthCheck(driver ProtocolDriver) error {
-	// 使用配置的超时时间，默认5秒
-	timeout := hm.healthCheckTimeout
-	if timeout == 0 {
-		timeout = 5 * time.Second
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// 尝试执行简单的命令来检查连接是否健康
-	// 优先使用GetPrompt方法，如果不可用则使用Execute方法
-	if driverWithPrompt, ok := driver.(interface {
-		GetPrompt(ctx context.Context) (string, error)
-	}); ok {
-		_, err := driverWithPrompt.GetPrompt(ctx)
-		return err
-	}
-
-	// 回退到Execute方法
-	_, err := driver.Execute(ctx, &ProtocolRequest{
-		CommandType: CommandTypeCommands,
-		Payload:     []string{"show clock"},
-	})
-	return err
+// GetHealthCheckTimeout 获取健康检查超时时间
+func (hm *HealthManager) GetHealthCheckTimeout() time.Duration {
+	return hm.healthCheckTimeout
 }
 
 // ClassifyHealthCheckError 分类健康检查错误
@@ -265,6 +142,13 @@ func (hm *HealthManager) sendEvent(eventType PoolEventType, protocol Protocol, d
 		return
 	}
 
+	// 使用recover避免在通道关闭时panic
+	defer func() {
+		if r := recover(); r != nil {
+			ylog.Debugf("health_manager", "发送事件时发生panic（可能通道已关闭）: %v, event_type=%d", r, eventType)
+		}
+	}()
+
 	select {
 	case hm.eventChan <- PoolEvent{
 		Type:      eventType,
@@ -276,14 +160,4 @@ func (hm *HealthManager) sendEvent(eventType PoolEventType, protocol Protocol, d
 		// 事件通道已满，丢弃事件
 		ylog.Debugf("health_manager", "event channel full, dropping event: %d", eventType)
 	}
-}
-
-// GetHealthCheckTime 获取健康检查间隔时间
-func (hm *HealthManager) GetHealthCheckTime() time.Duration {
-	return hm.healthCheckTime
-}
-
-// GetHealthCheckTimeout 获取健康检查超时时间
-func (hm *HealthManager) GetHealthCheckTimeout() time.Duration {
-	return hm.healthCheckTimeout
 }

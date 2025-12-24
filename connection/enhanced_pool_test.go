@@ -164,6 +164,10 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 		atomic.StoreInt32(&healthCheckCount, 0)
 		fmt.Printf("Counter reset to 0\n")
 
+		// Wait for connections to be old enough for health check (minAgeForHealthCheck is 15 seconds)
+		fmt.Println("Waiting for connections to age for health check")
+		time.Sleep(16 * time.Second)
+
 		// Trigger health check manually
 		fmt.Println("Calling performHealthChecks")
 		pool.performHealthChecks()
@@ -173,9 +177,11 @@ func TestEnhancedConnectionPool_HealthCheck(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Health check should have been called
+		// Note: With new health check logic, only one health check is performed per protocol
+		// (using GetWithContext like pingtask), not per connection
 		count := atomic.LoadInt32(&healthCheckCount)
 		fmt.Printf("Final count: %d\n", count)
-		assert.Greater(t, int(count), 0)
+		assert.GreaterOrEqual(t, int(count), 1)
 	})
 }
 

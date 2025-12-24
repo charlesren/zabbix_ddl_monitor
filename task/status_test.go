@@ -123,7 +123,7 @@ func TestExecutorErrorStatus(t *testing.T) {
 		Params: map[string]interface{}{
 			"target_ip": "192.168.1.1",
 			"repeat":    5,
-			"timeout":   30 * time.Second,
+			"timeout":   2 * time.Second,
 		},
 		Ctx: context.Background(),
 	}

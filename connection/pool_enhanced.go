@@ -1089,7 +1089,25 @@ func (p *EnhancedConnectionPool) performHealthChecks() {
 		return
 	}
 
-	p.healthManager.PerformHealthChecks(p.pools)
+	// 获取需要健康检查的连接
+	connectionsByProtocol := p.GetConnectionsForHealthCheck()
+	if len(connectionsByProtocol) == 0 {
+		return
+	}
+
+	// 限制并发检查数量
+	sem := make(chan struct{}, 10) // 默认最多10个并发检查
+
+	// 为每个连接执行健康检查，使用checkConnectionHealthWithContext
+	for proto, connections := range connectionsByProtocol {
+		for _, conn := range connections {
+			sem <- struct{}{}
+			go func(proto Protocol, conn *EnhancedPooledConnection) {
+				defer func() { <-sem }()
+				p.checkConnectionHealthWithContext(proto, conn)
+			}(proto, conn)
+		}
+	}
 }
 
 // checkConnectionHealth 检查单个连接健康状态
@@ -1166,6 +1184,129 @@ func (p *EnhancedConnectionPool) checkConnectionHealth(proto Protocol, conn *Enh
 	}
 
 	p.collector.RecordHealthCheckDuration(proto, duration)
+}
+
+// checkConnectionHealthWithContext 使用GetWithContext检查连接健康状态（与pingtask相同的方式）
+func (p *EnhancedConnectionPool) checkConnectionHealthWithContext(proto Protocol, conn *EnhancedPooledConnection) {
+	// 检查连接是否正在使用，跳过正在使用的连接
+	if conn.isInUse() {
+		return
+	}
+
+	// 检查连接是否太新，避免对刚创建的连接进行健康检查（新增）
+	// 给Scrapli内部goroutine足够时间启动，避免健康检查失败导致连接被立即清理
+	minAgeForHealthCheck := 15 * time.Second
+	now := time.Now()
+	createdAt := conn.getCreatedAt()
+	if now.Sub(createdAt) < minAgeForHealthCheck {
+		ylog.Infof("pool", "跳过健康检查：连接 %s 太新（%v < %v）",
+			conn.id, now.Sub(createdAt), minAgeForHealthCheck)
+		return
+	}
+
+	// 开始健康检查（设置状态为检查中）
+	if !conn.beginHealthCheck() {
+		state, _ := conn.getStatus()
+		ylog.Infof("pool", "无法开始健康检查: connection %s state=%s", conn.id, state)
+		return
+	}
+
+	// 使用GetWithContext获取连接（与pingtask相同的方式）
+	start := time.Now()
+
+	// 创建上下文，使用健康检查超时时间
+	timeout := p.config.HealthCheckTimeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	driver, err := p.GetWithContext(ctx, proto)
+	acquireDuration := time.Since(start)
+
+	if err != nil {
+		ylog.Warnf("pool", "健康检查获取连接失败: connection_id=%s, protocol=%s, error=%v, duration=%v",
+			conn.id, proto, err, acquireDuration)
+
+		// 记录健康检查失败
+		conn.recordHealthCheck(false, err)
+
+		errorType := classifyHealthCheckError(err)
+		p.collector.IncrementHealthCheckFailed(proto)
+		state, _ := conn.getStatus()
+		p.sendEvent(EventHealthCheckFailed, proto, map[string]interface{}{
+			"connection_id":    conn.id,
+			"error":            err.Error(),
+			"error_type":       errorType.String(),
+			"state":            state.String(),
+			"acquire_duration": acquireDuration.String(),
+		})
+
+		p.collector.RecordHealthCheckDuration(proto, acquireDuration)
+		return
+	}
+
+	// 确保连接被释放
+	defer func() {
+		if releaseErr := p.Release(driver); releaseErr != nil {
+			ylog.Warnf("pool", "健康检查释放连接失败: connection_id=%s, protocol=%s, error=%v",
+				conn.id, proto, releaseErr)
+		}
+	}()
+
+	ylog.Debugf("pool", "健康检查获取连接成功: connection_id=%s, protocol=%s, acquire_duration=%v",
+		conn.id, proto, acquireDuration)
+
+	// 执行健康检查
+	healthCheckStart := time.Now()
+	healthCheckErr := p.defaultHealthCheck(driver)
+	healthCheckDuration := time.Since(healthCheckStart)
+
+	totalDuration := time.Since(start)
+	success := healthCheckErr == nil
+
+	// 记录健康检查结果到连接
+	conn.recordHealthCheck(success, healthCheckErr)
+
+	// 记录指标和事件
+	if !success {
+		errorType := classifyHealthCheckError(healthCheckErr)
+
+		// 根据错误类型记录不同级别的日志
+		switch errorType {
+		case HealthErrorTimeout:
+			ylog.Warnf("pool", "connection %s health check timeout: %v", conn.id, healthCheckErr)
+		case HealthErrorNetwork:
+			ylog.Warnf("pool", "connection %s network error: %v", conn.id, healthCheckErr)
+		case HealthErrorAuth:
+			ylog.Errorf("pool", "connection %s authentication error: %v", conn.id, healthCheckErr)
+		case HealthErrorCommand:
+			ylog.Warnf("pool", "connection %s command error: %v", conn.id, healthCheckErr)
+		case HealthErrorProtocol:
+			ylog.Errorf("pool", "connection %s protocol error: %v", conn.id, healthCheckErr)
+		default:
+			ylog.Warnf("pool", "connection %s health check failed: %v", conn.id, healthCheckErr)
+		}
+
+		p.collector.IncrementHealthCheckFailed(proto)
+		state, _ := conn.getStatus()
+		p.sendEvent(EventHealthCheckFailed, proto, map[string]interface{}{
+			"connection_id":    conn.id,
+			"error":            healthCheckErr.Error(),
+			"error_type":       errorType.String(),
+			"state":            state.String(),
+			"total_duration":   totalDuration.String(),
+			"check_duration":   healthCheckDuration.String(),
+			"acquire_duration": acquireDuration.String(),
+		})
+	} else {
+		p.collector.IncrementHealthCheckSuccess(proto)
+		ylog.Debugf("pool", "健康检查成功: connection_id=%s, protocol=%s, total_duration=%v, check_duration=%v",
+			conn.id, proto, totalDuration, healthCheckDuration)
+	}
+
+	p.collector.RecordHealthCheckDuration(proto, totalDuration)
 }
 
 // classifyHealthCheckError 分类健康检查错误
@@ -1735,6 +1876,29 @@ func (p *EnhancedConnectionPool) getDriverPool(proto Protocol) *EnhancedDriverPo
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.pools[proto]
+}
+
+// GetConnectionsForHealthCheck 获取需要健康检查的连接
+func (p *EnhancedConnectionPool) GetConnectionsForHealthCheck() map[Protocol][]*EnhancedPooledConnection {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	result := make(map[Protocol][]*EnhancedPooledConnection)
+
+	for proto, pool := range p.pools {
+		// 获取需要健康检查的连接
+		connections := make([]*EnhancedPooledConnection, 0, len(pool.connections))
+		for _, conn := range pool.connections {
+			if !conn.isInUse() {
+				connections = append(connections, conn)
+			}
+		}
+		if len(connections) > 0 {
+			result[proto] = connections
+		}
+	}
+
+	return result
 }
 
 // EnableDebug 开启调试模式

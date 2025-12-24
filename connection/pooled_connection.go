@@ -139,11 +139,27 @@ func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error)
 	if success {
 		conn.consecutiveFailures = 0
 		conn.setHealthLocked(HealthStatusHealthy, true)
-		ylog.Debugf("EnhancedPooledConnection", "recordHealthCheck: 健康检查成功: id=%s", conn.id)
+		ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 健康检查成功: id=%s", conn.id)
 	} else {
 		conn.consecutiveFailures++
 		conn.setHealthLocked(HealthStatusUnhealthy, false)
 		ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 健康检查失败: id=%s, error=%v, consecutiveFailures=%d", conn.id, err, conn.consecutiveFailures)
+	}
+
+	if conn.state == StateChecking {
+		ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 尝试状态转换: Checking→Idle, id=%s", conn.id)
+		if !conn.transitionStateLocked(StateIdle) {
+			ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 状态转换失败: id=%s, from=%s, to=%s",
+				conn.id, conn.state, StateIdle)
+			// 记录更多调试信息
+			ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 连接详情 - health=%s, usage=%d, lastUsed=%v",
+				conn.healthStatus, conn.usageCount, conn.lastUsed)
+		} else {
+			ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 状态转换成功: Checking→Idle, id=%s", conn.id)
+		}
+	} else {
+		ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 连接不在Checking状态: id=%s, state=%s, success=%v",
+			conn.id, conn.state, success)
 	}
 }
 
@@ -156,7 +172,14 @@ func (conn *EnhancedPooledConnection) setHealthLocked(status HealthStatus, valid
 	if status == HealthStatusUnhealthy && valid {
 		ylog.Infof("EnhancedPooledConnection", "setHealthLocked: 连接变得不健康: id=%s, old=%s, new=%s", conn.id, oldStatus, status)
 		// 标记为需要关闭
-		conn.transitionStateLocked(StateClosing)
+		oldState := conn.state // 保存当前状态用于日志
+		ylog.Infof("EnhancedPooledConnection", "setHealthLocked: 尝试状态转换: %s→Closing, id=%s", oldState, conn.id)
+		if !conn.transitionStateLocked(StateClosing) {
+			ylog.Warnf("EnhancedPooledConnection", "setHealthLocked: 状态转换失败: id=%s, from=%s, to=%s",
+				conn.id, conn.state, StateClosing)
+		} else {
+			ylog.Infof("EnhancedPooledConnection", "setHealthLocked: 状态转换成功: %s→Closing, id=%s", oldState, conn.id)
+		}
 	}
 }
 
@@ -284,18 +307,21 @@ func (conn *EnhancedPooledConnection) beginHealthCheck() bool {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
+	ylog.Infof("EnhancedPooledConnection", "beginHealthCheck: 尝试开始健康检查, id=%s, state=%s", conn.id, conn.state)
+
 	// 只有空闲或使用中的连接才能进行健康检查
 	if conn.state != StateIdle && conn.state != StateAcquired {
-		ylog.Debugf("EnhancedPooledConnection", "beginHealthCheck: 连接状态不适合健康检查: id=%s, state=%s", conn.id, conn.state)
+		ylog.Infof("EnhancedPooledConnection", "beginHealthCheck: 状态不适合健康检查, id=%s, state=%s", conn.id, conn.state)
 		return false
 	}
 
 	// 转换为健康检查中状态
 	if !conn.transitionStateLocked(StateChecking) {
-		ylog.Debugf("EnhancedPooledConnection", "beginHealthCheck: 状态转换失败: id=%s, from=%s, to=%s", conn.id, conn.state, StateChecking)
+		ylog.Warnf("EnhancedPooledConnection", "beginHealthCheck: 状态转换失败, id=%s, from=%s, to=%s", conn.id, conn.state, StateChecking)
 		return false
 	}
 
+	ylog.Infof("EnhancedPooledConnection", "beginHealthCheck: 成功开始健康检查, id=%s", conn.id)
 	return true
 }
 
