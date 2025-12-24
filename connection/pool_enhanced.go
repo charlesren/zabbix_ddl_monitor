@@ -1569,22 +1569,29 @@ func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledCon
 		return false
 	}
 
-	// 获取连接状态
+	// 获取连接状态和健康状态
 	state, health := conn.getStatus()
 
-	// 第二层检查：以下状态的连接不应该被清理
+	// 特殊处理：不健康的连接应该被清理，无论状态如何
+	// 这是为了避免连接卡在Checking状态
+	if health == HealthStatusUnhealthy {
+		ylog.Infof("connection_pool", "连接不健康需要清理：%s 状态=%s 健康=%s", conn.id, state, health)
+		return true
+	}
+
+	// 第二层检查：以下状态的连接不应该被清理（健康的）
 	nonCleanableStates := []ConnectionState{
 		StateConnecting, // 连接中
 		StateAcquired,   // 已获取
 		StateExecuting,  // 执行中
-		StateChecking,   // 检查中
+		StateChecking,   // 检查中（健康的）
 		StateRebuilding, // 重建中
 		StateClosing,    // 关闭中
 	}
 
 	for _, s := range nonCleanableStates {
 		if state == s {
-			ylog.Debugf("connection_pool", "跳过清理：连接 %s 状态=%s", conn.id, state)
+			ylog.Infof("connection_pool", "跳过清理：连接 %s 状态=%s", conn.id, state)
 			return false
 		}
 	}
@@ -1593,7 +1600,7 @@ func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledCon
 	// 检查连接有效性（StateClosed 状态也应该被清理）
 	valid := state != StateClosed && state != StateClosing
 	if !valid {
-		ylog.Debugf("connection_pool", "连接无效需要清理：%s 状态=%s", conn.id, state)
+		ylog.Infof("connection_pool", "连接无效需要清理：%s 状态=%s", conn.id, state)
 		return true
 	}
 
@@ -1603,27 +1610,23 @@ func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledCon
 	usageCount := conn.getUsageCount()
 
 	if now.Sub(lastUsed) > p.idleTimeout {
+		ylog.Infof("connection_pool", "连接空闲超时需要清理：%s 最后使用=%v 空闲超时=%v",
+			conn.id, lastUsed, p.idleTimeout)
 		return true
 	}
 
 	// 检查连接生命周期
 	lifecycle := p.pools[conn.protocol].connectionLifecycle
 	if now.Sub(createdAt) > lifecycle.maxLifetime {
+		ylog.Infof("connection_pool", "连接生命周期超时需要清理：%s 创建时间=%v 最大生命周期=%v",
+			conn.id, createdAt, lifecycle.maxLifetime)
 		return true
 	}
 
 	// 检查使用次数
 	if usageCount > lifecycle.maxUsageCount {
-		return true
-	}
-
-	// 检查健康状态
-	if health == HealthStatusUnhealthy {
-		return true
-	}
-
-	// 检查连接有效性
-	if !valid {
+		ylog.Infof("connection_pool", "连接使用次数超限需要清理：%s 使用次数=%d 最大使用次数=%d",
+			conn.id, usageCount, lifecycle.maxUsageCount)
 		return true
 	}
 

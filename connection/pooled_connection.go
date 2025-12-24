@@ -2,6 +2,7 @@ package connection
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -136,6 +137,7 @@ func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error)
 
 	conn.lastHealthCheck = time.Now()
 
+	// 使用setHealthLocked保持一致性并记录日志
 	if success {
 		conn.consecutiveFailures = 0
 		conn.setHealthLocked(HealthStatusHealthy, true)
@@ -143,23 +145,51 @@ func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error)
 	} else {
 		conn.consecutiveFailures++
 		conn.setHealthLocked(HealthStatusUnhealthy, false)
-		ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 健康检查失败: id=%s, error=%v, consecutiveFailures=%d", conn.id, err, conn.consecutiveFailures)
+
+		// 记录错误类型
+		errorType := "unknown"
+		if err != nil {
+			if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline") {
+				errorType = "timeout"
+			}
+		}
+
+		ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 健康检查失败: id=%s, error=%v, type=%s, consecutiveFailures=%d",
+			conn.id, err, errorType, conn.consecutiveFailures)
 	}
 
+	// 关键修复：无论成功还是失败，都确保状态恢复为Idle
+	// 特别处理健康检查超时的情况
 	if conn.state == StateChecking {
 		ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 尝试状态转换: Checking→Idle, id=%s", conn.id)
 		if !conn.transitionStateLocked(StateIdle) {
-			ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 状态转换失败: id=%s, from=%s, to=%s",
-				conn.id, conn.state, StateIdle)
-			// 记录更多调试信息
-			ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 连接详情 - health=%s, usage=%d, lastUsed=%v",
-				conn.healthStatus, conn.usageCount, conn.lastUsed)
-		} else {
-			ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 状态转换成功: Checking→Idle, id=%s", conn.id)
+			// 如果转换失败，记录详细错误并强制恢复
+			ylog.Errorf("EnhancedPooledConnection",
+				"recordHealthCheck: 状态转换失败，强制恢复: id=%s, from=%s, health=%s, success=%v",
+				conn.id, conn.state, conn.healthStatus, success)
+
+			// 强制恢复为Idle状态
+			// 注意：这可能会违反状态机规则，但为了避免连接卡住，这是必要的
+			conn.state = StateIdle
+			ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 强制状态恢复完成: id=%s, state=Idle", conn.id)
 		}
-	} else {
-		ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 连接不在Checking状态: id=%s, state=%s, success=%v",
-			conn.id, conn.state, success)
+	} else if conn.state != StateIdle {
+		// 如果不在Checking状态，记录警告并尝试恢复
+		ylog.Warnf("EnhancedPooledConnection",
+			"recordHealthCheck: 连接不在Checking状态: id=%s, state=%s, health=%s, success=%v",
+			conn.id, conn.state, conn.healthStatus, success)
+
+		// 尝试转换为Idle状态（如果允许）
+		if conn.canTransitionTo(StateIdle) {
+			if conn.transitionStateLocked(StateIdle) {
+				ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 成功转换到Idle状态: id=%s", conn.id)
+			}
+		} else {
+			// 如果不允许转换到Idle，记录更详细的调试信息
+			ylog.Warnf("EnhancedPooledConnection",
+				"recordHealthCheck: 无法转换到Idle状态: id=%s, current=%s, validTransitions=%v",
+				conn.id, conn.state, GetValidTransitions(conn.state))
+		}
 	}
 }
 
@@ -168,19 +198,15 @@ func (conn *EnhancedPooledConnection) setHealthLocked(status HealthStatus, valid
 	oldStatus := conn.healthStatus
 	conn.healthStatus = status
 
-	// 如果连接变得不健康，可能需要关闭
-	if status == HealthStatusUnhealthy && valid {
-		ylog.Infof("EnhancedPooledConnection", "setHealthLocked: 连接变得不健康: id=%s, old=%s, new=%s", conn.id, oldStatus, status)
-		// 标记为需要关闭
-		oldState := conn.state // 保存当前状态用于日志
-		ylog.Infof("EnhancedPooledConnection", "setHealthLocked: 尝试状态转换: %s→Closing, id=%s", oldState, conn.id)
-		if !conn.transitionStateLocked(StateClosing) {
-			ylog.Warnf("EnhancedPooledConnection", "setHealthLocked: 状态转换失败: id=%s, from=%s, to=%s",
-				conn.id, conn.state, StateClosing)
-		} else {
-			ylog.Infof("EnhancedPooledConnection", "setHealthLocked: 状态转换成功: %s→Closing, id=%s", oldState, conn.id)
-		}
+	// 记录健康状态变化
+	if oldStatus != status {
+		ylog.Infof("EnhancedPooledConnection", "setHealthLocked: 健康状态变化: id=%s, old=%s, new=%s",
+			conn.id, oldStatus, status)
 	}
+
+	// 移除尝试转换为Closing的逻辑
+	// 健康检查只负责标记健康状态，不负责关闭连接
+	// 连接池清理逻辑会处理不健康的连接
 }
 
 // incrementUsage 增加使用计数
