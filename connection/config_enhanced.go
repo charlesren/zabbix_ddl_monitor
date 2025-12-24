@@ -152,7 +152,7 @@ func NewConfigBuilder() *ConfigBuilder {
 			ConnectTimeout:                 30 * time.Second,
 			ReadTimeout:                    30 * time.Second,
 			WriteTimeout:                   10 * time.Second,
-			TaskTimeout:                    30 * time.Second, // 默认任务超时30秒
+			TaskTimeout:                    60 * time.Second, // 默认任务超时60秒
 			ConnectionMaxRetries:           2,
 			ConnectionRetryInterval:        2 * time.Second,
 			ConnectionBackoffFactor:        1.5,

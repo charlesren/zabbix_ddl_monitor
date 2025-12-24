@@ -307,12 +307,11 @@ func WithTimeout(d time.Duration) Middleware {
 func WithSmartTimeout(defaultTimeout time.Duration) Middleware {
 	return func(next ExecutorFunc) ExecutorFunc {
 		return func(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
-			// 优先使用任务参数中的超时
-			var timeout time.Duration
-			if timeoutParam, ok := ctx.Params["timeout"].(time.Duration); ok {
-				timeout = timeoutParam
-			} else {
-				timeout = defaultTimeout
+			// 不再检查任务参数中的timeout，直接使用传入的defaultTimeout
+			// 如果defaultTimeout为0，则使用60秒作为默认值
+			timeout := defaultTimeout
+			if timeout == 0 {
+				timeout = 60 * time.Second
 			}
 
 			timeoutCtx, cancel := context.WithTimeout(ctx.Ctx, timeout)
