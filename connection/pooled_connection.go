@@ -45,6 +45,9 @@ type EnhancedPooledConnection struct {
 	// 标签和元数据
 	labels   map[string]string
 	metadata map[string]interface{}
+
+	// 重建原因（便于监控）
+	rebuildReason string
 }
 
 // tryAcquire 尝试获取连接（非阻塞）
@@ -278,6 +281,17 @@ func (conn *EnhancedPooledConnection) markForRebuild() bool {
 	return atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1)
 }
 
+// markForRebuildWithReason 标记连接需要重建并记录原因
+func (conn *EnhancedPooledConnection) markForRebuildWithReason(reason string) bool {
+	if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+		conn.mu.Lock()
+		conn.rebuildReason = reason
+		conn.mu.Unlock()
+		return true
+	}
+	return false
+}
+
 // clearRebuildMark 清除重建标记
 func (conn *EnhancedPooledConnection) clearRebuildMark() {
 	atomic.StoreInt32(&conn.markedForRebuild, 0)
@@ -286,6 +300,13 @@ func (conn *EnhancedPooledConnection) clearRebuildMark() {
 // isMarkedForRebuild 检查是否标记为需要重建
 func (conn *EnhancedPooledConnection) isMarkedForRebuild() bool {
 	return atomic.LoadInt32(&conn.markedForRebuild) == 1
+}
+
+// getRebuildReason 获取重建原因
+func (conn *EnhancedPooledConnection) getRebuildReason() string {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	return conn.rebuildReason
 }
 
 // validateState 验证连接状态
@@ -387,6 +408,12 @@ func (conn *EnhancedPooledConnection) beginRebuild() bool {
 
 // beginRebuildWithLock 开始重建连接（需要持有锁）
 func (conn *EnhancedPooledConnection) beginRebuildWithLock() bool {
+	// 检查 markedForRebuild 标记
+	if !conn.isMarkedForRebuild() {
+		ylog.Debugf("EnhancedPooledConnection", "beginRebuildWithLock: 连接未标记重建: id=%s", conn.id)
+		return false
+	}
+
 	// 只有空闲的连接才能重建
 	if conn.state != StateIdle {
 		ylog.Debugf("EnhancedPooledConnection", "beginRebuildWithLock: 连接状态不适合重建: id=%s, state=%s", conn.id, conn.state)
@@ -399,8 +426,7 @@ func (conn *EnhancedPooledConnection) beginRebuildWithLock() bool {
 		return false
 	}
 
-	// 清除重建标记
-	conn.clearRebuildMark()
+	// 保持 markedForRebuild=1（不清除），在 completeRebuild 中清除
 	return true
 }
 
@@ -435,6 +461,8 @@ func (conn *EnhancedPooledConnection) completeRebuild(success bool) bool {
 		return false
 	}
 
+	// 重建完成后清除标记
+	conn.clearRebuildMark()
 	return true
 }
 

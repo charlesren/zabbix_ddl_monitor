@@ -119,6 +119,7 @@ const (
 	EventPoolWarmupCompleted
 	EventPoolShutdown
 	EventConnectionRebuilt
+	EventRebuildFailed
 )
 
 // 增强的驱动池
@@ -663,23 +664,17 @@ func (p *EnhancedConnectionPool) markConnectionForRebuildAsync(pool *EnhancedDri
 }
 
 // asyncRebuildConnection 异步重建连接（优化版：拆分为多个小函数，避免锁内阻塞操作）
-func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool, oldID string, oldConn *EnhancedPooledConnection) {
-	defer func() {
-		if r := recover(); r != nil {
-			ylog.Errorf("connection_pool", "async rebuild panic: %v", r)
-		}
-		oldConn.clearRebuildMark()
-	}()
-
+// performCoreRebuild 核心重建函数，包含优化的锁策略和错误处理
+func (p *EnhancedConnectionPool) performCoreRebuild(pool *EnhancedDriverPool, oldID string, oldConn *EnhancedPooledConnection) error {
 	// 阶段1：快速检查（不持有任何锁）
 	if !p.canStartRebuild(oldConn, oldID) {
-		return
+		return fmt.Errorf("连接 %s 不适合重建", oldID)
 	}
 
 	// 阶段2：获取锁并验证
 	lockAcquired, shouldContinue := p.acquireRebuildLocks(pool, oldID, oldConn)
 	if !lockAcquired || !shouldContinue {
-		return
+		return fmt.Errorf("无法获取重建锁或连接已不存在")
 	}
 	// 此时持有 pool.mu 和 conn.mu 锁
 
@@ -692,7 +687,7 @@ func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool
 		ylog.Warnf("connection_pool", "创建新连接失败: %v", err)
 		// 重建失败，标记连接为关闭中
 		p.markConnectionForClosing(oldConn)
-		return
+		return fmt.Errorf("创建新连接失败: %w", err)
 	}
 
 	// 阶段4：重新获取锁，执行替换
@@ -700,7 +695,7 @@ func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool
 	if !replaced {
 		// 替换失败，关闭新连接
 		newConn.safeClose()
-		return
+		return fmt.Errorf("替换连接失败")
 	}
 
 	// 阶段5：完成重建操作
@@ -708,6 +703,22 @@ func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool
 
 	// 阶段6：异步清理旧连接
 	go p.cleanupOldConnection(pool, oldConn)
+
+	return nil
+}
+
+func (p *EnhancedConnectionPool) asyncRebuildConnection(pool *EnhancedDriverPool, oldID string, oldConn *EnhancedPooledConnection) {
+	defer func() {
+		if r := recover(); r != nil {
+			ylog.Errorf("connection_pool", "async rebuild panic: %v", r)
+		}
+		oldConn.clearRebuildMark()
+	}()
+
+	// 调用核心重建函数
+	if err := p.performCoreRebuild(pool, oldID, oldConn); err != nil {
+		ylog.Debugf("connection_pool", "异步重建失败: id=%s, error=%v", oldID, err)
+	}
 }
 
 // canStartRebuild 检查是否可以开始重建（快速检查，不持有锁）
@@ -1025,6 +1036,15 @@ func (p *EnhancedConnectionPool) startBackgroundTasks() {
 		defer p.wg.Done()
 		p.eventHandlerTask()
 	}()
+
+	// 重建任务
+	if p.config.SmartRebuildEnabled {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.rebuildTask()
+		}()
+	}
 
 	// 空闲连接健康检查任务
 	// go p.idleConnectionHealthTask()
@@ -1694,7 +1714,8 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		shouldRebuild := usageCount >= p.config.RebuildMaxUsageCount
 		if shouldRebuild {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
-			if conn.markForRebuild() {
+			reason := fmt.Sprintf("usage_count_exceeded: usage=%d, max=%d", usageCount, p.config.RebuildMaxUsageCount)
+			if conn.markForRebuildWithReason(reason) {
 				return true
 			} else {
 				return false
@@ -1708,7 +1729,8 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		shouldRebuild := age >= p.config.RebuildMaxAge
 		if shouldRebuild {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
-			if conn.markForRebuild() {
+			reason := fmt.Sprintf("age_exceeded: age=%v, max=%v", age, p.config.RebuildMaxAge)
+			if conn.markForRebuildWithReason(reason) {
 				return true
 			} else {
 				return false
@@ -1727,7 +1749,9 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 				shouldRebuild := errorRate >= p.config.RebuildMaxErrorRate
 				if shouldRebuild {
 					// 使用原子操作确保只有一个goroutine能将连接标记为重建
-					if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+					reason := fmt.Sprintf("error_rate_exceeded: requests=%d, errors=%d, rate=%.2f, max=%.2f",
+						totalRequests, totalErrors, errorRate, p.config.RebuildMaxErrorRate)
+					if conn.markForRebuildWithReason(reason) {
 						return true
 					} else {
 						return false
@@ -1764,7 +1788,8 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		shouldRebuild := conditions == 3
 		if shouldRebuild {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
-			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+			reason := fmt.Sprintf("all_conditions_met: conditions=%d/3", conditions)
+			if conn.markForRebuildWithReason(reason) {
 				return true
 			} else {
 				return false
@@ -1779,7 +1804,8 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		usageCount := atomic.LoadInt64(&conn.usageCount)
 		if usageCount >= p.config.RebuildMaxUsageCount {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
-			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+			reason := fmt.Sprintf("usage_count_exceeded: usage=%d, max=%d", usageCount, p.config.RebuildMaxUsageCount)
+			if conn.markForRebuildWithReason(reason) {
 				return true
 			} else {
 				return false
@@ -1789,7 +1815,8 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 		age := now.Sub(conn.getCreatedAt())
 		if age >= p.config.RebuildMaxAge {
 			// 使用原子操作确保只有一个goroutine能将连接标记为重建
-			if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+			reason := fmt.Sprintf("age_exceeded: age=%v, max=%v", age, p.config.RebuildMaxAge)
+			if conn.markForRebuildWithReason(reason) {
 				return true
 			} else {
 				return false
@@ -1804,7 +1831,9 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 				errorRate := float64(totalErrors) / float64(totalRequests)
 				if errorRate >= p.config.RebuildMaxErrorRate {
 					// 使用原子操作确保只有一个goroutine能将连接标记为重建
-					if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+					reason := fmt.Sprintf("error_rate_exceeded: requests=%d, errors=%d, rate=%.2f, max=%.2f",
+						totalRequests, totalErrors, errorRate, p.config.RebuildMaxErrorRate)
+					if conn.markForRebuildWithReason(reason) {
 						return true
 					} else {
 						return false
@@ -2079,6 +2108,274 @@ func (p *EnhancedConnectionPool) getRebuildReason(conn *EnhancedPooledConnection
 		return ""
 	}
 	return p.rebuildManager.GetRebuildReason(conn)
+}
+
+// rebuildTask 定时重建任务
+func (p *EnhancedConnectionPool) rebuildTask() {
+	rebuildInterval := p.config.RebuildCheckInterval
+	if rebuildInterval == 0 {
+		rebuildInterval = 5 * time.Minute // 默认5分钟
+	}
+
+	ylog.Infof("pool", "重建任务启动，检查间隔: %v", rebuildInterval)
+
+	ticker := time.NewTicker(rebuildInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.parentCtx.Done():
+			ylog.Infof("pool", "重建任务停止（父级上下文取消）")
+			return
+		case <-p.ctx.Done():
+			ylog.Infof("pool", "重建任务停止（上下文取消）")
+			return
+		case <-ticker.C:
+			ylog.Debugf("pool", "定时重建检查触发")
+			p.performRebuilds()
+		}
+	}
+}
+
+// performRebuilds 执行重建检查
+func (p *EnhancedConnectionPool) performRebuilds() {
+	if p.rebuildManager == nil || !p.config.SmartRebuildEnabled {
+		return
+	}
+
+	protocols := p.getAllProtocols()
+	if len(protocols) == 0 {
+		return
+	}
+
+	// 为每个协议执行重建检查（并发控制）
+	semaphore := make(chan struct{}, p.config.RebuildConcurrency)
+	for _, proto := range protocols {
+		go func(proto Protocol) {
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			p.performRebuildForProtocol(proto)
+		}(proto)
+	}
+}
+
+// getConnectionsForRebuild 获取需要重建的连接
+func (p *EnhancedConnectionPool) getConnectionsForRebuild(proto Protocol) []*EnhancedPooledConnection {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var conns []*EnhancedPooledConnection
+	driverPool, exists := p.pools[proto]
+	if !exists {
+		return conns
+	}
+
+	driverPool.mu.RLock()
+	defer driverPool.mu.RUnlock()
+
+	for _, conn := range driverPool.connections {
+		if conn.isMarkedForRebuild() {
+			conns = append(conns, conn)
+		}
+	}
+
+	return conns
+}
+
+// findConnectionByID 根据连接ID查找连接
+func (p *EnhancedConnectionPool) findConnectionByID(connID string) *EnhancedPooledConnection {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	// 遍历所有协议的所有连接
+	for _, driverPool := range p.pools {
+		driverPool.mu.RLock()
+		for _, conn := range driverPool.connections {
+			if conn.id == connID {
+				driverPool.mu.RUnlock()
+				return conn
+			}
+		}
+		driverPool.mu.RUnlock()
+	}
+
+	return nil
+}
+
+// checkConnectionStateForRebuild 检查连接状态是否适合重建
+func (p *EnhancedConnectionPool) checkConnectionStateForRebuild(conn *EnhancedPooledConnection) bool {
+	// 获取连接状态
+	state, health := conn.getStatus()
+
+	// 连接必须处于空闲状态才能重建
+	if state != StateIdle {
+		ylog.Debugf("pool", "连接状态不适合重建: id=%s, state=%s (需要StateIdle)", conn.id, state)
+		return false
+	}
+
+	// 连接不能已经标记为重建中
+	if conn.isMarkedForRebuild() {
+		ylog.Debugf("pool", "连接已标记为重建中: id=%s", conn.id)
+		return false
+	}
+
+	// 连接不能处于关闭或关闭中状态
+	if state == StateClosing || state == StateClosed {
+		ylog.Debugf("pool", "连接正在关闭或已关闭: id=%s, state=%s", conn.id, state)
+		return false
+	}
+
+	// 连接不能处于重建中状态
+	if state == StateRebuilding {
+		ylog.Debugf("pool", "连接正在重建中: id=%s", conn.id)
+		return false
+	}
+
+	// 连接健康状态检查（可选，根据配置决定）
+	// 这里只是检查，实际是否重建由shouldRebuildConnection决定
+	ylog.Debugf("pool", "连接状态适合重建: id=%s, state=%s, health=%s", conn.id, state, health)
+	return true
+}
+
+// performRebuildForProtocol 为特定协议执行重建
+func (p *EnhancedConnectionPool) performRebuildForProtocol(proto Protocol) {
+	// 1. 获取该协议所有需要重建的连接
+	conns := p.getConnectionsForRebuild(proto)
+	if len(conns) == 0 {
+		return
+	}
+
+	// 2. 批量处理（控制并发）
+	batchSize := p.config.RebuildBatchSize
+	if batchSize <= 0 {
+		batchSize = 5 // 默认批量大小
+	}
+
+	for i := 0; i < len(conns); i += batchSize {
+		end := i + batchSize
+		if end > len(conns) {
+			end = len(conns)
+		}
+
+		batch := conns[i:end]
+		for _, conn := range batch {
+			go p.rebuildConnection(proto, conn)
+		}
+
+		// 批次间延迟，避免资源冲击
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// replaceConnection 替换连接
+func (p *EnhancedConnectionPool) replaceConnection(proto Protocol, connID string, newDriver ProtocolDriver) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	driverPool, exists := p.pools[proto]
+	if !exists {
+		return fmt.Errorf("协议不存在: %s", proto)
+	}
+
+	driverPool.mu.Lock()
+	defer driverPool.mu.Unlock()
+
+	// 查找旧连接
+	var oldConn *EnhancedPooledConnection
+	for _, conn := range driverPool.connections {
+		if conn.id == connID {
+			oldConn = conn
+			break
+		}
+	}
+
+	if oldConn == nil {
+		return fmt.Errorf("连接不存在: %s", connID)
+	}
+
+	// 创建新连接对象
+	newConn := &EnhancedPooledConnection{
+		driver:       newDriver,
+		id:           fmt.Sprintf("%s|%s|%d", p.config.Host, proto, time.Now().UnixNano()),
+		protocol:     proto,
+		createdAt:    time.Now(),
+		state:        StateIdle,
+		healthStatus: HealthStatusHealthy,
+		labels:       oldConn.labels,
+		metadata:     oldConn.metadata,
+	}
+
+	// 执行替换
+	delete(driverPool.connections, oldConn.id)
+	driverPool.connections[newConn.id] = newConn
+
+	// 更新统计
+	p.collector.IncrementConnectionsCreated(proto)
+
+	ylog.Infof("pool", "替换连接: %s→%s", connID, newConn.id)
+	return nil
+}
+
+// rebuildConnection 重建单个连接
+func (p *EnhancedConnectionPool) rebuildConnection(proto Protocol, conn *EnhancedPooledConnection) error {
+	connID := conn.id
+
+	// 检查连接是否标记为需要重建
+	// 如果未标记（手动API场景），先标记连接
+	var rebuildReason string
+	if conn.isMarkedForRebuild() {
+		rebuildReason = conn.getRebuildReason()
+		ylog.Debugf("pool", "重建已标记的连接: id=%s, reason=%s", connID, rebuildReason)
+	} else {
+		// 手动API场景：连接未标记，需要先标记
+		rebuildReason = "manual_rebuild"
+		if !conn.markForRebuildWithReason(rebuildReason) {
+			// 标记失败，可能已被其他goroutine标记
+			ylog.Debugf("pool", "连接已被其他goroutine标记: id=%s", connID)
+			rebuildReason = conn.getRebuildReason() // 获取新的重建原因
+		}
+	}
+
+	ylog.Infof("pool", "开始重建连接: id=%s, protocol=%s, reason=%s", connID, proto, rebuildReason)
+
+	startTime := time.Now()
+
+	// 1. 获取驱动池
+	driverPool := p.getDriverPool(proto)
+	if driverPool == nil {
+		ylog.Errorf("pool", "驱动池不存在: protocol=%s", proto)
+		// 注意：这里不调用completeRebuild，因为连接还没有开始重建
+		p.sendEvent(EventRebuildFailed, proto, map[string]interface{}{
+			"connection_id": connID,
+			"error":         "driver pool not found",
+			"reason":        "pool_not_found",
+		})
+		return fmt.Errorf("驱动池不存在: %s", proto)
+	}
+
+	// 2. 调用核心重建函数
+	err := p.performCoreRebuild(driverPool, connID, conn)
+
+	// 3. 记录指标和事件
+	duration := time.Since(startTime)
+
+	if err != nil {
+		ylog.Errorf("pool", "连接重建失败: id=%s, protocol=%s, error=%v, duration=%v",
+			connID, proto, err, duration)
+		// p.collector.IncrementRebuildFailed(proto) // TODO: 在第四阶段实现
+		p.sendEvent(EventRebuildFailed, proto, map[string]interface{}{
+			"connection_id": connID,
+			"error":         err.Error(),
+			"reason":        "rebuild_failed",
+			"duration":      duration.Seconds(),
+		})
+		return fmt.Errorf("连接重建失败: %w", err)
+	}
+
+	ylog.Infof("pool", "连接重建完成: id=%s, protocol=%s, reason=%s, duration=%v",
+		connID, proto, rebuildReason, duration)
+
+	return nil
 }
 
 // ShutdownGraceful 优雅关闭连接池
@@ -2454,4 +2751,21 @@ func (p *EnhancedConnectionPool) mergeContext(requestCtx context.Context) contex
 
 	// 请求上下文没有超时，直接使用池上下文
 	return p.ctx
+}
+
+// RebuildConnectionByID 根据连接ID重建连接
+func (p *EnhancedConnectionPool) RebuildConnectionByID(connID string) error {
+	// 1. 根据connID查找连接
+	conn := p.findConnectionByID(connID)
+	if conn == nil {
+		return fmt.Errorf("连接不存在: %s", connID)
+	}
+
+	// 2. 检查连接状态是否适合重建
+	if !p.checkConnectionStateForRebuild(conn) {
+		return fmt.Errorf("连接状态不适合重建: %s, state=%s", connID, conn.state)
+	}
+
+	// 3. 执行重建（同步）
+	return p.rebuildConnection(conn.protocol, conn)
 }

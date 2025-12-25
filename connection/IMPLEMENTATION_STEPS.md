@@ -340,6 +340,20 @@ func (p *EnhancedConnectionPool) performRebuildForProtocol(proto Protocol) {
 
 ## 第三阶段：API实现（2-3天）
 
+### 设计决策说明
+#### 3.0.1 重建执行策略
+- **健康检查触发重建**：异步但立即触发
+  - 发现`Unhealthy`状态时立即标记`markedForRebuild`
+  - 立即触发异步重建（不等待定时任务）
+- **手动API重建**：同步执行
+  - `RebuildConnectionByID`等API同步返回结果
+  - 调用者立即知道重建成功/失败
+
+#### 3.0.2 关键修改点
+1. **修改`rebuildConnection`函数**：支持未标记的连接（手动API场景）
+2. **统一核心逻辑**：`performCoreRebuild`函数被同步和异步路径共享
+3. **错误处理**：同步API返回明确错误，异步API记录日志
+
 ### 3.1 实现重建API
 
 #### **文件：`pool_enhanced.go`**

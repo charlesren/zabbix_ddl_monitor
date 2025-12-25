@@ -607,6 +607,35 @@ const (
 - `StateRebuilding`：连接锁保护，重量级执行阶段状态管理
 - 两者协同：标记 → 检查 → 执行 → 完成 → 清除标记
 
+### 8.5 重建执行策略
+#### 8.5.1 同步 vs 异步决策
+- **健康检查触发重建**：异步但立即触发
+  - 发现`Unhealthy`状态时立即标记`markedForRebuild`
+  - 立即触发异步重建（不等待定时任务）
+  - 健康检查不阻塞，继续执行
+- **手动API重建**：同步执行
+  - `RebuildConnectionByID`等API同步返回结果
+  - 调用者立即知道重建成功/失败
+  - 内部使用优化的锁策略（分阶段获取/释放锁）
+
+#### 8.5.2 决策-标记-执行分离
+1. **决策层**：`ShouldRebuild`检查各种条件（使用次数、年龄、错误率等）
+2. **标记层**：`markForRebuildWithReason`标记决策结果
+3. **执行层**：`performCoreRebuild`执行核心重建逻辑
+4. **统一接口**：`rebuildConnection`封装完整流程，支持未标记连接（手动API）
+
+#### 8.5.3 核心重建函数设计
+- `performCoreRebuild`：共享的核心重建逻辑
+  - 被`rebuildConnection`（同步）和`asyncRebuildConnection`（异步）调用
+  - 包含优化的锁策略（分阶段获取/释放锁）
+  - 统一的错误处理和panic恢复
+  - 使用标准`createConnection`函数创建连接（与warmup一致）
+
+#### 8.5.4 手动API特殊处理
+- `RebuildConnectionByID`：跳过决策，直接标记并重建
+- 修改`rebuildConnection`支持未标记的连接
+- 用户明确要求重建时，无需检查其他条件
+
 ## 9. 风险与缓解措施
 
 ### 9.1 风险：过度重建

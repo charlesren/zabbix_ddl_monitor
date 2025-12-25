@@ -64,6 +64,17 @@ type EnhancedConnectionConfig struct {
 	RebuildMinInterval             time.Duration `json:"rebuild_min_interval" yaml:"rebuild_min_interval"`
 	RebuildMinRequestsForErrorRate int64         `json:"rebuild_min_requests_for_error_rate" yaml:"rebuild_min_requests_for_error_rate"`
 	RebuildStrategy                string        `json:"rebuild_strategy" yaml:"rebuild_strategy"` // "any" | "all" | "usage" | "age" | "error"
+
+	// 健康检查触发重建配置
+	HealthCheckTriggerRebuild bool          `json:"health_check_trigger_rebuild" yaml:"health_check_trigger_rebuild"`
+	UnhealthyThreshold        int           `json:"unhealthy_threshold" yaml:"unhealthy_threshold"` // 默认3
+	DegradedThreshold         time.Duration `json:"degraded_threshold" yaml:"degraded_threshold"`   // 降级响应时间阈值
+	RebuildOnDegraded         bool          `json:"rebuild_on_degraded" yaml:"rebuild_on_degraded"` // 降级时是否重建
+
+	// 重建执行配置
+	RebuildCheckInterval time.Duration `json:"rebuild_check_interval" yaml:"rebuild_check_interval"` // 默认5分钟
+	RebuildBatchSize     int           `json:"rebuild_batch_size" yaml:"rebuild_batch_size"`         // 默认5
+	RebuildConcurrency   int           `json:"rebuild_concurrency" yaml:"rebuild_concurrency"`       // 默认3
 }
 
 // SSH特定配置
@@ -174,6 +185,17 @@ func NewConfigBuilder() *ConfigBuilder {
 			RebuildMinInterval:             5 * time.Minute,
 			RebuildMinRequestsForErrorRate: 10,
 			RebuildStrategy:                "any",
+
+			// 健康检查触发重建配置默认值
+			HealthCheckTriggerRebuild: true,
+			UnhealthyThreshold:        3,
+			DegradedThreshold:         2 * time.Second, // 默认2秒响应时间为降级
+			RebuildOnDegraded:         false,           // 默认降级时不重建
+
+			// 重建执行配置默认值
+			RebuildCheckInterval: 5 * time.Minute, // 默认5分钟检查一次
+			RebuildBatchSize:     5,               // 默认批量大小5
+			RebuildConcurrency:   3,               // 默认并发数3
 		},
 	}
 }
@@ -384,6 +406,27 @@ func (c *EnhancedConnectionConfig) Validate() error {
 		if !validStrategies[c.RebuildStrategy] {
 			return fmt.Errorf("invalid rebuild strategy: %s", c.RebuildStrategy)
 		}
+	}
+
+	// 健康检查触发重建配置验证
+	if c.HealthCheckTriggerRebuild {
+		if c.UnhealthyThreshold <= 0 {
+			return fmt.Errorf("unhealthy threshold must be positive when health check trigger rebuild is enabled")
+		}
+		if c.DegradedThreshold <= 0 {
+			return fmt.Errorf("degraded threshold must be positive when health check trigger rebuild is enabled")
+		}
+	}
+
+	// 重建执行配置验证
+	if c.RebuildCheckInterval <= 0 {
+		return fmt.Errorf("rebuild check interval must be positive")
+	}
+	if c.RebuildBatchSize <= 0 {
+		return fmt.Errorf("rebuild batch size must be positive")
+	}
+	if c.RebuildConcurrency <= 0 {
+		return fmt.Errorf("rebuild concurrency must be positive")
 	}
 
 	// 协议特定验证
