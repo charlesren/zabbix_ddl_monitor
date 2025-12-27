@@ -671,38 +671,59 @@ func (p *EnhancedConnectionPool) performCoreRebuild(pool *EnhancedDriverPool, ol
 		return fmt.Errorf("连接 %s 不适合重建", oldID)
 	}
 
-	// 阶段2：获取锁并验证
-	lockAcquired, shouldContinue := p.acquireRebuildLocks(pool, oldID, oldConn)
-	if !lockAcquired || !shouldContinue {
-		return fmt.Errorf("无法获取重建锁或连接已不存在")
+	// 阶段2：开始重建（设置 isRebuilding 标记）
+	if !oldConn.beginRebuild() {
+		return fmt.Errorf("无法开始重建: id=%s", oldID)
 	}
-	// 此时持有 pool.mu 和 conn.mu 锁
 
-	// 阶段3：释放锁，创建新连接（避免在锁内执行阻塞操作）
+	// 声明错误变量
+	var err error
+	// 确保最终清除重建标记
+	defer oldConn.completeRebuild(err == nil)
+
+	// 阶段3：先关：关闭旧连接
+	// 3.1 开始关闭
+	if !oldConn.beginClose() {
+		ylog.Warnf("connection_pool", "无法正常开始关闭，强制关闭连接: id=%s", oldID)
+		// 强制设置状态
+		oldConn.mu.Lock()
+		oldConn.state = StateClosing
+		oldConn.mu.Unlock()
+	}
+
+	// 3.2 立即关闭driver
+	if oldConn.driver != nil {
+		oldConn.driver.Close()
+		oldConn.driver = nil
+	}
+
+	// 3.3 从池中移除连接
+	pool.mu.Lock()
+	delete(pool.connections, oldID)
+	atomic.AddInt64(&pool.stats.IdleConnections, -1)
 	pool.mu.Unlock()
-	oldConn.mu.Unlock()
 
+	// 3.4 完成关闭
+	oldConn.completeClose()
+
+	// 阶段4：后建：创建新连接
 	newConn, err := p.createReplacementConnection(pool, oldConn)
 	if err != nil {
-		ylog.Warnf("connection_pool", "创建新连接失败: %v", err)
-		// 重建失败，标记连接为关闭中
-		p.markConnectionForClosing(oldConn)
+		ylog.Warnf("connection_pool", "先关后建失败: 关闭成功但创建失败, id=%s, error=%v", oldID, err)
 		return fmt.Errorf("创建新连接失败: %w", err)
 	}
 
-	// 阶段4：重新获取锁，执行替换
-	replaced := p.replaceConnectionWithLock(pool, oldID, oldConn, newConn)
-	if !replaced {
-		// 替换失败，关闭新连接
-		newConn.safeClose()
-		return fmt.Errorf("替换连接失败")
-	}
+	// 阶段5：添加新连接到池中
+	pool.mu.Lock()
+	pool.connections[newConn.id] = newConn
+	atomic.AddInt64(&pool.stats.CreatedConnections, 1)
+	atomic.AddInt64(&pool.stats.IdleConnections, 1)
+	pool.mu.Unlock()
 
-	// 阶段5：完成重建操作
+	// 阶段6：完成重建操作
 	p.completeRebuild(pool, oldID, oldConn, newConn)
 
-	// 阶段6：异步清理旧连接
-	go p.cleanupOldConnection(pool, oldConn)
+	ylog.Infof("connection_pool", "先关后建成功: 旧连接=%s (已关闭), 新连接=%s", oldID, newConn.id)
 
 	return nil
 }
@@ -750,9 +771,9 @@ func (p *EnhancedConnectionPool) acquireRebuildLocks(pool *EnhancedDriverPool, o
 		return false, false
 	}
 
-	// 尝试获取连接锁并开始重建
-	if !oldConn.beginRebuildWithLock() {
-		ylog.Infof("connection_pool", "无法开始重建连接 %s", oldID)
+	// 检查连接是否正在重建中
+	if oldConn.isRebuilding() {
+		ylog.Infof("connection_pool", "连接 %s 正在重建中，跳过", oldID)
 		pool.mu.Unlock()
 		return false, false
 	}
@@ -1605,7 +1626,6 @@ func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledCon
 		StateAcquired,   // 已获取
 		StateExecuting,  // 执行中
 		StateChecking,   // 检查中（健康的）
-		StateRebuilding, // 重建中
 		StateClosing,    // 关闭中
 	}
 
@@ -1688,8 +1708,9 @@ func (p *EnhancedConnectionPool) shouldRebuildConnection(conn *EnhancedPooledCon
 
 	// 检查连接状态，避免重建正在使用或无效的连接
 	state, _ := conn.getStatus()
-	if conn.isInUse() || state == StateRebuilding || state == StateClosing || state == StateClosed {
-		ylog.Debugf("connection_pool", "连接状态不适合重建: id=%s, state=%s", conn.id, state)
+	if conn.isInUse() || conn.isRebuilding() || state == StateClosing || state == StateClosed {
+		ylog.Debugf("connection_pool", "连接状态不适合重建: id=%s, state=%s, isRebuilding=%v",
+			conn.id, state, conn.isRebuilding())
 		return false
 	}
 
@@ -2226,7 +2247,7 @@ func (p *EnhancedConnectionPool) checkConnectionStateForRebuild(conn *EnhancedPo
 	}
 
 	// 连接不能处于重建中状态
-	if state == StateRebuilding {
+	if conn.isRebuilding() {
 		ylog.Debugf("pool", "连接正在重建中: id=%s", conn.id)
 		return false
 	}
@@ -2376,6 +2397,643 @@ func (p *EnhancedConnectionPool) rebuildConnection(proto Protocol, conn *Enhance
 		connID, proto, rebuildReason, duration)
 
 	return nil
+}
+
+// RebuildResult 单个连接重建结果
+type RebuildResult struct {
+	Success   bool          `json:"success"`
+	OldConnID string        `json:"old_conn_id"`
+	NewConnID string        `json:"new_conn_id,omitempty"`
+	Duration  time.Duration `json:"duration"`
+	Reason    string        `json:"reason"`
+	Error     string        `json:"error,omitempty"`
+	Timestamp time.Time     `json:"timestamp"`
+}
+
+// RebuildErrorCode 重建错误码
+type RebuildErrorCode int
+
+const (
+	// RebuildErrorCodeNotFound 连接不存在
+	RebuildErrorCodeNotFound RebuildErrorCode = iota + 1
+	// RebuildErrorCodeInvalidState 连接状态不适合重建
+	RebuildErrorCodeInvalidState
+	// RebuildErrorCodeCreateFailed 创建新连接失败
+	RebuildErrorCodeCreateFailed
+	// RebuildErrorCodeReplaceFailed 替换连接失败
+	RebuildErrorCodeReplaceFailed
+	// RebuildErrorCodeTimeout 重建超时
+	RebuildErrorCodeTimeout
+	// RebuildErrorCodeCancelled 重建被取消
+	RebuildErrorCodeCancelled
+	// RebuildErrorCodePoolClosed 连接池已关闭
+	RebuildErrorCodePoolClosed
+)
+
+// RebuildError 重建错误
+type RebuildError struct {
+	Code          RebuildErrorCode       `json:"code"`
+	Message       string                 `json:"message"`
+	Details       map[string]interface{} `json:"details,omitempty"`
+	Retryable     bool                   `json:"retryable"`
+	SuggestedFix  string                 `json:"suggested_fix,omitempty"`
+	OriginalError error                  `json:"-"`
+}
+
+// Error 实现error接口
+func (e *RebuildError) Error() string {
+	return fmt.Sprintf("重建错误[%d]: %s", e.Code, e.Message)
+}
+
+// Unwrap 支持错误链
+func (e *RebuildError) Unwrap() error {
+	return e.OriginalError
+}
+
+// BatchRebuildResult 批量重建结果
+type BatchRebuildResult struct {
+	Protocol    Protocol         `json:"protocol"`
+	Total       int              `json:"total"`
+	Success     int              `json:"success"`
+	Failed      int              `json:"failed"`
+	Results     []*RebuildResult `json:"results"`
+	StartTime   time.Time        `json:"start_time"`
+	EndTime     time.Time        `json:"end_time"`
+	Duration    time.Duration    `json:"duration"`
+	Errors      []string         `json:"errors,omitempty"`
+	Cancelled   bool             `json:"cancelled,omitempty"`
+	CancelError string           `json:"cancel_error,omitempty"`
+}
+
+// FullRebuildResult 全量重建结果
+type FullRebuildResult struct {
+	TotalProtocols   int                              `json:"total_protocols"`
+	TotalConnections int                              `json:"total_connections"`
+	Success          int                              `json:"success"`
+	Failed           int                              `json:"failed"`
+	ProtocolResults  map[Protocol]*BatchRebuildResult `json:"protocol_results"`
+	StartTime        time.Time                        `json:"start_time"`
+	EndTime          time.Time                        `json:"end_time"`
+	Duration         time.Duration                    `json:"duration"`
+	Errors           []string                         `json:"errors,omitempty"`
+	Cancelled        bool                             `json:"cancelled,omitempty"`
+	CancelError      string                           `json:"cancel_error,omitempty"`
+}
+
+// RebuildConnectionByProto 重建指定协议下的所有需要重建的连接
+func (p *EnhancedConnectionPool) RebuildConnectionByProto(proto Protocol) (int, error) {
+	result, err := p.RebuildConnectionByProtoWithContext(context.Background(), proto)
+	if err != nil {
+		return 0, err
+	}
+	return result.Success, nil
+}
+
+// RebuildConnectionByProtoWithContext 重建指定协议下的所有需要重建的连接（带上下文）
+func (p *EnhancedConnectionPool) RebuildConnectionByProtoWithContext(ctx context.Context, proto Protocol) (*BatchRebuildResult, error) {
+	// 参数验证
+	if proto == "" {
+		return nil, &RebuildError{
+			Code:         RebuildErrorCodeInvalidState,
+			Message:      "协议类型不能为空",
+			Retryable:    false,
+			SuggestedFix: "请提供有效的协议类型",
+		}
+	}
+
+	// 检查协议是否存在
+	p.mu.RLock()
+	_, exists := p.pools[proto]
+	p.mu.RUnlock()
+	if !exists {
+		return nil, &RebuildError{
+			Code:         RebuildErrorCodeInvalidState,
+			Message:      fmt.Sprintf("不支持的协议类型: %s", proto),
+			Retryable:    false,
+			SuggestedFix: "请提供支持的协议类型",
+		}
+	}
+
+	// 1. 获取需要重建的连接
+	conns := p.getConnectionsForRebuild(proto)
+	if len(conns) == 0 {
+		return &BatchRebuildResult{
+			Protocol:  proto,
+			Total:     0,
+			Success:   0,
+			Failed:    0,
+			Results:   []*RebuildResult{},
+			StartTime: time.Now(),
+			EndTime:   time.Now(),
+			Duration:  0,
+		}, nil
+	}
+
+	// 2. 执行批量重建
+	startTime := time.Now()
+	results := make([]*RebuildResult, 0, len(conns))
+	successCount := 0
+	failedCount := 0
+	var errors []string
+
+	for _, conn := range conns {
+		// 检查上下文是否已取消
+		select {
+		case <-ctx.Done():
+			return &BatchRebuildResult{
+				Protocol:    proto,
+				Total:       len(conns),
+				Success:     successCount,
+				Failed:      failedCount,
+				Results:     results,
+				StartTime:   startTime,
+				EndTime:     time.Now(),
+				Duration:    time.Since(startTime),
+				Cancelled:   true,
+				CancelError: ctx.Err().Error(),
+			}, ctx.Err()
+		default:
+			// 继续执行
+		}
+
+		connStartTime := time.Now()
+		err := p.rebuildConnection(proto, conn)
+		connDuration := time.Since(connStartTime)
+
+		result := &RebuildResult{
+			Success:   err == nil,
+			OldConnID: conn.id,
+			Duration:  connDuration,
+			Reason:    conn.getRebuildReason(),
+			Timestamp: time.Now(),
+		}
+
+		if err != nil {
+			result.Error = err.Error()
+			failedCount++
+			errors = append(errors, fmt.Sprintf("连接 %s: %v", conn.id, err))
+			ylog.Warnf("pool", "重建连接失败: id=%s, error=%v", conn.id, err)
+		} else {
+			result.NewConnID = conn.id
+			successCount++
+		}
+
+		results = append(results, result)
+	}
+
+	// 3. 记录结果
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
+
+	ylog.Infof("pool", "协议 %s 重建完成: 成功 %d/%d, 耗时 %v",
+		proto, successCount, len(conns), duration)
+
+	result := &BatchRebuildResult{
+		Protocol:  proto,
+		Total:     len(conns),
+		Success:   successCount,
+		Failed:    failedCount,
+		Results:   results,
+		StartTime: startTime,
+		EndTime:   endTime,
+		Duration:  duration,
+	}
+
+	if failedCount > 0 {
+		result.Errors = errors
+		if successCount == 0 {
+			return result, fmt.Errorf("所有连接重建失败: %s", strings.Join(errors, "; "))
+		}
+	}
+
+	return result, nil
+}
+
+// RebuildConnectionByProtoAsync 异步重建指定协议的所有需要重建的连接
+func (p *EnhancedConnectionPool) RebuildConnectionByProtoAsync(ctx context.Context, proto Protocol) (<-chan *BatchRebuildResult, error) {
+	// 参数验证
+	if proto == "" {
+		return nil, &RebuildError{
+			Code:         RebuildErrorCodeInvalidState,
+			Message:      "协议类型不能为空",
+			Retryable:    false,
+			SuggestedFix: "请提供有效的协议类型",
+		}
+	}
+
+	// 创建带缓冲的结果通道，容量为10以支持进度更新
+	resultChan := make(chan *BatchRebuildResult, 10)
+
+	// 启动异步重建
+	go func() {
+		defer func() {
+			// 确保通道被关闭
+			close(resultChan)
+
+			// 恢复可能的panic
+			if r := recover(); r != nil {
+				ylog.Errorf("pool", "RebuildConnectionByProtoAsync panic: %v", r)
+			}
+		}()
+
+		// 先获取需要重建的连接列表
+		conns := p.getConnectionsForRebuild(proto)
+		total := len(conns)
+
+		if total == 0 {
+			// 没有需要重建的连接，立即返回空结果
+			resultChan <- &BatchRebuildResult{
+				Protocol:  proto,
+				Total:     0,
+				Success:   0,
+				Failed:    0,
+				Results:   []*RebuildResult{},
+				StartTime: time.Now(),
+				EndTime:   time.Now(),
+				Duration:  0,
+			}
+			return
+		}
+
+		startTime := time.Now()
+		results := make([]*RebuildResult, 0, total)
+		successCount := 0
+		failedCount := 0
+		var errors []string
+
+		// 分批处理，每完成一批发送进度更新
+		for i, conn := range conns {
+			// 检查上下文是否已取消
+			select {
+			case <-ctx.Done():
+				// 上下文被取消，发送最终结果
+				resultChan <- &BatchRebuildResult{
+					Protocol:    proto,
+					Total:       total,
+					Success:     successCount,
+					Failed:      failedCount,
+					Results:     results,
+					StartTime:   startTime,
+					EndTime:     time.Now(),
+					Duration:    time.Since(startTime),
+					Cancelled:   true,
+					CancelError: ctx.Err().Error(),
+				}
+				return
+			default:
+				// 继续执行
+			}
+
+			// 重建单个连接
+			connStartTime := time.Now()
+			err := p.rebuildConnection(proto, conn)
+			connDuration := time.Since(connStartTime)
+
+			result := &RebuildResult{
+				Success:   err == nil,
+				OldConnID: conn.id,
+				Duration:  connDuration,
+				Reason:    conn.getRebuildReason(),
+				Timestamp: time.Now(),
+			}
+
+			if err != nil {
+				result.Error = err.Error()
+				failedCount++
+				errors = append(errors, fmt.Sprintf("连接 %s: %v", conn.id, err))
+			} else {
+				result.NewConnID = conn.id
+				successCount++
+			}
+
+			results = append(results, result)
+
+			// 每完成10%或每10个连接发送进度更新
+			if (i+1)%10 == 0 || (i+1) == total {
+				batchResult := &BatchRebuildResult{
+					Protocol:  proto,
+					Total:     total,
+					Success:   successCount,
+					Failed:    failedCount,
+					Results:   results,
+					StartTime: startTime,
+					EndTime:   time.Now(),
+					Duration:  time.Since(startTime),
+				}
+
+				if failedCount > 0 {
+					batchResult.Errors = errors
+				}
+
+				// 发送进度更新
+				select {
+				case resultChan <- batchResult:
+					// 进度更新已发送
+				default:
+					// 通道已满，跳过本次更新（避免阻塞）
+					ylog.Warnf("pool", "进度更新通道已满，跳过更新")
+				}
+			}
+		}
+
+		// 发送最终结果
+		endTime := time.Now()
+		duration := endTime.Sub(startTime)
+
+		finalResult := &BatchRebuildResult{
+			Protocol:  proto,
+			Total:     total,
+			Success:   successCount,
+			Failed:    failedCount,
+			Results:   results,
+			StartTime: startTime,
+			EndTime:   endTime,
+			Duration:  duration,
+		}
+
+		if failedCount > 0 {
+			finalResult.Errors = errors
+		}
+
+		resultChan <- finalResult
+	}()
+
+	return resultChan, nil
+}
+
+// RebuildConnections 重建所有需要重建的连接
+func (p *EnhancedConnectionPool) RebuildConnections() (map[Protocol]int, error) {
+	result, err := p.RebuildConnectionsWithContext(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	// 转换为旧格式以保持兼容性
+	legacyResults := make(map[Protocol]int)
+	for proto, protoResult := range result.ProtocolResults {
+		legacyResults[proto] = protoResult.Success
+	}
+
+	return legacyResults, nil
+}
+
+// RebuildConnectionsWithContext 重建所有需要重建的连接（带上下文）
+func (p *EnhancedConnectionPool) RebuildConnectionsWithContext(ctx context.Context) (*FullRebuildResult, error) {
+	protocols := p.getAllProtocols()
+	if len(protocols) == 0 {
+		return &FullRebuildResult{
+			TotalProtocols:   0,
+			TotalConnections: 0,
+			Success:          0,
+			Failed:           0,
+			ProtocolResults:  make(map[Protocol]*BatchRebuildResult),
+			StartTime:        time.Now(),
+			EndTime:          time.Now(),
+			Duration:         0,
+		}, nil
+	}
+
+	startTime := time.Now()
+	protocolResults := make(map[Protocol]*BatchRebuildResult)
+	var errors []string
+	totalSuccess := 0
+	totalFailed := 0
+	totalConnections := 0
+
+	// 并发执行各协议的重建
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for _, proto := range protocols {
+		wg.Add(1)
+		go func(proto Protocol) {
+			defer wg.Done()
+
+			result, err := p.RebuildConnectionByProtoWithContext(ctx, proto)
+
+			mu.Lock()
+			protocolResults[proto] = result
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("协议 %s: %v", proto, err))
+			}
+			if result != nil {
+				totalSuccess += result.Success
+				totalFailed += result.Failed
+				totalConnections += result.Total
+			}
+			mu.Unlock()
+		}(proto)
+	}
+
+	wg.Wait()
+
+	// 汇总结果
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
+
+	fullResult := &FullRebuildResult{
+		TotalProtocols:   len(protocols),
+		TotalConnections: totalConnections,
+		Success:          totalSuccess,
+		Failed:           totalFailed,
+		ProtocolResults:  protocolResults,
+		StartTime:        startTime,
+		EndTime:          endTime,
+		Duration:         duration,
+	}
+
+	// 检查是否被取消
+	select {
+	case <-ctx.Done():
+		fullResult.Cancelled = true
+		fullResult.CancelError = ctx.Err().Error()
+		return fullResult, ctx.Err()
+	default:
+		// 继续
+	}
+
+	// 汇总错误
+	if len(errors) > 0 {
+		fullResult.Errors = errors
+		if totalSuccess == 0 {
+			return fullResult, fmt.Errorf("所有连接重建失败: %s", strings.Join(errors, "; "))
+		}
+		return fullResult, fmt.Errorf("部分连接重建失败: %s", strings.Join(errors, "; "))
+	}
+
+	ylog.Infof("pool", "全量重建完成: 协议数 %d, 连接数 %d, 成功 %d, 失败 %d, 耗时 %v",
+		len(protocols), totalConnections, totalSuccess, totalFailed, duration)
+
+	return fullResult, nil
+}
+
+// RebuildConnectionsAsync 异步重建所有需要重建的连接
+func (p *EnhancedConnectionPool) RebuildConnectionsAsync(ctx context.Context) (<-chan *FullRebuildResult, error) {
+	// 创建带缓冲的结果通道，容量为10以支持进度更新
+	resultChan := make(chan *FullRebuildResult, 10)
+
+	// 启动异步重建
+	go func() {
+		defer func() {
+			// 确保通道被关闭
+			close(resultChan)
+
+			// 恢复可能的panic
+			if r := recover(); r != nil {
+				ylog.Errorf("pool", "RebuildConnectionsAsync panic: %v", r)
+			}
+		}()
+
+		// 获取所有协议
+		protocols := p.getAllProtocols()
+		if len(protocols) == 0 {
+			// 没有协议，立即返回空结果
+			resultChan <- &FullRebuildResult{
+				TotalProtocols:   0,
+				TotalConnections: 0,
+				Success:          0,
+				Failed:           0,
+				ProtocolResults:  make(map[Protocol]*BatchRebuildResult),
+				StartTime:        time.Now(),
+				EndTime:          time.Now(),
+				Duration:         0,
+			}
+			return
+		}
+
+		startTime := time.Now()
+		protocolResults := make(map[Protocol]*BatchRebuildResult)
+		var errors []string
+		totalSuccess := 0
+		totalFailed := 0
+		totalConnections := 0
+		completedProtocols := 0
+
+		// 使用waitgroup等待所有协议完成
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+
+		// 为每个协议启动异步重建
+		for _, proto := range protocols {
+			wg.Add(1)
+
+			go func(proto Protocol) {
+				defer wg.Done()
+
+				// 为每个协议创建子上下文
+				protoCtx, cancel := context.WithCancel(ctx)
+				defer cancel()
+
+				// 启动协议级别的异步重建
+				protoChan, err := p.RebuildConnectionByProtoAsync(protoCtx, proto)
+				if err != nil {
+					mu.Lock()
+					errors = append(errors, fmt.Sprintf("协议 %s 启动失败: %v", proto, err))
+					mu.Unlock()
+					return
+				}
+
+				// 收集协议结果
+				var lastResult *BatchRebuildResult
+				for protoResult := range protoChan {
+					lastResult = protoResult
+
+					// 更新全局进度
+					mu.Lock()
+					protocolResults[proto] = protoResult
+
+					// 重新计算总数
+					newTotalSuccess := 0
+					newTotalFailed := 0
+					newTotalConnections := 0
+					for _, pr := range protocolResults {
+						newTotalSuccess += pr.Success
+						newTotalFailed += pr.Failed
+						newTotalConnections += pr.Total
+					}
+
+					totalSuccess = newTotalSuccess
+					totalFailed = newTotalFailed
+					totalConnections = newTotalConnections
+					mu.Unlock()
+
+					// 发送进度更新
+					progressResult := &FullRebuildResult{
+						TotalProtocols:   len(protocols),
+						TotalConnections: totalConnections,
+						Success:          totalSuccess,
+						Failed:           totalFailed,
+						ProtocolResults:  copyProtocolResults(protocolResults),
+						StartTime:        startTime,
+						EndTime:          time.Now(),
+						Duration:         time.Since(startTime),
+					}
+
+					select {
+					case resultChan <- progressResult:
+						// 进度更新已发送
+					default:
+						// 通道已满，跳过本次更新
+						ylog.Warnf("pool", "全量重建进度更新通道已满，跳过更新")
+					}
+				}
+
+				// 协议完成
+				mu.Lock()
+				completedProtocols++
+				if lastResult != nil && lastResult.Errors != nil && len(lastResult.Errors) > 0 {
+					errors = append(errors, fmt.Sprintf("协议 %s: %s", proto, strings.Join(lastResult.Errors, "; ")))
+				}
+				mu.Unlock()
+			}(proto)
+		}
+
+		// 等待所有协议完成
+		wg.Wait()
+
+		// 发送最终结果
+		endTime := time.Now()
+		duration := endTime.Sub(startTime)
+
+		finalResult := &FullRebuildResult{
+			TotalProtocols:   len(protocols),
+			TotalConnections: totalConnections,
+			Success:          totalSuccess,
+			Failed:           totalFailed,
+			ProtocolResults:  protocolResults,
+			StartTime:        startTime,
+			EndTime:          endTime,
+			Duration:         duration,
+		}
+
+		if len(errors) > 0 {
+			finalResult.Errors = errors
+		}
+
+		// 检查是否被取消
+		select {
+		case <-ctx.Done():
+			finalResult.Cancelled = true
+			finalResult.CancelError = ctx.Err().Error()
+		default:
+			// 正常完成
+		}
+
+		resultChan <- finalResult
+	}()
+
+	return resultChan, nil
+}
+
+// copyProtocolResults 复制协议结果映射（用于进度更新）
+func copyProtocolResults(src map[Protocol]*BatchRebuildResult) map[Protocol]*BatchRebuildResult {
+	dst := make(map[Protocol]*BatchRebuildResult)
+	for k, v := range src {
+		// 创建浅拷贝（BatchRebuildResult本身是值类型）
+		copyV := *v
+		dst[k] = &copyV
+	}
+	return dst
 }
 
 // ShutdownGraceful 优雅关闭连接池
@@ -2755,17 +3413,131 @@ func (p *EnhancedConnectionPool) mergeContext(requestCtx context.Context) contex
 
 // RebuildConnectionByID 根据连接ID重建连接
 func (p *EnhancedConnectionPool) RebuildConnectionByID(connID string) error {
+	_, err := p.RebuildConnectionByIDWithContext(context.Background(), connID)
+	return err
+}
+
+// RebuildConnectionByIDWithContext 根据连接ID重建连接（带上下文）
+func (p *EnhancedConnectionPool) RebuildConnectionByIDWithContext(ctx context.Context, connID string) (*RebuildResult, error) {
 	// 1. 根据connID查找连接
 	conn := p.findConnectionByID(connID)
 	if conn == nil {
-		return fmt.Errorf("连接不存在: %s", connID)
+		return nil, &RebuildError{
+			Code:      RebuildErrorCodeNotFound,
+			Message:   fmt.Sprintf("连接不存在: %s", connID),
+			Retryable: false,
+			SuggestedFix: "请检查：\n" +
+				"1. 连接ID是否正确\n" +
+				"2. 连接是否已被关闭或删除\n" +
+				"3. 连接池是否包含该连接",
+		}
 	}
 
 	// 2. 检查连接状态是否适合重建
 	if !p.checkConnectionStateForRebuild(conn) {
-		return fmt.Errorf("连接状态不适合重建: %s, state=%s", connID, conn.state)
+		return nil, &RebuildError{
+			Code:    RebuildErrorCodeInvalidState,
+			Message: fmt.Sprintf("连接状态不适合重建: %s, state=%s", connID, conn.state),
+			Details: map[string]interface{}{
+				"connection_id": connID,
+				"state":         conn.state,
+			},
+			Retryable: true, // 状态可能改变，可以重试
+			SuggestedFix: "请等待连接状态变为可重建状态，或检查：\n" +
+				"1. 连接是否正在使用中\n" +
+				"2. 连接是否正在重建中\n" +
+				"3. 连接是否已关闭",
+		}
 	}
 
 	// 3. 执行重建（同步）
-	return p.rebuildConnection(conn.protocol, conn)
+	startTime := time.Now()
+	err := p.rebuildConnection(conn.protocol, conn)
+	duration := time.Since(startTime)
+
+	result := &RebuildResult{
+		Success:   err == nil,
+		OldConnID: connID,
+		Duration:  duration,
+		Reason:    "manual_rebuild",
+		Timestamp: time.Now(),
+	}
+
+	if err != nil {
+		result.Error = err.Error()
+
+		// 包装错误
+		if _, ok := err.(*RebuildError); !ok {
+			err = &RebuildError{
+				Code:          RebuildErrorCodeCreateFailed,
+				Message:       fmt.Sprintf("重建失败: %v", err),
+				Retryable:     true, // 创建失败通常可以重试
+				OriginalError: err,
+				SuggestedFix: "请检查：\n" +
+					"1. 目标设备是否可达\n" +
+					"2. 认证信息是否正确\n" +
+					"3. 网络连接是否稳定",
+			}
+		}
+		return result, err
+	}
+
+	// 获取新连接ID（如果重建成功）
+	if conn != nil {
+		result.NewConnID = conn.id
+	}
+
+	return result, nil
+}
+
+// RebuildConnectionByIDAsync 异步重建指定ID的连接
+func (p *EnhancedConnectionPool) RebuildConnectionByIDAsync(ctx context.Context, connID string) (<-chan *RebuildResult, error) {
+	// 参数验证
+	if connID == "" {
+		return nil, &RebuildError{
+			Code:         RebuildErrorCodeInvalidState,
+			Message:      "连接ID不能为空",
+			Retryable:    false,
+			SuggestedFix: "请提供有效的连接ID",
+		}
+	}
+
+	// 创建带缓冲的结果通道
+	resultChan := make(chan *RebuildResult, 1)
+
+	// 启动异步重建
+	go func() {
+		defer func() {
+			// 确保通道被关闭
+			close(resultChan)
+
+			// 恢复可能的panic
+			if r := recover(); r != nil {
+				ylog.Errorf("pool", "RebuildConnectionByIDAsync panic: %v", r)
+			}
+		}()
+
+		// 调用同步API执行重建
+		result, err := p.RebuildConnectionByIDWithContext(ctx, connID)
+
+		// 确保总是返回一个结果对象
+		if err != nil {
+			// 同步API返回错误，创建包含错误信息的结果
+			if result == nil {
+				result = &RebuildResult{
+					Success:   false,
+					OldConnID: connID,
+					Error:     err.Error(),
+					Timestamp: time.Now(),
+					Reason:    "async_rebuild_failed",
+				}
+			}
+			// 如果result不为nil，它已经包含了错误信息
+		}
+
+		// 发送结果到通道
+		resultChan <- result
+	}()
+
+	return resultChan, nil
 }

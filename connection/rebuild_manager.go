@@ -100,8 +100,9 @@ func (rm *RebuildManager) checkRebuildInterval(conn *EnhancedPooledConnection, n
 // checkConnectionState 检查连接状态是否适合重建
 func (rm *RebuildManager) checkConnectionState(conn *EnhancedPooledConnection) bool {
 	state, _ := conn.getStatus()
-	if conn.isInUse() || state == StateRebuilding || state == StateClosing || state == StateClosed {
-		ylog.Infof("rebuild_manager", "checkConnectionState: 连接状态不适合重建: id=%s, state=%s", conn.id, state)
+	if conn.isInUse() || conn.isRebuilding() || state == StateClosing || state == StateClosed {
+		ylog.Infof("rebuild_manager", "checkConnectionState: 连接状态不适合重建: id=%s, state=%s, isRebuilding=%v",
+			conn.id, state, conn.isRebuilding())
 		return false
 	}
 	return true

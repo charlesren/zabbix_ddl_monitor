@@ -6,7 +6,7 @@
 
 **基于深入讨论的关键更新**：
 1. **修复设计矛盾**：不健康的连接应该触发重建，而不是跳过
-2. **明确状态关系**：`markedForRebuild`（决策标记）与`StateRebuilding`（执行状态）的分工
+2. **明确状态关系**：`markedForRebuild`（决策标记）与`isRebuilding`（执行标记）的分工
 3. **完善健康状态设计**：基于连续失败次数的`Degraded`/`Unhealthy`状态转换
 4. **分阶段实施**：先实现后台定时重建，后集成健康检查触发
 5. **提供完整API**：RebuildConnectionByID, RebuildConnectionByProto, RebuildConnections
@@ -383,11 +383,15 @@ func (p *EnhancedConnectionPool) findConnectionByID(connID string) *EnhancedPool
 ### 1. 重建状态管理
 
 ```go
-// 在 state_manager.go 中添加重建状态
-const (
-    // ... 现有状态
-    StateRebuilding ConnectionState = iota + 6 // 重建中
-)
+// 在 pooled_connection.go 中添加重建管理标记和方法
+type EnhancedPooledConnection struct {
+    // ... 现有字段
+    
+    // 重建管理标记（非连接状态）
+    isRebuilding  bool   // 正在重建标记（需要锁保护）
+    
+    // ... 其他字段
+}
 
 // 在 pooled_connection.go 中添加重建方法
 func (conn *EnhancedPooledConnection) beginRebuild() bool {
@@ -396,17 +400,22 @@ func (conn *EnhancedPooledConnection) beginRebuild() bool {
     
     ylog.Infof("EnhancedPooledConnection", "beginRebuild: 尝试开始重建, id=%s, state=%s", conn.id, conn.state)
     
-    // 只有空闲或使用中的连接才能开始重建
-    if conn.state != StateIdle && conn.state != StateAcquired {
+    // 检查是否已经在重建中
+    if conn.isRebuilding {
+        ylog.Infof("EnhancedPooledConnection", "beginRebuild: 已在重建中, id=%s", conn.id)
+        return false
+    }
+    
+    // 检查物理状态是否允许开始重建
+    // 不能从这些状态开始重建
+    if conn.state == StateClosing || conn.state == StateClosed {
         ylog.Infof("EnhancedPooledConnection", "beginRebuild: 状态不适合重建, id=%s, state=%s", conn.id, conn.state)
         return false
     }
     
-    // 转换为重建中状态
-    if !conn.transitionStateLocked(StateRebuilding) {
-        ylog.Warnf("EnhancedPooledConnection", "beginRebuild: 状态转换失败, id=%s, from=%s, to=%s", conn.id, conn.state, StateRebuilding)
-        return false
-    }
+    // 设置重建标记
+    conn.isRebuilding = true
+    conn.markedForRebuild = 0 // 清除需要重建标记
     
     ylog.Infof("EnhancedPooledConnection", "beginRebuild: 成功开始重建, id=%s", conn.id)
     return true
@@ -416,31 +425,24 @@ func (conn *EnhancedPooledConnection) completeRebuild(success bool) {
     conn.mu.Lock()
     defer conn.mu.Unlock()
     
-    if conn.state != StateRebuilding {
-        ylog.Warnf("EnhancedPooledConnection", "completeRebuild: 连接不在重建中: id=%s, state=%s", conn.id, conn.state)
+    if !conn.isRebuilding {
+        ylog.Warnf("EnhancedPooledConnection", "completeRebuild: 连接不在重建中: id=%s", conn.id)
         return
     }
     
-    var targetState ConnectionState
+    // 清除重建标记
+    conn.isRebuilding = false
+    
     if success {
-        targetState = StateIdle
-        conn.lastRebuiltAt = time.Now()
-        conn.consecutiveFailures = 0
-        conn.healthStatus = HealthStatusHealthy
-        conn.usageCount = 0 // 重置使用计数
+        // 重建成功：连接已关闭，新连接已创建
+        // 注意：旧连接已经是StateClosed状态
         ylog.Infof("EnhancedPooledConnection", "completeRebuild: 重建成功, id=%s", conn.id)
     } else {
-        targetState = StateClosing
+        // 重建失败：连接可能处于各种状态
         ylog.Warnf("EnhancedPooledConnection", "completeRebuild: 重建失败, id=%s", conn.id)
     }
     
-    if !conn.transitionStateLocked(targetState) {
-        ylog.Errorf("EnhancedPooledConnection", "completeRebuild: 状态转换失败: id=%s, from=%s, to=%s", conn.id, conn.state, targetState)
-        // 强制转换到Closing状态
-        conn.state = StateClosing
-    }
-    
-    // 清除重建标记
+    // 清除需要重建标记
     atomic.StoreInt32(&conn.markedForRebuild, 0)
 }
 ```
@@ -546,7 +548,7 @@ func (p *EnhancedConnectionPool) replaceConnection(proto Protocol, connID string
                 createdAt:  time.Now(),
                 lastUsed:   time.Now(),
                 usageCount: 0,
-                state:      StateRebuilding,
+                state:      StateIdle, // 新连接初始状态为空闲
                 healthStatus: HealthStatusHealthy,
                 labels:     conn.labels,
                 metadata:   conn.metadata,
@@ -709,7 +711,7 @@ func (p *EnhancedConnectionPool) eventHandlerTask() {
 
 ### 第一阶段：基础架构和配置（1-2天）
 1. **扩展配置**：在 `EnhancedConnectionConfig` 中添加新增的重建配置
-2. **添加重建状态**：在状态机中添加 `StateRebuilding` 状态
+2. **添加重建管理标记**：在 `EnhancedPooledConnection` 中添加 `isRebuilding` 标记
 3. **实现基础方法**：`beginRebuild()`, `completeRebuild()`
 4. **扩展指标接口**：在 `MetricsCollector` 中添加重建指标方法
 5. **扩展事件系统**：添加重建相关事件类型

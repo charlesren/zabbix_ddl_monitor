@@ -14,12 +14,11 @@ const (
 	StateExecuting
 	// StateChecking 检查状态：连接正在接受健康检查
 	StateChecking
-	// StateRebuilding 重建状态：连接正在被重建
-	StateRebuilding
 	// StateClosing 关闭中状态：连接正在关闭
 	StateClosing
 	// StateClosed 已关闭状态：连接已关闭
 	StateClosed
+	// 注意：移除了 StateRebuilding，重建使用管理标记 isRebuilding 控制
 )
 
 // String 返回连接状态的字符串表示
@@ -35,8 +34,6 @@ func (s ConnectionState) String() string {
 		return "Executing"
 	case StateChecking:
 		return "Checking"
-	case StateRebuilding:
-		return "Rebuilding"
 	case StateClosing:
 		return "Closing"
 	case StateClosed:
@@ -51,10 +48,10 @@ func CanTransition(currentState, targetState ConnectionState) bool {
 	// 状态转换规则
 	switch currentState {
 	case StateIdle:
-		// 空闲状态可以转换到：连接中、已获取、检查中、重建中、关闭中、已关闭
+		// 空闲状态可以转换到：连接中、已获取、检查中、关闭中、已关闭
 		return targetState == StateConnecting || targetState == StateAcquired ||
-			targetState == StateChecking || targetState == StateRebuilding ||
-			targetState == StateClosing || targetState == StateClosed
+			targetState == StateChecking || targetState == StateClosing ||
+			targetState == StateClosed
 	case StateConnecting:
 		// 连接中状态可以转换到：已获取、关闭中、已关闭
 		return targetState == StateAcquired || targetState == StateClosing ||
@@ -72,10 +69,6 @@ func CanTransition(currentState, targetState ConnectionState) bool {
 		// 检查中状态可以转换到：空闲、已获取、关闭中、已关闭
 		return targetState == StateIdle || targetState == StateAcquired ||
 			targetState == StateClosing || targetState == StateClosed
-	case StateRebuilding:
-		// 重建中状态可以转换到：空闲、关闭中、已关闭
-		return targetState == StateIdle || targetState == StateClosing ||
-			targetState == StateClosed
 	case StateClosing:
 		// 关闭中状态只能转换到：已关闭
 		return targetState == StateClosed
@@ -94,7 +87,7 @@ func GetValidTransitions(currentState ConnectionState) []ConnectionState {
 	// 检查所有可能的目标状态（从StateIdle到StateClosed）
 	allStates := []ConnectionState{
 		StateIdle, StateConnecting, StateAcquired, StateExecuting,
-		StateChecking, StateRebuilding, StateClosing, StateClosed,
+		StateChecking, StateClosing, StateClosed,
 	}
 
 	for _, targetState := range allStates {
@@ -119,5 +112,5 @@ func IsOperationalState(state ConnectionState) bool {
 
 // IsTransitionalState 检查是否为过渡状态
 func IsTransitionalState(state ConnectionState) bool {
-	return state == StateRebuilding || state == StateClosing
+	return state == StateClosing
 }

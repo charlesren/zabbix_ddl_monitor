@@ -13,6 +13,7 @@
 - [协议驱动](#协议驱动)
 - [指标监控](#指标监控)
 - [弹性机制](#弹性机制)
+- [健康检查与重建机制](#健康检查与重建机制)
 - [最佳实践](#最佳实践)
 - [故障排查](#故障排查)
 - [性能基准](#性能基准)
@@ -48,8 +49,14 @@
 - **负载均衡**: 轮询和最少连接策略
 - **异步处理**: 健康检查和清理任务异步执行
 - **连接预热**: 启动时预建立连接
+- **健康检查**: 定期检查连接健康状态
+- **智能重建**: 基于使用次数、年龄、错误率的自动重建
 
-### 🛡️ 高可用
+### 🔒 高可用
+- **健康状态管理**: 健康、降级、不健康三级状态
+- **自动重建**: 检测到问题连接时自动重建
+- **手动重建API**: 支持管理员手动触发重建
+- **状态一致性**: 确保在各种异常情况下的状态一致性
 - **健康检查**: 自动检测和恢复不健康连接
 - **熔断器模式**: 防止级联故障
 - **指数退避重试**: 智能重试策略
@@ -57,6 +64,10 @@
 - **故障隔离**: 单个连接故障不影响整体
 
 ### 📊 可观测性
+- **健康状态监控**: 实时监控连接健康状态
+- **重建事件跟踪**: 记录所有重建操作的详细日志
+- **性能指标收集**: 收集重建成功率、耗时等关键指标
+- **事件通知系统**: 重要操作都有相应的事件通知
 - **详细指标**: 连接、操作、健康检查指标
 - **实时监控**: 连接池状态实时查看
 - **生命周期追踪**: 连接从创建到销毁的完整追踪
@@ -385,7 +396,7 @@ config, err := connection.NewConfigBuilder().
     Build()
 ```
 
-## 连接池管理
+### 连接池管理
 
 ### 基础连接池操作
 
@@ -483,7 +494,7 @@ func (cb *CustomBalancer) UpdateConnectionMetrics(conn *connection.EnhancedPoole
 }
 ```
 
-## 协议驱动
+### 协议驱动
 
 ### SSH驱动使用
 
@@ -597,7 +608,7 @@ if err != nil {
 fmt.Printf("交互式操作完成: %s\n", string(resp.RawData))
 ```
 
-## 指标监控
+### 指标监控
 
 ### 指标收集系统
 
@@ -682,7 +693,7 @@ func startMetricsExporter(pool *connection.EnhancedConnectionPool) {
 }
 ```
 
-## 弹性机制
+### 弹性机制
 
 ### 重试策略
 
@@ -780,7 +791,337 @@ func createResilientPool() *connection.EnhancedConnectionPool {
 }
 ```
 
-## 最佳实践
+### 健康检查与重建机制
+
+#### 健康状态管理
+连接管理系统实现了三级健康状态管理：
+- **健康 (Healthy)**: 连接正常工作，响应时间正常
+- **降级 (Degraded)**: 连接响应时间超过阈值，但仍在工作
+- **不健康 (Unhealthy)**: 连接连续多次健康检查失败
+
+#### 健康检查配置
+```yaml
+# 健康检查配置示例
+HealthCheckTime: 30s          # 健康检查间隔
+HealthCheckTimeout: 5s        # 健康检查超时时间
+UnhealthyThreshold: 3         # 不健康阈值（连续失败次数）
+DegradedThreshold: 100ms      # 降级响应时间阈值
+HealthCheckTriggerRebuild: true  # 健康检查触发重建
+RebuildOnDegraded: false      # 降级时是否重建
+```
+
+#### 智能重建机制
+系统支持基于多种条件的智能重建：
+1. **使用次数重建**: 连接使用达到一定次数后重建
+2. **年龄重建**: 连接达到最大年龄后重建
+3. **错误率重建**: 连接错误率超过阈值后重建
+4. **健康检查触发**: 健康检查发现不健康状态时重建
+
+#### 状态管理设计（最新优化）
+系统采用清晰的状态管理设计，避免状态冲突：
+
+**连接物理状态**（真正的连接状态）：
+```go
+StateIdle       // 空闲状态（可用）
+StateConnecting // 连接中状态（正在建立连接）
+StateAcquired   // 已获取状态（使用中）
+StateExecuting  // 执行中状态（正在执行命令）
+StateChecking   // 检查状态（健康检查中）
+StateClosing    // 关闭中状态
+StateClosed     // 已关闭状态（终止状态）
+// 注意：移除了 StateRebuilding，重建使用管理标记控制
+```
+
+**重建管理标记**（防止并发重建）：
+```go
+type EnhancedPooledConnection struct {
+    state      ConnectionState  // 物理状态
+    isRebuilding bool           // 正在重建标记（管理标记，非连接状态）
+    markedForRebuild int32      // 需要重建标记（原子操作）
+    // ...
+}
+```
+
+**优势**：
+1. **无状态冲突**：重建过程可以正常执行关闭操作（`StateIdle` → `StateClosing` → `StateClosed`）
+2. **物理状态真实**：连接只有真正的物理状态
+3. **并发控制有效**：通过 `isRebuilding` 标记防止并发重建
+4. **职责清晰**：状态表示物理状态，标记表示管理意图
+
+#### 重建API
+系统提供了完整的重建API：
+
+##### 基础API（向后兼容）
+```go
+// 重建指定ID的连接
+func (p *EnhancedConnectionPool) RebuildConnectionByID(connID string) error
+
+// 重建指定协议的所有需要重建的连接
+func (p *EnhancedConnectionPool) RebuildConnectionByProto(proto Protocol) (int, error)
+
+// 重建所有需要重建的连接
+func (p *EnhancedConnectionPool) RebuildConnections() (map[Protocol]int, error)
+```
+
+##### 增强API（推荐使用）
+```go
+// 带上下文的增强API，提供更详细的返回信息
+func (p *EnhancedConnectionPool) RebuildConnectionByIDWithContext(
+    ctx context.Context, 
+    connID string
+) (*RebuildResult, error)
+
+func (p *EnhancedConnectionPool) RebuildConnectionByProtoWithContext(
+    ctx context.Context, 
+    proto Protocol
+) (*BatchRebuildResult, error)
+
+func (p *EnhancedConnectionPool) RebuildConnectionsWithContext(
+    ctx context.Context
+) (*FullRebuildResult, error)
+
+##### 异步API（非阻塞执行）
+```go
+// 异步重建指定ID的连接，通过channel返回结果
+func (p *EnhancedConnectionPool) RebuildConnectionByIDAsync(
+    ctx context.Context, 
+    connID string
+) (<-chan *RebuildResult, error)
+
+// 异步重建指定协议的所有需要重建的连接
+func (p *EnhancedConnectionPool) RebuildConnectionByProtoAsync(
+    ctx context.Context, 
+    proto Protocol
+) (<-chan *BatchRebuildResult, error)
+
+// 异步重建所有需要重建的连接
+func (p *EnhancedConnectionPool) RebuildConnectionsAsync(
+    ctx context.Context
+) (<-chan *FullRebuildResult, error)
+```
+
+#### 重建结果结构
+```go
+// 单个连接重建结果
+type RebuildResult struct {
+    Success   bool          // 是否成功
+    OldConnID string        // 旧连接ID
+    NewConnID string        // 新连接ID（成功时）
+    Duration  time.Duration // 重建耗时
+    Reason    string        // 重建原因
+    Error     string        // 错误信息（失败时）
+    Timestamp time.Time     // 时间戳
+}
+
+// 批量重建结果
+type BatchRebuildResult struct {
+    Protocol  Protocol         // 协议类型
+    Total     int              // 总连接数
+    Success   int              // 成功数
+    Failed    int              // 失败数
+    Results   []*RebuildResult // 详细结果
+    StartTime time.Time        // 开始时间
+    EndTime   time.Time        // 结束时间
+    Duration  time.Duration    // 总耗时
+}
+
+// 全量重建结果
+type FullRebuildResult struct {
+    TotalProtocols   int                              // 总协议数
+    TotalConnections int                              // 总连接数
+    Success          int                              // 总成功数
+    Failed           int                              // 总失败数
+    ProtocolResults  map[Protocol]*BatchRebuildResult // 各协议结果
+    StartTime        time.Time                        // 开始时间
+    EndTime          time.Time                        // 结束时间
+    Duration         time.Duration                    // 总耗时
+}
+```
+
+#### 使用示例
+```go
+// 1. 手动重建单个连接
+result, err := pool.RebuildConnectionByIDWithContext(ctx, "conn-123")
+if err != nil {
+    log.Printf("重建失败: %v", err)
+} else {
+    log.Printf("重建成功: 旧ID=%s, 新ID=%s, 耗时=%v", 
+        result.OldConnID, result.NewConnID, result.Duration)
+}
+
+// 2. 批量重建SSH协议的所有连接
+batchResult, err := pool.RebuildConnectionByProtoWithContext(ctx, ProtocolSSH)
+if err != nil {
+    log.Printf("批量重建失败: %v", err)
+} else {
+    log.Printf("批量重建完成: 总数=%d, 成功=%d, 失败=%d, 耗时=%v",
+        batchResult.Total, batchResult.Success, batchResult.Failed, batchResult.Duration)
+}
+
+// 3. 全量重建所有连接
+fullResult, err := pool.RebuildConnectionsWithContext(ctx)
+if err != nil {
+    log.Printf("全量重建失败: %v", err)
+} else {
+    log.Printf("全量重建完成: 协议数=%d, 连接数=%d, 成功=%d, 失败=%d, 耗时=%v",
+        fullResult.TotalProtocols, fullResult.TotalConnections,
+        fullResult.Success, fullResult.Failed, fullResult.Duration)
+}
+
+// 4. 异步重建单个连接（非阻塞）
+resultChan, err := pool.RebuildConnectionByIDAsync(ctx, "conn-123")
+if err != nil {
+    log.Printf("启动异步重建失败: %v", err)
+} else {
+    go func() {
+        for result := range resultChan {
+            if result.Success {
+                log.Printf("异步重建成功: 旧ID=%s, 新ID=%s, 耗时=%v",
+                    result.OldConnID, result.NewConnID, result.Duration)
+            } else {
+                log.Printf("异步重建失败: 原因=%s, 错误=%s",
+                    result.Reason, result.Error)
+            }
+        }
+        log.Printf("异步重建完成")
+    }()
+}
+
+// 5. 异步批量重建（适合大量连接）
+batchChan, err := pool.RebuildConnectionByProtoAsync(ctx, ProtocolSSH)
+if err != nil {
+    log.Printf("启动异步批量重建失败: %v", err)
+} else {
+    go func() {
+        for batchResult := range batchChan {
+            log.Printf("异步批量重建进度: 总数=%d, 成功=%d, 失败=%d, 耗时=%v",
+                batchResult.Total, batchResult.Success, 
+                batchResult.Failed, batchResult.Duration)
+        }
+        log.Printf("异步批量重建完成")
+    }()
+}
+
+// 6. 异步全量重建（系统维护时使用）
+fullChan, err := pool.RebuildConnectionsAsync(ctx)
+if err != nil {
+    log.Printf("启动异步全量重建失败: %v", err)
+} else {
+    go func() {
+        for fullResult := range fullChan {
+            log.Printf("异步全量重建进度: 协议数=%d, 连接数=%d, 成功=%d, 失败=%d",
+                fullResult.TotalProtocols, fullResult.TotalConnections,
+                fullResult.Success, fullResult.Failed)
+        }
+        log.Printf("异步全量重建完成")
+    }()
+}
+```
+
+#### 配置建议
+1. **生产环境配置**:
+   ```yaml
+   HealthCheckTime: 60s
+   UnhealthyThreshold: 3
+   RebuildMaxUsageCount: 1000
+   RebuildMaxAge: 24h
+   RebuildMaxErrorRate: 0.1
+   RebuildCheckInterval: 5m
+   ```
+
+2. **测试环境配置**:
+   ```yaml
+   HealthCheckTime: 10s
+   UnhealthyThreshold: 2
+   RebuildMaxUsageCount: 10  # 低阈值便于测试
+   RebuildCheckInterval: 30s
+   ```
+
+3. **开发环境配置**:
+   ```yaml
+   HealthCheckTime: 30s
+   HealthCheckTriggerRebuild: false  # 开发时避免频繁重建
+   SmartRebuildEnabled: true
+   ```
+
+4. **异步重建配置**:
+   ```yaml
+   # 异步重建相关配置
+   AsyncRebuild:
+     MaxConcurrent: 5           # 最大并发重建数
+     QueueSize: 100            # 重建任务队列大小
+     ProgressUpdateInterval: 1s # 进度更新间隔
+     Timeout: 10m              # 异步任务超时时间
+     
+   # 批量重建优化
+   BatchRebuild:
+     ChunkSize: 10             # 每批处理连接数
+     DelayBetweenChunks: 100ms # 批次间延迟
+     RetryPolicy:
+       MaxRetries: 3
+       BackoffMultiplier: 2.0
+       InitialDelay: 1s
+   ```
+
+#### 监控指标
+健康检查与重建机制提供了丰富的监控指标：
+
+##### 健康检查指标
+- `connection_health_status`: 连接健康状态（健康/降级/不健康）
+- `health_check_success_total`: 健康检查成功次数
+- `health_check_failed_total`: 健康检查失败次数
+- `health_check_duration_seconds`: 健康检查耗时分布
+
+##### 同步重建指标
+- `rebuild_marked_total`: 标记需要重建的连接数
+- `rebuild_started_total`: 开始重建的连接数
+- `rebuild_completed_total`: 完成重建的连接数
+- `rebuild_failed_total`: 重建失败的连接数
+- `rebuild_duration_seconds`: 重建耗时分布
+
+##### 异步重建指标
+- `async_rebuild_queue_size`: 异步重建队列大小
+- `async_rebuild_active_tasks`: 活跃的异步重建任务数
+- `async_rebuild_completed_tasks`: 完成的异步重建任务数
+- `async_rebuild_failed_tasks`: 失败的异步重建任务数
+- `async_rebuild_cancelled_tasks`: 取消的异步重建任务数
+- `async_rebuild_progress_updates`: 进度更新次数
+
+##### 批量重建指标
+- `batch_rebuild_total_connections`: 批量重建总连接数
+- `batch_rebuild_current_chunk`: 当前处理批次
+- `batch_rebuild_chunk_success`: 批次成功数
+- `batch_rebuild_chunk_failed`: 批次失败数
+- `batch_rebuild_estimated_time_remaining`: 预计剩余时间
+
+#### 故障排查
+1. **连接频繁重建**:
+   - 检查健康检查配置是否过于敏感
+   - 检查网络稳定性
+   - 查看重建原因日志
+
+2. **重建失败**:
+   - 检查目标设备可达性
+   - 检查认证信息是否正确
+   - 查看详细的错误日志
+
+3. **健康状态异常**:
+   - 检查健康检查超时配置
+   - 检查设备负载情况
+   - 查看健康检查历史记录
+
+4. **异步重建问题**:
+   - **任务队列积压**: 检查`async_rebuild_queue_size`指标，调整`MaxConcurrent`配置
+   - **进度更新延迟**: 检查`async_rebuild_progress_updates`，调整`ProgressUpdateInterval`
+   - **任务超时**: 检查异步任务超时配置，查看任务执行日志
+   - **内存泄漏**: 监控异步任务goroutine数量，确保任务完成后资源释放
+
+5. **批量重建性能问题**:
+   - **批次处理慢**: 调整`ChunkSize`和`DelayBetweenChunks`配置
+   - **并发过高**: 降低`MaxConcurrent`，避免对设备造成过大压力
+   - **预估时间不准**: 检查历史重建耗时数据，优化预估算法
+
+### 最佳实践
 
 ### 生产环境配置
 
@@ -887,6 +1228,183 @@ func executeBatchCommands(pool *connection.EnhancedConnectionPool, commands []st
 
 // 3. 错误分类处理
 func handleConnectionError(err error) error {
+
+// 4. 异步重建最佳实践
+func handleAsyncRebuild(pool *connection.EnhancedConnectionPool) error {
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+    defer cancel()
+    
+    // 启动异步全量重建
+    resultChan, err := pool.RebuildConnectionsAsync(ctx)
+    if err != nil {
+        return fmt.Errorf("启动异步重建失败: %w", err)
+    }
+    
+    // 创建进度跟踪器
+    progress := &RebuildProgressTracker{
+        StartTime: time.Now(),
+        Updates:   make(chan ProgressUpdate, 100),
+    }
+    
+    // 启动监控goroutine
+    go func() {
+        defer close(progress.Updates)
+        
+        for result := range resultChan {
+            update := ProgressUpdate{
+                Timestamp:     time.Now(),
+                TotalProtocols: result.TotalProtocols,
+                TotalConnections: result.TotalConnections,
+                Success:       result.Success,
+                Failed:        result.Failed,
+                Duration:      result.Duration,
+            }
+            
+            select {
+            case progress.Updates <- update:
+                // 进度更新已发送
+            default:
+                // 通道已满，跳过更新（避免阻塞）
+                log.Printf("进度更新通道已满，跳过更新")
+            }
+            
+            // 检查是否应该提前取消
+            if shouldCancelRebuild(update) {
+                cancel()
+                break
+            }
+        }
+    }()
+    
+    // 处理进度更新
+    go func() {
+        for update := range progress.Updates {
+            logProgress(update)
+            updateMetrics(update)
+            
+            // 每10%进度记录一次详细日志
+            if update.Success+update.Failed > 0 {
+                progressPercent := float64(update.Success+update.Failed) / 
+                    float64(update.TotalConnections) * 100
+                if int(progressPercent)%10 == 0 {
+                    log.Printf("重建进度: %.1f%%, 成功=%d, 失败=%d, 耗时=%v",
+                        progressPercent, update.Success, update.Failed, update.Duration)
+                }
+            }
+        }
+    }()
+    
+    // 等待完成或超时
+    select {
+    case <-ctx.Done():
+        if ctx.Err() == context.DeadlineExceeded {
+            return fmt.Errorf("异步重建超时")
+        }
+        return fmt.Errorf("异步重建被取消: %w", ctx.Err())
+    case <-time.After(11 * time.Minute): // 比context超时稍长
+        return fmt.Errorf("异步重建未在预期时间内完成")
+    }
+    
+    return nil
+}
+
+// 辅助类型定义
+type RebuildProgressTracker struct {
+    StartTime time.Time
+    Updates   chan ProgressUpdate
+}
+
+type ProgressUpdate struct {
+    Timestamp        time.Time
+    TotalProtocols   int
+    TotalConnections int
+    Success          int
+    Failed           int
+    Duration         time.Duration
+}
+
+func shouldCancelRebuild(update ProgressUpdate) bool {
+    // 如果失败率超过50%，考虑取消
+    total := update.Success + update.Failed
+    if total > 10 && float64(update.Failed)/float64(total) > 0.5 {
+        return true
+    }
+    return false
+}
+
+func logProgress(update ProgressUpdate) {
+    // 实现日志记录
+}
+
+func updateMetrics(update ProgressUpdate) {
+    // 实现指标更新
+}
+
+func performChunkedRebuild(pool *connection.EnhancedConnectionPool, proto connection.Protocol, total int) error {
+    // 实现分批次重建
+    chunkSize := 20 // 每批20个连接
+    for i := 0; i < total; i += chunkSize {
+        log.Printf("处理批次 %d-%d (共%d)", i, min(i+chunkSize, total), total)
+        // 实际实现中会调用适当的API
+        time.Sleep(100 * time.Millisecond) // 批次间延迟
+    }
+    return nil
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+// 5. 批量重建优化
+func optimizeBatchRebuild(pool *connection.EnhancedConnectionPool, proto connection.Protocol) error {
+    // 先获取需要重建的连接列表
+    stats := pool.GetStats()
+    connectionsNeedingRebuild := stats.ConnectionsNeedingRebuild[proto]
+    
+    if connectionsNeedingRebuild == 0 {
+        log.Printf("协议 %s 没有需要重建的连接", proto)
+        return nil
+    }
+    
+    log.Printf("开始批量重建 %s 协议，共 %d 个连接", proto, connectionsNeedingRebuild)
+    
+    // 根据连接数量选择策略
+    var resultChan <-chan *connection.BatchRebuildResult
+    var err error
+    
+    if connectionsNeedingRebuild <= 10 {
+        // 少量连接，使用同步API
+        result, err := pool.RebuildConnectionByProtoWithContext(
+            context.Background(), proto)
+        if err != nil {
+            return err
+        }
+        log.Printf("同步批量重建完成: 成功=%d, 失败=%d", result.Success, result.Failed)
+        return nil
+    } else if connectionsNeedingRebuild <= 100 {
+        // 中等数量，使用异步API
+        resultChan, err = pool.RebuildConnectionByProtoAsync(
+            context.Background(), proto)
+    } else {
+        // 大量连接，使用分批次异步重建
+        return performChunkedRebuild(pool, proto, connectionsNeedingRebuild)
+    }
+    
+    if err != nil {
+        return err
+    }
+    
+    // 处理异步结果
+    for result := range resultChan {
+        log.Printf("批量重建进度: 总数=%d, 成功=%d, 失败=%d, 耗时=%v",
+            result.Total, result.Success, result.Failed, result.Duration)
+    }
+    
+    return nil
+}
     switch {
     case errors.Is(err, connection.ErrCircuitBreakerOpen):
         // 熔断器打开 - 等待或降级

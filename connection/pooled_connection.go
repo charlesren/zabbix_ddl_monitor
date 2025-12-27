@@ -25,9 +25,11 @@ type EnhancedPooledConnection struct {
 	// 状态管理（使用状态机）
 	state ConnectionState
 
-	// 重建相关
+	// 重建管理标记（非连接状态）
+	rebuilding       bool      // 正在重建标记（需要锁保护）
 	lastRebuiltAt    time.Time // 上次重建时间
-	markedForRebuild int32     // 标记是否正在重建，防止并发重建(0=未标记, 1=已标记)
+	markedForRebuild int32     // 标记是否需要重建，防止并发决策(0=未标记, 1=已标记)
+	rebuildReason    string    // 重建原因（便于监控）
 
 	// 健康状态
 	healthStatus        HealthStatus
@@ -45,9 +47,6 @@ type EnhancedPooledConnection struct {
 	// 标签和元数据
 	labels   map[string]string
 	metadata map[string]interface{}
-
-	// 重建原因（便于监控）
-	rebuildReason string
 }
 
 // tryAcquire 尝试获取连接（非阻塞）
@@ -302,6 +301,13 @@ func (conn *EnhancedPooledConnection) isMarkedForRebuild() bool {
 	return atomic.LoadInt32(&conn.markedForRebuild) == 1
 }
 
+// isRebuilding 检查是否正在重建中
+func (conn *EnhancedPooledConnection) isRebuilding() bool {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	return conn.rebuilding
+}
+
 // getRebuildReason 获取重建原因
 func (conn *EnhancedPooledConnection) getRebuildReason() string {
 	conn.mu.RLock()
@@ -317,9 +323,11 @@ func (conn *EnhancedPooledConnection) validateState() error {
 	switch conn.state {
 	case StateClosed, StateClosing:
 		return fmt.Errorf("connection is %s", conn.state)
-	case StateRebuilding:
-		return fmt.Errorf("connection is being rebuilt")
 	default:
+		// 检查是否正在重建中（使用管理标记）
+		if conn.rebuilding {
+			return fmt.Errorf("connection is being rebuilt")
+		}
 		return nil
 	}
 }
@@ -403,67 +411,52 @@ func (conn *EnhancedPooledConnection) completeHealthCheck(success bool) bool {
 func (conn *EnhancedPooledConnection) beginRebuild() bool {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.beginRebuildWithLock()
-}
 
-// beginRebuildWithLock 开始重建连接（需要持有锁）
-func (conn *EnhancedPooledConnection) beginRebuildWithLock() bool {
-	// 检查 markedForRebuild 标记
-	if !conn.isMarkedForRebuild() {
-		ylog.Debugf("EnhancedPooledConnection", "beginRebuildWithLock: 连接未标记重建: id=%s", conn.id)
+	// 检查是否已经在重建中
+	if conn.rebuilding {
+		ylog.Debugf("EnhancedPooledConnection", "beginRebuild: 已在重建中: id=%s", conn.id)
 		return false
 	}
 
-	// 只有空闲的连接才能重建
-	if conn.state != StateIdle {
-		ylog.Debugf("EnhancedPooledConnection", "beginRebuildWithLock: 连接状态不适合重建: id=%s, state=%s", conn.id, conn.state)
+	// 检查物理状态是否允许开始重建
+	// 不能从这些状态开始重建
+	if conn.state == StateClosing || conn.state == StateClosed {
+		ylog.Debugf("EnhancedPooledConnection", "beginRebuild: 连接状态不适合重建: id=%s, state=%s", conn.id, conn.state)
 		return false
 	}
 
-	// 转换为重建中状态
-	if !conn.transitionStateLocked(StateRebuilding) {
-		ylog.Debugf("EnhancedPooledConnection", "beginRebuildWithLock: 状态转换失败: id=%s, from=%s, to=%s", conn.id, conn.state, StateRebuilding)
-		return false
-	}
+	// 设置重建标记（执行阶段）
+	conn.rebuilding = true
+	// markedForRebuild 保持为 1（决策阶段标记），在完成时根据成功/失败决定是否清除
 
-	// 保持 markedForRebuild=1（不清除），在 completeRebuild 中清除
+	ylog.Debugf("EnhancedPooledConnection", "beginRebuild: 成功开始重建: id=%s, state=%s", conn.id, conn.state)
 	return true
 }
 
 // completeRebuild 完成重建
-func (conn *EnhancedPooledConnection) completeRebuild(success bool) bool {
+func (conn *EnhancedPooledConnection) completeRebuild(success bool) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	// 只有重建中的连接才能完成重建
-	if conn.state != StateRebuilding {
-		ylog.Warnf("EnhancedPooledConnection", "completeRebuild: 连接不在重建中: id=%s, state=%s", conn.id, conn.state)
-		return false
+	if !conn.rebuilding {
+		ylog.Warnf("EnhancedPooledConnection", "completeRebuild: 连接不在重建中: id=%s", conn.id)
+		return
 	}
 
-	var targetState ConnectionState
+	// 清除重建标记
+	conn.rebuilding = false
+
 	if success {
-		targetState = StateIdle
-		conn.lastRebuiltAt = time.Now()
-		// 重置使用计数
-		atomic.StoreInt64(&conn.usageCount, 0)
-		// 重置健康状态
-		conn.healthStatus = HealthStatusHealthy
-		conn.consecutiveFailures = 0
+		// 重建成功：连接已关闭，新连接已创建
 		ylog.Infof("EnhancedPooledConnection", "completeRebuild: 重建成功: id=%s", conn.id)
+		// 成功时清除决策标记
+		atomic.StoreInt32(&conn.markedForRebuild, 0)
 	} else {
-		targetState = StateClosing
+		// 重建失败：连接可能处于各种状态
 		ylog.Warnf("EnhancedPooledConnection", "completeRebuild: 重建失败: id=%s", conn.id)
+		// 失败时保持 markedForRebuild = 1，以便可以重试
+		// markedForRebuild 已经是 1，不需要修改
 	}
-
-	if !conn.transitionStateLocked(targetState) {
-		ylog.Warnf("EnhancedPooledConnection", "completeRebuild: 状态转换失败: id=%s, from=%s, to=%s", conn.id, conn.state, targetState)
-		return false
-	}
-
-	// 重建完成后清除标记
-	conn.clearRebuildMark()
-	return true
 }
 
 // beginClose 开始关闭连接
