@@ -66,10 +66,21 @@ type EnhancedConnectionConfig struct {
 	RebuildStrategy                string        `json:"rebuild_strategy" yaml:"rebuild_strategy"` // "any" | "all" | "usage" | "age" | "error"
 
 	// 健康检查触发重建配置
-	HealthCheckTriggerRebuild bool          `json:"health_check_trigger_rebuild" yaml:"health_check_trigger_rebuild"`
-	UnhealthyThreshold        int           `json:"unhealthy_threshold" yaml:"unhealthy_threshold"` // 默认3
-	DegradedThreshold         time.Duration `json:"degraded_threshold" yaml:"degraded_threshold"`   // 降级响应时间阈值
-	RebuildOnDegraded         bool          `json:"rebuild_on_degraded" yaml:"rebuild_on_degraded"` // 降级时是否重建
+	HealthCheckTriggerRebuild bool `json:"health_check_trigger_rebuild" yaml:"health_check_trigger_rebuild"`
+
+	// 基于失败次数的阈值（判断健康状态）
+	UnhealthyFailureThreshold int `json:"unhealthy_failure_threshold" yaml:"unhealthy_failure_threshold"` // 连续失败 >= N 次设为Unhealthy（默认3）
+	DegradedFailureThreshold  int `json:"degraded_failure_threshold" yaml:"degraded_failure_threshold"`   // 连续失败 >= N 次设为Degraded（默认1）
+
+	// 基于响应时间的阈值（暂未实施，保留向后兼容）
+	DegradedLatencyThreshold time.Duration `json:"degraded_latency_threshold" yaml:"degraded_latency_threshold"` // 响应时间 > N 秒设为Degraded（暂未实施）
+
+	// 旧字段（已废弃，保留向后兼容）
+	UnhealthyThreshold int           `json:"unhealthy_threshold,omitempty" yaml:"unhealthy_threshold,omitempty"` // @deprecated 使用 UnhealthyFailureThreshold
+	DegradedThreshold  time.Duration `json:"degraded_threshold,omitempty" yaml:"degraded_threshold,omitempty"`   // @deprecated 使用 DegradedLatencyThreshold
+
+	// 重建触发配置
+	RebuildOnDegraded bool `json:"rebuild_on_degraded" yaml:"rebuild_on_degraded"` // 降级时是否重建（只要Degraded就触发）
 
 	// 重建执行配置
 	RebuildCheckInterval time.Duration `json:"rebuild_check_interval" yaml:"rebuild_check_interval"` // 默认5分钟
@@ -188,9 +199,15 @@ func NewConfigBuilder() *ConfigBuilder {
 
 			// 健康检查触发重建配置默认值
 			HealthCheckTriggerRebuild: true,
-			UnhealthyThreshold:        3,
-			DegradedThreshold:         2 * time.Second, // 默认2秒响应时间为降级
-			RebuildOnDegraded:         false,           // 默认降级时不重建
+			UnhealthyFailureThreshold: 3,
+			DegradedFailureThreshold:  1,
+			DegradedLatencyThreshold:  2 * time.Second, // 默认2秒响应时间为降级（暂未实施）
+
+			// 旧字段默认值（向后兼容）
+			UnhealthyThreshold: 3,
+			DegradedThreshold:  2 * time.Second,
+
+			RebuildOnDegraded: false, // 默认降级时不重建
 
 			// 重建执行配置默认值
 			RebuildCheckInterval: 5 * time.Minute, // 默认5分钟检查一次
@@ -410,11 +427,19 @@ func (c *EnhancedConnectionConfig) Validate() error {
 
 	// 健康检查触发重建配置验证
 	if c.HealthCheckTriggerRebuild {
-		if c.UnhealthyThreshold <= 0 {
-			return fmt.Errorf("unhealthy threshold must be positive when health check trigger rebuild is enabled")
+		if c.UnhealthyFailureThreshold <= 0 {
+			return fmt.Errorf("unhealthy failure threshold must be positive when health check trigger rebuild is enabled")
 		}
-		if c.DegradedThreshold <= 0 {
-			return fmt.Errorf("degraded threshold must be positive when health check trigger rebuild is enabled")
+		if c.DegradedFailureThreshold < 0 {
+			return fmt.Errorf("degraded failure threshold must be non-negative when health check trigger rebuild is enabled")
+		}
+
+		// 兼容旧字段验证
+		if c.UnhealthyThreshold <= 0 && c.UnhealthyFailureThreshold <= 0 {
+			return fmt.Errorf("either unhealthy_threshold or unhealthy_failure_threshold must be positive")
+		}
+		if c.DegradedLatencyThreshold <= 0 && c.DegradedThreshold <= 0 {
+			return fmt.Errorf("either degraded_threshold or degraded_latency_threshold must be positive")
 		}
 	}
 

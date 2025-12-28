@@ -44,6 +44,9 @@ type EnhancedPooledConnection struct {
 	// 使用保护（新增）
 	usingCount int32 // 原子操作，记录有多少地方在使用此连接
 
+	// 配置引用（用于健康状态判断）
+	config *EnhancedConnectionConfig
+
 	// 标签和元数据
 	labels   map[string]string
 	metadata map[string]interface{}
@@ -146,7 +149,10 @@ func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error)
 		ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 健康检查成功: id=%s", conn.id)
 	} else {
 		conn.consecutiveFailures++
-		conn.setHealthLocked(HealthStatusUnhealthy, false)
+
+		// 获取配置阈值
+		degradedThreshold := conn.config.DegradedFailureThreshold   // 默认1
+		unhealthyThreshold := conn.config.UnhealthyFailureThreshold // 默认3
 
 		// 记录错误类型
 		errorType := "unknown"
@@ -156,8 +162,42 @@ func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error)
 			}
 		}
 
-		ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 健康检查失败: id=%s, error=%v, type=%s, consecutiveFailures=%d",
-			conn.id, err, errorType, conn.consecutiveFailures)
+		// 根据连续失败次数设置健康状态
+		if conn.consecutiveFailures >= unhealthyThreshold {
+			// 达到不健康阈值
+			conn.setHealthLocked(HealthStatusUnhealthy, false)
+
+			ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 连接不健康: id=%s, error=%v, type=%s, consecutiveFailures=%d, threshold=%d",
+				conn.id, err, errorType, conn.consecutiveFailures, unhealthyThreshold)
+
+			// 检查是否需要触发重建（注意：已持有锁，使用内部版本）
+			if conn.config.HealthCheckTriggerRebuild {
+				reason := fmt.Sprintf("health_check_failed_%d_times", conn.consecutiveFailures)
+				if conn.markForRebuildWithReasonLocked(reason) {
+					ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 已标记重建: id=%s, reason=%s", conn.id, reason)
+				}
+			}
+		} else if conn.consecutiveFailures >= degradedThreshold {
+			// 达到降级阈值
+			conn.setHealthLocked(HealthStatusDegraded, false)
+
+			ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 连接降级: id=%s, error=%v, type=%s, consecutiveFailures=%d, threshold=%d",
+				conn.id, err, errorType, conn.consecutiveFailures, degradedThreshold)
+
+			// 如果配置了降级也重建，则标记（注意：已持有锁，使用内部版本）
+			if conn.config.RebuildOnDegraded {
+				reason := fmt.Sprintf("health_check_degraded_%d_times", conn.consecutiveFailures)
+				if conn.markForRebuildWithReasonLocked(reason) {
+					ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 已标记重建: id=%s, reason=%s", conn.id, reason)
+				}
+			}
+		} else {
+			// 低于阈值，仍视为健康（但记录警告）
+			conn.setHealthLocked(HealthStatusHealthy, false)
+
+			ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 健康检查失败但未达到阈值: id=%s, error=%v, type=%s, consecutiveFailures=%d, degradedThreshold=%d, unhealthyThreshold=%d",
+				conn.id, err, errorType, conn.consecutiveFailures, degradedThreshold, unhealthyThreshold)
+		}
 	}
 
 	// 关键修复：无论成功还是失败，都确保状态恢复为Idle
@@ -286,6 +326,15 @@ func (conn *EnhancedPooledConnection) markForRebuildWithReason(reason string) bo
 		conn.mu.Lock()
 		conn.rebuildReason = reason
 		conn.mu.Unlock()
+		return true
+	}
+	return false
+}
+
+// markForRebuildWithReasonLocked 标记连接需要重建并记录原因（需要已持有锁）
+func (conn *EnhancedPooledConnection) markForRebuildWithReasonLocked(reason string) bool {
+	if atomic.CompareAndSwapInt32(&conn.markedForRebuild, 0, 1) {
+		conn.rebuildReason = reason
 		return true
 	}
 	return false

@@ -117,11 +117,16 @@ func (rm *RebuildManager) checkConnectionHealth(conn *EnhancedPooledConnection) 
 
 // checkRebuildMark 检查是否已标记为重建
 func (rm *RebuildManager) checkRebuildMark(conn *EnhancedPooledConnection) bool {
+	// 如果已标记，说明需要重建，直接返回 true
 	if conn.isMarkedForRebuild() {
-		ylog.Infof("rebuild_manager", "checkRebuildMark: 连接已标记为正在重建: id=%s", conn.id)
-		return false
+		ylog.Infof("rebuild_manager", "checkRebuildMark: 连接已标记需要重建: id=%s, reason=%s",
+			conn.id, conn.getRebuildReason())
+		return true // 已标记 = 需要重建
 	}
-	return true
+
+	// 未标记，需要评估是否应该标记
+	ylog.Debugf("rebuild_manager", "checkRebuildMark: 连接未标记，需要评估: id=%s", conn.id)
+	return false // 未标记 = 需要评估策略
 }
 
 // logConnectionDetails 记录连接详细信息（用于调试）

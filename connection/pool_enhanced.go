@@ -13,6 +13,38 @@ import (
 	"github.com/charlesren/ylog"
 )
 
+// ============================================================================
+// 锁顺序规则（全局遵循，避免死锁）
+// ============================================================================
+//
+// 1. 当需要同时持有池锁和连接锁时，始终按以下顺序获取：
+//    pool.mu.Lock()    // 先获取池锁
+//    conn.mu.Lock()    // 后获取连接锁
+//
+// 2. 释放时按相反顺序：
+//    conn.mu.Unlock()  // 先释放连接锁
+//    pool.mu.Unlock()  // 后释放池锁
+//
+// 3. 尽量避免嵌套锁：
+//    - 使用"检查-锁定"模式：先无锁检查，再获取锁快速操作
+//    - 在持有锁时只做快速操作（<1ms）
+//    - 耗时操作（创建连接、网络IO等）在释放锁后执行
+//
+// 4. 使用defer确保锁释放：
+//    mu.Lock()
+//    defer mu.Unlock()  // 即使panic也会释放
+//
+// 5. 原子操作优先：
+//    - 使用atomic包代替锁（如计数器、标记位）
+//    - 减少锁竞争，提高性能
+//
+// 6. 关键设计决策：
+//    - performCoreRebuild 在创建新连接期间（5-10秒）释放所有锁
+//    - 这期间连接池状态短暂不一致（旧连接已删除，新连接未加入）
+//    - 但实际影响很小：重建是低频操作（5分钟一次），池中有多个连接
+//
+// ============================================================================
+
 // ConnectionState 和状态管理相关代码已移动到 state_manager.go
 // 使用 connection.CanTransition() 等函数
 
@@ -638,6 +670,7 @@ func (p *EnhancedConnectionPool) createConnection(ctx context.Context, pool *Enh
 		usingCount:       0,           // 新连接使用计数为0（新增）
 		state:            StateIdle,   // 新连接初始状态为空闲
 		healthStatus:     HealthStatusUnknown,
+		config:           &p.config, // 传入配置引用
 		labels:           make(map[string]string),
 		metadata:         make(map[string]interface{}),
 	}
@@ -665,62 +698,114 @@ func (p *EnhancedConnectionPool) markConnectionForRebuildAsync(pool *EnhancedDri
 
 // asyncRebuildConnection 异步重建连接（优化版：拆分为多个小函数，避免锁内阻塞操作）
 // performCoreRebuild 核心重建函数，包含优化的锁策略和错误处理
+//
+// 锁策略说明：
+// 1. 遵循"先池锁后连接锁"的顺序（当需要同时获取时）
+// 2. 大多数操作只持有一个锁
+// 3. 创建新连接期间（5-10秒）释放所有锁，避免阻塞其他操作
+// 4. 使用defer确保锁释放
+//
+// 执行流程：
+//
+//	阶段1（无锁）: 快速检查
+//	阶段2（连接锁）: 开始重建，设置标记
+//	阶段3（连接锁+池锁）: 关闭旧连接，从池删除
+//	阶段4（无锁，5-10秒）: 创建新连接 ← 关键：无锁区间
+//	阶段5（池锁）: 添加新连接到池
+//	阶段6（无锁）: 完成重建，发送事件
 func (p *EnhancedConnectionPool) performCoreRebuild(pool *EnhancedDriverPool, oldID string, oldConn *EnhancedPooledConnection) error {
-	// 阶段1：快速检查（不持有任何锁）
+	// ========== 【阶段1：快速检查】（无锁） ==========
+	// 目的：在不持有任何锁的情况下快速判断是否可以重建
+	// 避免获取锁后发现无法重建而浪费资源
 	if !p.canStartRebuild(oldConn, oldID) {
 		return fmt.Errorf("连接 %s 不适合重建", oldID)
 	}
 
-	// 阶段2：开始重建（设置 isRebuilding 标记）
+	// ========== 【阶段2：开始重建】（持有连接锁） ==========
+	// 目的：设置重建标记（rebuilding=true），防止并发重建
+	// 锁顺序：只获取连接锁，不获取池锁
 	if !oldConn.beginRebuild() {
 		return fmt.Errorf("无法开始重建: id=%s", oldID)
 	}
 
-	// 声明错误变量
+	// 声明错误变量（用于defer）
 	var err error
-	// 确保最终清除重建标记
-	defer oldConn.completeRebuild(err == nil)
+	// 确保最终清除重建标记（即使panic也会执行）
+	defer func() {
+		if r := recover(); r != nil {
+			ylog.Errorf("performCoreRebuild", "panic: %v, id=%s, stack:\n%s", r, oldID, debug.Stack())
+			err = fmt.Errorf("panic during rebuild")
+		}
+		oldConn.completeRebuild(err == nil)
+	}()
 
-	// 阶段3：先关：关闭旧连接
-	// 3.1 开始关闭
+	// ========== 【阶段3：关闭旧连接】 ==========
+
+	// 3.1 开始关闭（持有连接锁）
+	// 目的：将连接状态转换为 StateClosing
 	if !oldConn.beginClose() {
 		ylog.Warnf("connection_pool", "无法正常开始关闭，强制关闭连接: id=%s", oldID)
-		// 强制设置状态
 		oldConn.mu.Lock()
 		oldConn.state = StateClosing
 		oldConn.mu.Unlock()
 	}
 
-	// 3.2 立即关闭driver
+	// 3.2 关闭driver（无锁，快速操作）
+	// 目的：释放底层网络连接
 	if oldConn.driver != nil {
 		oldConn.driver.Close()
 		oldConn.driver = nil
 	}
 
-	// 3.3 从池中移除连接
+	// 3.3 从池中删除（持有池锁）← 【关键点1】
+	// 锁顺序：只获取池锁（遵循"先池锁后连接锁"规则，但此时没有连接锁）
+	// 目的：从连接池中移除旧连接
+	// 竞态：此时可能有其他goroutine在Get()，但它们会获取连接的其他副本
 	pool.mu.Lock()
 	delete(pool.connections, oldID)
 	atomic.AddInt64(&pool.stats.IdleConnections, -1)
-	pool.mu.Unlock()
+	pool.mu.Unlock() // ⚠️ 释放池锁，准备创建新连接
 
-	// 3.4 完成关闭
+	// 3.4 完成关闭（持有连接锁）
 	oldConn.completeClose()
 
-	// 阶段4：后建：创建新连接
+	// ========== 【阶段4：创建新连接】（无锁，耗时5-10秒） ==========
+	// ⚠️ 重要：此时旧连接已从池删除，新连接未加入
+	// 可能的竞态：
+	//   1. 其他goroutine调用Get()发现可用连接减少
+	//   2. 可能触发创建新连接（如果连接数不足）
+	//   3. 但影响很小，因为：
+	//      - 重建通常是低频操作（5分钟一次）
+	//      - 池中通常有多个连接
+	//      - 即使短暂减少连接数也不会导致请求失败
+	//
+	// 不持有锁的原因：创建连接需要5-10秒（网络IO、认证等）
+	//                  如果持有池锁会阻塞所有Get()/Release()操作
+
 	newConn, err := p.createReplacementConnection(pool, oldConn)
 	if err != nil {
+		// 失败处理：旧连接已删除，但新连接创建失败
+		// 标记重建失败，允许连接池自动补充
 		ylog.Warnf("connection_pool", "先关后建失败: 关闭成功但创建失败, id=%s, error=%v", oldID, err)
-		return fmt.Errorf("创建新连接失败: %w", err)
+		err = fmt.Errorf("创建新连接失败: %w", err)
+		return err
 	}
 
-	// 阶段5：添加新连接到池中
+	// ========== 【阶段5：添加新连接】（持有池锁） ==========
+	// ⚠️ 重要：重新获取池锁
+	// 可能的竞态：与Get()等其他操作竞争池锁
+	// 但由于时间很短（<1ms），实际影响很小
+
 	pool.mu.Lock()
+	// 快速操作（不要在锁内做耗时操作）
 	pool.connections[newConn.id] = newConn
 	atomic.AddInt64(&pool.stats.CreatedConnections, 1)
 	atomic.AddInt64(&pool.stats.IdleConnections, 1)
 	pool.mu.Unlock()
 
-	// 阶段6：完成重建操作
+	// ========== 【阶段6：完成重建】（无锁） ==========
+	// 目的：发送事件，更新指标
+	// 不持有锁：避免在事件处理中死锁
 	p.completeRebuild(pool, oldID, oldConn, newConn)
 
 	ylog.Infof("connection_pool", "先关后建成功: 旧连接=%s (已关闭), 新连接=%s", oldID, newConn.id)
@@ -759,28 +844,6 @@ func (p *EnhancedConnectionPool) canStartRebuild(oldConn *EnhancedPooledConnecti
 	return true
 }
 
-// acquireRebuildLocks 获取重建所需的锁并验证
-func (p *EnhancedConnectionPool) acquireRebuildLocks(pool *EnhancedDriverPool, oldID string, oldConn *EnhancedPooledConnection) (lockAcquired, shouldContinue bool) {
-	// 获取池锁和连接锁（按正确顺序：先池锁，后连接锁）
-	pool.mu.Lock()
-
-	// 检查连接是否还在池中
-	if _, exists := pool.connections[oldID]; !exists {
-		ylog.Infof("connection_pool", "连接 %s 已不在池中，取消重建", oldID)
-		pool.mu.Unlock()
-		return false, false
-	}
-
-	// 检查连接是否正在重建中
-	if oldConn.isRebuilding() {
-		ylog.Infof("connection_pool", "连接 %s 正在重建中，跳过", oldID)
-		pool.mu.Unlock()
-		return false, false
-	}
-
-	return true, true
-}
-
 // createReplacementConnection 创建替换连接（不持有锁）
 func (p *EnhancedConnectionPool) createReplacementConnection(pool *EnhancedDriverPool, oldConn *EnhancedPooledConnection) (*EnhancedPooledConnection, error) {
 	ylog.Infof("connection_pool", "开始创建新连接以替换 %s", oldConn.id)
@@ -790,41 +853,6 @@ func (p *EnhancedConnectionPool) createReplacementConnection(pool *EnhancedDrive
 	}
 	newConn.setLastRebuiltAt(time.Now())
 	return newConn, nil
-}
-
-// replaceConnectionWithLock 执行连接替换（需要持有锁）
-func (p *EnhancedConnectionPool) replaceConnectionWithLock(pool *EnhancedDriverPool, oldID string, oldConn *EnhancedPooledConnection, newConn *EnhancedPooledConnection) bool {
-	// 重新获取锁
-	pool.mu.Lock()
-	oldConn.mu.Lock()
-
-	// 再次检查连接是否还在池中（可能在此期间被删除）
-	if _, exists := pool.connections[oldID]; !exists {
-		ylog.Infof("connection_pool", "连接 %s 在创建新连接期间被删除，取消替换", oldID)
-		oldConn.mu.Unlock()
-		pool.mu.Unlock()
-		return false
-	}
-
-	// 执行替换（快速操作）
-	delete(pool.connections, oldID)
-	pool.connections[newConn.id] = newConn
-
-	// 更新统计
-	atomic.AddInt64(&pool.stats.CreatedConnections, 1)
-	atomic.AddInt64(&pool.stats.RebuiltConnections, 1)
-	p.collector.IncrementConnectionsCreated(pool.protocol)
-
-	ylog.Infof("connection_pool", "异步替换连接: %s→%s", oldID, newConn.id)
-
-	// 完成旧连接的重建状态转换
-	oldConn.transitionStateLocked(StateIdle) // 重建成功，标记为空闲（即将被关闭）
-
-	// 释放锁
-	oldConn.mu.Unlock()
-	pool.mu.Unlock()
-
-	return true
 }
 
 // completeRebuild 完成重建操作（不持有锁）
@@ -1060,11 +1088,22 @@ func (p *EnhancedConnectionPool) startBackgroundTasks() {
 
 	// 重建任务
 	if p.config.SmartRebuildEnabled {
-		p.wg.Add(1)
-		go func() {
-			defer p.wg.Done()
-			p.rebuildTask()
-		}()
+		// 检查重建间隔，最小5秒
+		rebuildInterval := p.config.RebuildCheckInterval
+		if rebuildInterval == 0 {
+			rebuildInterval = 5 * time.Minute // 默认5分钟
+		}
+
+		if rebuildInterval < 5*time.Second {
+			ylog.Warnf("pool", "重建间隔太短: %v (最小5秒)，重建任务未启动", rebuildInterval)
+		} else {
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				p.rebuildTask()
+			}()
+			ylog.Infof("pool", "重建任务已启动，间隔: %v", rebuildInterval)
+		}
 	}
 
 	// 空闲连接健康检查任务
@@ -2234,12 +2273,6 @@ func (p *EnhancedConnectionPool) checkConnectionStateForRebuild(conn *EnhancedPo
 		return false
 	}
 
-	// 连接不能已经标记为重建中
-	if conn.isMarkedForRebuild() {
-		ylog.Debugf("pool", "连接已标记为重建中: id=%s", conn.id)
-		return false
-	}
-
 	// 连接不能处于关闭或关闭中状态
 	if state == StateClosing || state == StateClosed {
 		ylog.Debugf("pool", "连接正在关闭或已关闭: id=%s, state=%s", conn.id, state)
@@ -2341,20 +2374,11 @@ func (p *EnhancedConnectionPool) replaceConnection(proto Protocol, connID string
 func (p *EnhancedConnectionPool) rebuildConnection(proto Protocol, conn *EnhancedPooledConnection) error {
 	connID := conn.id
 
-	// 检查连接是否标记为需要重建
-	// 如果未标记（手动API场景），先标记连接
-	var rebuildReason string
-	if conn.isMarkedForRebuild() {
-		rebuildReason = conn.getRebuildReason()
-		ylog.Debugf("pool", "重建已标记的连接: id=%s, reason=%s", connID, rebuildReason)
-	} else {
-		// 手动API场景：连接未标记，需要先标记
-		rebuildReason = "manual_rebuild"
-		if !conn.markForRebuildWithReason(rebuildReason) {
-			// 标记失败，可能已被其他goroutine标记
-			ylog.Debugf("pool", "连接已被其他goroutine标记: id=%s", connID)
-			rebuildReason = conn.getRebuildReason() // 获取新的重建原因
-		}
+	// 获取重建原因（仅用于日志）
+	// 重建原因应由上层调用者（健康检查、重建任务、手动API）设置
+	rebuildReason := conn.getRebuildReason()
+	if rebuildReason == "" {
+		rebuildReason = "manual_rebuild" // 默认原因
 	}
 
 	ylog.Infof("pool", "开始重建连接: id=%s, protocol=%s, reason=%s", connID, proto, rebuildReason)
@@ -2387,7 +2411,7 @@ func (p *EnhancedConnectionPool) rebuildConnection(proto Protocol, conn *Enhance
 		p.sendEvent(EventRebuildFailed, proto, map[string]interface{}{
 			"connection_id": connID,
 			"error":         err.Error(),
-			"reason":        "rebuild_failed",
+			"reason":        rebuildReason,
 			"duration":      duration.Seconds(),
 		})
 		return fmt.Errorf("连接重建失败: %w", err)
