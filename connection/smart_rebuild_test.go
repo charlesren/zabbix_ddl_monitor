@@ -41,10 +41,9 @@ func TestSmartRebuildDecision(t *testing.T) {
 	}
 	// 创建模拟连接池
 	pool := &EnhancedConnectionPool{
-		config: *config,
+		config:         *config,
+		rebuildManager: NewRebuildManager(config, nil, nil),
 	}
-	// 创建rebuildManager
-	pool.rebuildManager = NewRebuildManager(config, nil, nil)
 
 	now := time.Now()
 
@@ -291,6 +290,7 @@ func TestSmartRebuildDisabled(t *testing.T) {
 	pool := &EnhancedConnectionPool{
 		config: *config,
 	}
+	pool.rebuildManager = NewRebuildManager(config, nil, nil)
 
 	conn := createTestConnection(
 		250, // 超过200
@@ -415,6 +415,7 @@ func TestRebuildMinIntervalLogic(t *testing.T) {
 	pool := &EnhancedConnectionPool{
 		config: *config,
 	}
+	pool.rebuildManager = NewRebuildManager(config, nil, nil)
 
 	now := time.Now()
 

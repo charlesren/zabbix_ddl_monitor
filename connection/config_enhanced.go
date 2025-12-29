@@ -201,18 +201,18 @@ func NewConfigBuilder() *ConfigBuilder {
 			HealthCheckTriggerRebuild: true,
 			UnhealthyFailureThreshold: 3,
 			DegradedFailureThreshold:  1,
-			DegradedLatencyThreshold:  2 * time.Second, // 默认2秒响应时间为降级（暂未实施）
+			DegradedLatencyThreshold:  10 * time.Second, // 默认2秒响应时间为降级（暂未实施）
 
 			// 旧字段默认值（向后兼容）
 			UnhealthyThreshold: 3,
-			DegradedThreshold:  2 * time.Second,
+			DegradedThreshold:  10 * time.Second,
 
 			RebuildOnDegraded: false, // 默认降级时不重建
 
 			// 重建执行配置默认值
 			RebuildCheckInterval: 5 * time.Minute, // 默认5分钟检查一次
-			RebuildBatchSize:     5,               // 默认批量大小5
-			RebuildConcurrency:   3,               // 默认并发数3
+			RebuildBatchSize:     2,               // 默认批量大小5
+			RebuildConcurrency:   2,               // 默认并发数3
 		},
 	}
 }

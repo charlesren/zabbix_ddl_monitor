@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -46,6 +47,20 @@ func initConfig() {
 
 func initLog() {
 	logLevel := UserConfig.GetInt("server.log.applog.loglevel")
+
+	// 支持通过环境变量覆盖日志级别 LOG_LEVEL=-1/0/1/2/3
+	// -1=Trace, 0=Debug, 1=Info, 2=Warn, 3=Error
+	if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" {
+		if level, err := strconv.Atoi(envLevel); err == nil {
+			if level >= -1 && level <= 3 {
+				logLevel = level
+				fmt.Printf("从环境变量设置日志级别: %d\n", logLevel)
+			} else {
+				fmt.Printf("环境变量LOG_LEVEL值[%d]超出范围[-1,3]，使用配置文件值: %d\n", level, logLevel)
+			}
+		}
+	}
+
 	logPath := "../logs/ddl_monitor.log"
 	logger := ylog.NewYLog(
 		ylog.WithLogFile(logPath),
@@ -119,12 +134,12 @@ func main() {
 	ylog.Infof("Main", "using proxyPort: %s", proxyPort)
 
 	// 1. 初始化配置同步器
-	syncer, err := syncer.NewConfigSyncer(zc, 10*time.Minute, proxyname)
+	syncer, err := syncer.NewConfigSyncer(zc, 4*time.Hour, proxyname)
 	if err != nil {
 		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
 		return
 	}
-	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 10m)")
+	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 4h)")
 	// 使用安全启动，防止syncer中的panic导致程序崩溃
 	go safeStart(syncer.Start, "syncer.Start")
 	defer syncer.Stop()

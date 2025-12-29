@@ -29,6 +29,17 @@ type MetricsCollector interface {
 	IncrementHealthCheckFailed(protocol Protocol)
 	RecordHealthCheckDuration(protocol Protocol, duration time.Duration)
 
+	// 重建指标
+	IncrementConnectionsNeedingRebuild(protocol Protocol)
+	IncrementRebuildMarked(protocol Protocol, reason string)
+	IncrementRebuildStarted(protocol Protocol)
+	IncrementRebuildCompleted(protocol Protocol)
+	IncrementRebuildFailed(protocol Protocol)
+	RecordRebuildDuration(protocol Protocol, duration time.Duration)
+	SetRebuildingConnections(protocol Protocol, count int64)
+	IncrementRebuildingConnections(protocol Protocol)
+	DecrementRebuildingConnections(protocol Protocol)
+
 	// 获取指标快照
 	GetMetrics() *MetricsSnapshot
 	Reset()
@@ -67,6 +78,16 @@ type ConnectionMetrics struct {
 	HealthCheckSuccess int64         `json:"health_check_success"`
 	HealthCheckFailed  int64         `json:"health_check_failed"`
 	HealthCheckLatency time.Duration `json:"health_check_latency"`
+
+	// 重建指标
+	ConnectionsNeedingRebuild int64            `json:"connections_needing_rebuild"`
+	RebuildMarkedTotal        int64            `json:"rebuild_marked_total"`
+	RebuildMarkedByReason     map[string]int64 `json:"rebuild_marked_by_reason"`
+	RebuildStarted            int64            `json:"rebuild_started"`
+	RebuildCompleted          int64            `json:"rebuild_completed"`
+	RebuildFailed             int64            `json:"rebuild_failed"`
+	RebuildDuration           time.Duration    `json:"rebuild_duration"`
+	RebuildingConnections     int64            `json:"rebuilding_connections"`
 
 	// 统计信息
 	CreationRate    float64       `json:"creation_rate"`    // 每秒创建连接数
@@ -127,6 +148,9 @@ type DefaultMetricsCollector struct {
 	// 操作指标
 	operationMetrics map[Protocol]map[string]*atomicOperationMetrics
 
+	// 重建原因统计（需要锁保护）
+	rebuildMarkedByReason map[Protocol]map[string]int64
+
 	// 开始时间
 	startTime time.Time
 
@@ -148,6 +172,15 @@ type atomicConnectionMetrics struct {
 	healthCheckFailed  int64
 	healthCheckLatency int64 // nanoseconds
 
+	// 重建指标
+	connectionsNeedingRebuild int64
+	rebuildMarkedTotal        int64
+	rebuildStarted            int64
+	rebuildCompleted          int64
+	rebuildFailed             int64
+	rebuildDuration           int64 // nanoseconds
+	rebuildingConnections     int64
+
 	// 用于计算平均值的累计值
 	totalLifetime int64 // nanoseconds
 	lifetimeCount int64
@@ -165,10 +198,11 @@ type atomicOperationMetrics struct {
 // NewDefaultMetricsCollector 创建默认指标收集器
 func NewDefaultMetricsCollector() *DefaultMetricsCollector {
 	return &DefaultMetricsCollector{
-		connectionMetrics: make(map[Protocol]*atomicConnectionMetrics),
-		operationMetrics:  make(map[Protocol]map[string]*atomicOperationMetrics),
-		startTime:         time.Now(),
-		lastUpdate:        time.Now(),
+		connectionMetrics:     make(map[Protocol]*atomicConnectionMetrics),
+		operationMetrics:      make(map[Protocol]map[string]*atomicOperationMetrics),
+		rebuildMarkedByReason: make(map[Protocol]map[string]int64),
+		startTime:             time.Now(),
+		lastUpdate:            time.Now(),
 	}
 }
 
@@ -310,19 +344,33 @@ func (c *DefaultMetricsCollector) GetMetrics() *MetricsSnapshot {
 		healthLatency := atomic.LoadInt64(&atomicMetrics.healthCheckLatency)
 		totalLifetime := atomic.LoadInt64(&atomicMetrics.totalLifetime)
 		lifetimeCount := atomic.LoadInt64(&atomicMetrics.lifetimeCount)
+		connectionsNeedingRebuild := atomic.LoadInt64(&atomicMetrics.connectionsNeedingRebuild)
+		rebuildMarkedTotal := atomic.LoadInt64(&atomicMetrics.rebuildMarkedTotal)
+		rebuildStarted := atomic.LoadInt64(&atomicMetrics.rebuildStarted)
+		rebuildCompleted := atomic.LoadInt64(&atomicMetrics.rebuildCompleted)
+		rebuildFailed := atomic.LoadInt64(&atomicMetrics.rebuildFailed)
+		rebuildDuration := atomic.LoadInt64(&atomicMetrics.rebuildDuration)
+		rebuildingConnections := atomic.LoadInt64(&atomicMetrics.rebuildingConnections)
 
 		metrics := &ConnectionMetrics{
-			Protocol:           protocol,
-			Created:            created,
-			Destroyed:          destroyed,
-			Reused:             reused,
-			Failed:             failed,
-			Active:             active,
-			Idle:               idle,
-			Total:              total,
-			HealthCheckSuccess: healthSuccess,
-			HealthCheckFailed:  healthFailed,
-			HealthCheckLatency: time.Duration(healthLatency),
+			Protocol:                  protocol,
+			Created:                   created,
+			Destroyed:                 destroyed,
+			Reused:                    reused,
+			Failed:                    failed,
+			Active:                    active,
+			Idle:                      idle,
+			Total:                     total,
+			HealthCheckSuccess:        healthSuccess,
+			HealthCheckFailed:         healthFailed,
+			HealthCheckLatency:        time.Duration(healthLatency),
+			ConnectionsNeedingRebuild: connectionsNeedingRebuild,
+			RebuildMarkedTotal:        rebuildMarkedTotal,
+			RebuildStarted:            rebuildStarted,
+			RebuildCompleted:          rebuildCompleted,
+			RebuildFailed:             rebuildFailed,
+			RebuildDuration:           time.Duration(rebuildDuration),
+			RebuildingConnections:     rebuildingConnections,
 		}
 
 		// 计算速率
@@ -347,6 +395,16 @@ func (c *DefaultMetricsCollector) GetMetrics() *MetricsSnapshot {
 		if lifetimeCount > 0 {
 			metrics.AverageLifetime = time.Duration(totalLifetime / lifetimeCount)
 		}
+
+		// 复制重建原因统计
+		c.mu.RLock()
+		if reasons, exists := c.rebuildMarkedByReason[protocol]; exists {
+			metrics.RebuildMarkedByReason = make(map[string]int64, len(reasons))
+			for reason, count := range reasons {
+				metrics.RebuildMarkedByReason[reason] = count
+			}
+		}
+		c.mu.RUnlock()
 
 		snapshot.ConnectionMetrics[protocol] = metrics
 	}
@@ -402,6 +460,7 @@ func (c *DefaultMetricsCollector) Reset() {
 
 	c.connectionMetrics = make(map[Protocol]*atomicConnectionMetrics)
 	c.operationMetrics = make(map[Protocol]map[string]*atomicOperationMetrics)
+	c.rebuildMarkedByReason = make(map[Protocol]map[string]int64)
 	c.startTime = time.Now()
 	c.lastUpdate = time.Now()
 }
@@ -537,4 +596,72 @@ func SetGlobalMetricsCollector(collector MetricsCollector) {
 	metricsOnce.Do(func() {
 		globalMetricsCollector = collector
 	})
+}
+
+// ==================== 重建指标方法 ====================
+
+// IncrementConnectionsNeedingRebuild 增加需要重建的连接数
+func (c *DefaultMetricsCollector) IncrementConnectionsNeedingRebuild(protocol Protocol) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.AddInt64(&metrics.connectionsNeedingRebuild, 1)
+}
+
+// IncrementRebuildMarked 增加已标记的重建连接数
+func (c *DefaultMetricsCollector) IncrementRebuildMarked(protocol Protocol, reason string) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.AddInt64(&metrics.rebuildMarkedTotal, 1)
+
+	// 记录原因统计（需要锁保护）
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.rebuildMarkedByReason[protocol]; !exists {
+		c.rebuildMarkedByReason[protocol] = make(map[string]int64)
+	}
+	c.rebuildMarkedByReason[protocol][reason]++
+}
+
+// IncrementRebuildStarted 增加已开始的重建数
+func (c *DefaultMetricsCollector) IncrementRebuildStarted(protocol Protocol) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.AddInt64(&metrics.rebuildStarted, 1)
+	atomic.AddInt64(&metrics.rebuildingConnections, 1)
+}
+
+// IncrementRebuildCompleted 增加已完成的重建数
+func (c *DefaultMetricsCollector) IncrementRebuildCompleted(protocol Protocol) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.AddInt64(&metrics.rebuildCompleted, 1)
+	atomic.AddInt64(&metrics.rebuildingConnections, -1)
+}
+
+// IncrementRebuildFailed 增加失败的重建数
+func (c *DefaultMetricsCollector) IncrementRebuildFailed(protocol Protocol) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.AddInt64(&metrics.rebuildFailed, 1)
+	atomic.AddInt64(&metrics.rebuildingConnections, -1)
+}
+
+// RecordRebuildDuration 记录重建耗时
+func (c *DefaultMetricsCollector) RecordRebuildDuration(protocol Protocol, duration time.Duration) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.StoreInt64(&metrics.rebuildDuration, duration.Nanoseconds())
+}
+
+// SetRebuildingConnections 设置正在重建的连接数
+func (c *DefaultMetricsCollector) SetRebuildingConnections(protocol Protocol, count int64) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.StoreInt64(&metrics.rebuildingConnections, count)
+}
+
+// IncrementRebuildingConnections 增加正在重建的连接数
+func (c *DefaultMetricsCollector) IncrementRebuildingConnections(protocol Protocol) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.AddInt64(&metrics.rebuildingConnections, 1)
+}
+
+// DecrementRebuildingConnections 减少正在重建的连接数
+func (c *DefaultMetricsCollector) DecrementRebuildingConnections(protocol Protocol) {
+	metrics := c.getConnectionMetrics(protocol)
+	atomic.AddInt64(&metrics.rebuildingConnections, -1)
 }

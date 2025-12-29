@@ -30,40 +30,230 @@ func NewRebuildManager(config *EnhancedConnectionConfig, collector MetricsCollec
 	}
 }
 
-// ShouldRebuild 判断连接是否需要重建（重构版：使用多个小函数）
-func (rm *RebuildManager) ShouldRebuild(conn *EnhancedPooledConnection) bool {
+// EvaluateAndMark 评估并标记连接需要重建（原子操作）
+// 这是评估连接是否需要重建的统一入口，确保评估和标记的原子性
+// 返回值: (是否标记成功, 原因)
+func (rm *RebuildManager) EvaluateAndMark(conn *EnhancedPooledConnection) (bool, string) {
+	// 如果已经标记，直接返回当前原因
+	if conn.isMarkedForRebuild() {
+		reason := conn.getRebuildReason()
+		ylog.Debugf("rebuild_manager", "连接已标记为需要重建，跳过评估: id=%s, reason=%s", conn.id, reason)
+		return false, reason
+	}
+
 	// 检查基本条件
 	if !rm.checkRebuildEnabled() {
-		return false
+		return false, "rebuild_disabled"
 	}
 
 	now := time.Now()
 
 	// 检查重建间隔
 	if !rm.checkRebuildInterval(conn, now) {
-		return false
+		return false, "interval_too_short"
 	}
 
 	// 检查连接状态
 	if !rm.checkConnectionState(conn) {
-		return false
+		return false, "invalid_state"
 	}
 
-	// 检查健康状态
-	if !rm.checkConnectionHealth(conn) {
-		return false
+	// 检查健康状态（不健康更应重建，所以这里只检查状态）
+	// 注意：这里不跳过不健康的连接，因为它们更需要重建
+
+	// 根据策略评估并标记
+	return rm.evaluateByStrategyAndMark(conn, now)
+}
+
+// evaluateByStrategyAndMark 根据策略评估并标记连接
+func (rm *RebuildManager) evaluateByStrategyAndMark(conn *EnhancedPooledConnection, now time.Time) (bool, string) {
+	switch RebuildStrategy(rm.config.RebuildStrategy) {
+	case RebuildStrategyUsage:
+		return rm.evaluateUsageAndMark(conn)
+	case RebuildStrategyAge:
+		return rm.evaluateAgeAndMark(conn, now)
+	case RebuildStrategyError:
+		return rm.evaluateErrorAndMark(conn)
+	case RebuildStrategyAll:
+		return rm.evaluateAllAndMark(conn, now)
+	case RebuildStrategyAny:
+		fallthrough
+	default:
+		return rm.evaluateAnyAndMark(conn, now)
+	}
+}
+
+// evaluateUsageAndMark 评估使用次数策略并标记
+func (rm *RebuildManager) evaluateUsageAndMark(conn *EnhancedPooledConnection) (bool, string) {
+	usageCount := conn.getUsageCount()
+	shouldRebuild := usageCount >= rm.config.RebuildMaxUsageCount
+
+	if shouldRebuild {
+		reason := fmt.Sprintf("usage_count_exceeded: usage=%d, max=%d", usageCount, rm.config.RebuildMaxUsageCount)
+		if conn.markForRebuildWithReason(reason) {
+			ylog.Infof("rebuild_manager", "连接标记为需要重建: id=%s, reason=%s", conn.id, reason)
+			rm.sendRebuildMarkedEvent(conn, reason)
+			return true, reason
+		}
+		return false, "already_marked_by_other"
 	}
 
-	// 检查是否已标记为重建
-	if !rm.checkRebuildMark(conn) {
-		return false
+	return false, fmt.Sprintf("usage_count_ok: usage=%d, max=%d", usageCount, rm.config.RebuildMaxUsageCount)
+}
+
+// evaluateAgeAndMark 评估年龄策略并标记
+func (rm *RebuildManager) evaluateAgeAndMark(conn *EnhancedPooledConnection, now time.Time) (bool, string) {
+	age := now.Sub(conn.getCreatedAt())
+	shouldRebuild := age >= rm.config.RebuildMaxAge
+
+	if shouldRebuild {
+		reason := fmt.Sprintf("age_exceeded: age=%v, max=%v", age, rm.config.RebuildMaxAge)
+		if conn.markForRebuildWithReason(reason) {
+			ylog.Infof("rebuild_manager", "连接标记为需要重建: id=%s, reason=%s", conn.id, reason)
+			rm.sendRebuildMarkedEvent(conn, reason)
+			return true, reason
+		}
+		return false, "already_marked_by_other"
 	}
 
-	// 记录调试信息
-	rm.logConnectionDetails(conn, now)
+	return false, fmt.Sprintf("age_ok: age=%v, max=%v", age, rm.config.RebuildMaxAge)
+}
 
-	// 根据策略评估
-	return rm.evaluateRebuildStrategy(conn, now)
+// evaluateErrorAndMark 评估错误率策略并标记
+func (rm *RebuildManager) evaluateErrorAndMark(conn *EnhancedPooledConnection) (bool, string) {
+	totalRequests := atomic.LoadInt64(&conn.totalRequests)
+	if totalRequests < rm.config.RebuildMinRequestsForErrorRate {
+		return false, fmt.Sprintf("insufficient_requests: requests=%d, min=%d", totalRequests, rm.config.RebuildMinRequestsForErrorRate)
+	}
+
+	if totalRequests > 0 {
+		totalErrors := atomic.LoadInt64(&conn.totalErrors)
+		errorRate := float64(totalErrors) / float64(totalRequests)
+		shouldRebuild := errorRate >= rm.config.RebuildMaxErrorRate
+
+		if shouldRebuild {
+			reason := fmt.Sprintf("error_rate_exceeded: requests=%d, errors=%d, rate=%.2f, max=%.2f",
+				totalRequests, totalErrors, errorRate, rm.config.RebuildMaxErrorRate)
+			if conn.markForRebuildWithReason(reason) {
+				ylog.Infof("rebuild_manager", "连接标记为需要重建: id=%s, reason=%s", conn.id, reason)
+				rm.sendRebuildMarkedEvent(conn, reason)
+				return true, reason
+			}
+			return false, "already_marked_by_other"
+		}
+
+		return false, fmt.Sprintf("error_rate_ok: requests=%d, errors=%d, rate=%.2f, max=%.2f",
+			totalRequests, totalErrors, errorRate, rm.config.RebuildMaxErrorRate)
+	}
+
+	return false, "no_requests"
+}
+
+// evaluateAllAndMark 评估所有条件策略并标记
+func (rm *RebuildManager) evaluateAllAndMark(conn *EnhancedPooledConnection, now time.Time) (bool, string) {
+	conditions := 0
+	var reasons []string
+
+	// 检查使用次数
+	usageCount := atomic.LoadInt64(&conn.usageCount)
+	if usageCount >= rm.config.RebuildMaxUsageCount {
+		conditions++
+		reasons = append(reasons, fmt.Sprintf("usage=%d>=%d", usageCount, rm.config.RebuildMaxUsageCount))
+	}
+
+	// 检查年龄
+	age := now.Sub(conn.getCreatedAt())
+	if age >= rm.config.RebuildMaxAge {
+		conditions++
+		reasons = append(reasons, fmt.Sprintf("age=%v>=%v", age, rm.config.RebuildMaxAge))
+	}
+
+	// 检查错误率
+	totalRequests := atomic.LoadInt64(&conn.totalRequests)
+	if totalRequests >= rm.config.RebuildMinRequestsForErrorRate {
+		totalErrors := atomic.LoadInt64(&conn.totalErrors)
+		if totalRequests > 0 {
+			errorRate := float64(totalErrors) / float64(totalRequests)
+			if errorRate >= rm.config.RebuildMaxErrorRate {
+				conditions++
+				reasons = append(reasons, fmt.Sprintf("error_rate=%.2f>=%.2f", errorRate, rm.config.RebuildMaxErrorRate))
+			}
+		}
+	}
+
+	if conditions == 3 {
+		reason := fmt.Sprintf("all_conditions_met: %s", strings.Join(reasons, ", "))
+		if conn.markForRebuildWithReason(reason) {
+			ylog.Infof("rebuild_manager", "连接标记为需要重建: id=%s, reason=%s", conn.id, reason)
+			rm.sendRebuildMarkedEvent(conn, reason)
+			return true, reason
+		}
+		return false, "already_marked_by_other"
+	}
+
+	return false, fmt.Sprintf("not_all_conditions: conditions=%d/3, %s", conditions, strings.Join(reasons, ", "))
+}
+
+// evaluateAnyAndMark 评估任意条件策略并标记
+func (rm *RebuildManager) evaluateAnyAndMark(conn *EnhancedPooledConnection, now time.Time) (bool, string) {
+	// 检查使用次数
+	usageCount := atomic.LoadInt64(&conn.usageCount)
+	if usageCount >= rm.config.RebuildMaxUsageCount {
+		reason := fmt.Sprintf("usage_count_exceeded: usage=%d, max=%d", usageCount, rm.config.RebuildMaxUsageCount)
+		if conn.markForRebuildWithReason(reason) {
+			ylog.Infof("rebuild_manager", "连接标记为需要重建: id=%s, reason=%s", conn.id, reason)
+			rm.sendRebuildMarkedEvent(conn, reason)
+			return true, reason
+		}
+		return false, "already_marked_by_other"
+	}
+
+	// 检查年龄
+	age := now.Sub(conn.getCreatedAt())
+	if age >= rm.config.RebuildMaxAge {
+		reason := fmt.Sprintf("age_exceeded: age=%v, max=%v", age, rm.config.RebuildMaxAge)
+		if conn.markForRebuildWithReason(reason) {
+			ylog.Infof("rebuild_manager", "连接标记为需要重建: id=%s, reason=%s", conn.id, reason)
+			rm.sendRebuildMarkedEvent(conn, reason)
+			return true, reason
+		}
+		return false, "already_marked_by_other"
+	}
+
+	// 检查错误率
+	totalRequests := atomic.LoadInt64(&conn.totalRequests)
+	if totalRequests >= rm.config.RebuildMinRequestsForErrorRate {
+		totalErrors := atomic.LoadInt64(&conn.totalErrors)
+		if totalRequests > 0 {
+			errorRate := float64(totalErrors) / float64(totalRequests)
+			if errorRate >= rm.config.RebuildMaxErrorRate {
+				reason := fmt.Sprintf("error_rate_exceeded: requests=%d, errors=%d, rate=%.2f, max=%.2f",
+					totalRequests, totalErrors, errorRate, rm.config.RebuildMaxErrorRate)
+				if conn.markForRebuildWithReason(reason) {
+					ylog.Infof("rebuild_manager", "连接标记为需要重建: id=%s, reason=%s", conn.id, reason)
+					rm.sendRebuildMarkedEvent(conn, reason)
+					return true, reason
+				}
+				return false, "already_marked_by_other"
+			}
+		}
+	}
+
+	return false, "no_conditions_met"
+}
+
+// ShouldRebuild 判断连接是否需要重建
+func (rm *RebuildManager) ShouldRebuild(conn *EnhancedPooledConnection) bool {
+	// 先检查是否已标记（快速路径）
+	if conn.isMarkedForRebuild() {
+		ylog.Debugf("rebuild_manager", "连接已标记为需要重建: id=%s, reason=%s",
+			conn.id, conn.getRebuildReason())
+		return true
+	}
+
+	// 未标记，调用统一入口进行评估和标记
+	marked, _ := rm.EvaluateAndMark(conn)
+	return marked
 }
 
 // checkRebuildEnabled 检查重建是否启用
@@ -152,222 +342,6 @@ func (rm *RebuildManager) logConnectionDetails(conn *EnhancedPooledConnection, n
 		conn.id, state, health, usageCount, rm.config.RebuildMaxUsageCount, rm.config.RebuildStrategy, markedForRebuild, usageCount >= rm.config.RebuildMaxUsageCount)
 }
 
-// evaluateRebuildStrategy 根据策略评估是否需要重建
-func (rm *RebuildManager) evaluateRebuildStrategy(conn *EnhancedPooledConnection, now time.Time) bool {
-	switch rm.config.RebuildStrategy {
-	case "usage":
-		return rm.evaluateUsageStrategy(conn)
-	case "age":
-		return rm.evaluateAgeStrategy(conn, now)
-	case "error":
-		return rm.evaluateErrorStrategy(conn)
-	case "all":
-		return rm.evaluateAllStrategy(conn, now)
-	case "any": // 默认策略
-		fallthrough
-	default:
-		return rm.evaluateAnyStrategy(conn, now)
-	}
-}
-
-// evaluateUsageStrategy 评估使用次数策略
-func (rm *RebuildManager) evaluateUsageStrategy(conn *EnhancedPooledConnection) bool {
-	usageCount := conn.getUsageCount()
-	shouldRebuild := usageCount >= rm.config.RebuildMaxUsageCount
-
-	if shouldRebuild {
-		// 使用原子操作确保只有一个goroutine能将连接标记为重建
-		reason := fmt.Sprintf("usage_count_exceeded: usage=%d, max=%d", usageCount, rm.config.RebuildMaxUsageCount)
-		if conn.markForRebuildWithReason(reason) {
-			ylog.Debugf("rebuild_manager", "evaluateUsageStrategy: id=%s, usage=%d, max=%d, rebuild=%v (已标记), reason=%s",
-				conn.id, usageCount, rm.config.RebuildMaxUsageCount, shouldRebuild, reason)
-			return true
-		} else {
-			ylog.Debugf("rebuild_manager", "evaluateUsageStrategy: id=%s, usage=%d, max=%d, rebuild=%v (已被其他goroutine标记)",
-				conn.id, usageCount, rm.config.RebuildMaxUsageCount, shouldRebuild)
-			return false
-		}
-	}
-
-	ylog.Debugf("rebuild_manager", "evaluateUsageStrategy: id=%s, usage=%d, max=%d, rebuild=%v",
-		conn.id, usageCount, rm.config.RebuildMaxUsageCount, shouldRebuild)
-	return shouldRebuild
-}
-
-// evaluateAgeStrategy 评估年龄策略
-func (rm *RebuildManager) evaluateAgeStrategy(conn *EnhancedPooledConnection, now time.Time) bool {
-	age := now.Sub(conn.getCreatedAt())
-	shouldRebuild := age >= rm.config.RebuildMaxAge
-
-	if shouldRebuild {
-		// 使用原子操作确保只有一个goroutine能将连接标记为重建
-		reason := fmt.Sprintf("age_exceeded: age=%v, max=%v", age, rm.config.RebuildMaxAge)
-		if conn.markForRebuildWithReason(reason) {
-			ylog.Debugf("rebuild_manager", "evaluateAgeStrategy: id=%s, age=%v, max=%v, rebuild=%v (已标记), reason=%s",
-				conn.id, age, rm.config.RebuildMaxAge, shouldRebuild, reason)
-			return true
-		} else {
-			ylog.Debugf("rebuild_manager", "evaluateAgeStrategy: id=%s, age=%v, max=%v, rebuild=%v (已被其他goroutine标记)",
-				conn.id, age, rm.config.RebuildMaxAge, shouldRebuild)
-			return false
-		}
-	}
-
-	ylog.Debugf("rebuild_manager", "evaluateAgeStrategy: id=%s, age=%v, max=%v, rebuild=%v",
-		conn.id, age, rm.config.RebuildMaxAge, shouldRebuild)
-	return shouldRebuild
-}
-
-// evaluateErrorStrategy 评估错误率策略
-func (rm *RebuildManager) evaluateErrorStrategy(conn *EnhancedPooledConnection) bool {
-	totalRequests := atomic.LoadInt64(&conn.totalRequests)
-	if totalRequests >= rm.config.RebuildMinRequestsForErrorRate {
-		totalErrors := atomic.LoadInt64(&conn.totalErrors)
-		if totalRequests > 0 { // 防止除零错误
-			// 使用浮点数计算确保精度
-			errorRate := float64(totalErrors) / float64(totalRequests)
-			shouldRebuild := errorRate >= rm.config.RebuildMaxErrorRate
-
-			if shouldRebuild {
-				// 使用原子操作确保只有一个goroutine能将连接标记为重建
-				reason := fmt.Sprintf("error_rate_exceeded: requests=%d, errors=%d, rate=%.2f, max=%.2f",
-					totalRequests, totalErrors, errorRate, rm.config.RebuildMaxErrorRate)
-				if conn.markForRebuildWithReason(reason) {
-					ylog.Debugf("rebuild_manager", "evaluateErrorStrategy: id=%s, requests=%d, errors=%d, rate=%.2f, max=%.2f, rebuild=%v (已标记), reason=%s",
-						conn.id, totalRequests, totalErrors, errorRate, rm.config.RebuildMaxErrorRate, shouldRebuild, reason)
-					return true
-				} else {
-					ylog.Debugf("rebuild_manager", "evaluateErrorStrategy: id=%s, requests=%d, errors=%d, rate=%.2f, max=%.2f, rebuild=%v (已被其他goroutine标记)",
-						conn.id, totalRequests, totalErrors, errorRate, rm.config.RebuildMaxErrorRate, shouldRebuild)
-					return false
-				}
-			}
-
-			ylog.Debugf("rebuild_manager", "evaluateErrorStrategy: id=%s, requests=%d, errors=%d, rate=%.2f, max=%.2f, rebuild=%v",
-				conn.id, totalRequests, totalErrors, errorRate, rm.config.RebuildMaxErrorRate, shouldRebuild)
-			return shouldRebuild
-		}
-	}
-
-	ylog.Debugf("rebuild_manager", "evaluateErrorStrategy: id=%s, requests=%d (太少)，跳过", conn.id, totalRequests)
-	return false
-}
-
-// evaluateAllStrategy 评估所有条件策略
-func (rm *RebuildManager) evaluateAllStrategy(conn *EnhancedPooledConnection, now time.Time) bool {
-	conditions := 0
-
-	// 检查使用次数条件
-	usageCount := atomic.LoadInt64(&conn.usageCount)
-	if usageCount >= rm.config.RebuildMaxUsageCount {
-		conditions++
-		ylog.Debugf("rebuild_manager", "evaluateAllStrategy: id=%s, usage条件满足: %d >= %d",
-			conn.id, usageCount, rm.config.RebuildMaxUsageCount)
-	}
-
-	// 检查年龄条件
-	age := now.Sub(conn.getCreatedAt())
-	if age >= rm.config.RebuildMaxAge {
-		conditions++
-		ylog.Debugf("rebuild_manager", "evaluateAllStrategy: id=%s, age条件满足: %v >= %v",
-			conn.id, age, rm.config.RebuildMaxAge)
-	}
-
-	// 检查错误率条件
-	totalRequests := atomic.LoadInt64(&conn.totalRequests)
-	if totalRequests >= rm.config.RebuildMinRequestsForErrorRate {
-		totalErrors := atomic.LoadInt64(&conn.totalErrors)
-		// 使用浮点数计算确保精度
-		errorRate := float64(totalErrors) / float64(totalRequests)
-		if errorRate >= rm.config.RebuildMaxErrorRate {
-			conditions++
-			ylog.Debugf("rebuild_manager", "evaluateAllStrategy: id=%s, error条件满足: %.2f >= %.2f",
-				conn.id, errorRate, rm.config.RebuildMaxErrorRate)
-		}
-	}
-
-	shouldRebuild := conditions == 3
-	if shouldRebuild {
-		// 使用原子操作确保只有一个goroutine能将连接标记为重建
-		reason := fmt.Sprintf("all_conditions_met: conditions=%d/3", conditions)
-		if conn.markForRebuildWithReason(reason) {
-			ylog.Debugf("rebuild_manager", "evaluateAllStrategy: id=%s, conditions=%d/3, rebuild=%v (已标记), reason=%s",
-				conn.id, conditions, shouldRebuild, reason)
-			return true
-		} else {
-			ylog.Debugf("rebuild_manager", "evaluateAllStrategy: id=%s, conditions=%d/3, rebuild=%v (已被其他goroutine标记)",
-				conn.id, conditions, shouldRebuild)
-			return false
-		}
-	}
-
-	ylog.Debugf("rebuild_manager", "evaluateAllStrategy: id=%s, conditions=%d/3, rebuild=%v",
-		conn.id, conditions, shouldRebuild)
-	return shouldRebuild
-}
-
-// evaluateAnyStrategy 评估任意条件策略（默认策略）
-func (rm *RebuildManager) evaluateAnyStrategy(conn *EnhancedPooledConnection, now time.Time) bool {
-	// 检查使用次数条件
-	usageCount := atomic.LoadInt64(&conn.usageCount)
-	if usageCount >= rm.config.RebuildMaxUsageCount {
-		// 使用原子操作确保只有一个goroutine能将连接标记为重建
-		reason := fmt.Sprintf("usage_count_exceeded: usage=%d, max=%d", usageCount, rm.config.RebuildMaxUsageCount)
-		if conn.markForRebuildWithReason(reason) {
-			ylog.Debugf("rebuild_manager", "evaluateAnyStrategy: 连接需要重建: id=%s, 使用次数达到%d >= %d (已标记), reason=%s",
-				conn.id, usageCount, rm.config.RebuildMaxUsageCount, reason)
-			return true
-		} else {
-			ylog.Debugf("rebuild_manager", "evaluateAnyStrategy: 连接需要重建: id=%s, 使用次数达到%d >= %d (已被其他goroutine标记)",
-				conn.id, usageCount, rm.config.RebuildMaxUsageCount)
-			return false
-		}
-	}
-
-	// 检查年龄条件
-	age := now.Sub(conn.getCreatedAt())
-	if age >= rm.config.RebuildMaxAge {
-		// 使用原子操作确保只有一个goroutine能将连接标记为重建
-		reason := fmt.Sprintf("age_exceeded: age=%v, max=%v", age, rm.config.RebuildMaxAge)
-		if conn.markForRebuildWithReason(reason) {
-			ylog.Debugf("rebuild_manager", "evaluateAnyStrategy: 连接需要重建: id=%s, 年龄达到%v >= %v (已标记), reason=%s",
-				conn.id, age, rm.config.RebuildMaxAge, reason)
-			return true
-		} else {
-			ylog.Debugf("rebuild_manager", "evaluateAnyStrategy: 连接需要重建: id=%s, 年龄达到%v >= %v (已被其他goroutine标记)",
-				conn.id, age, rm.config.RebuildMaxAge)
-			return false
-		}
-	}
-
-	// 检查错误率条件
-	totalRequests := atomic.LoadInt64(&conn.totalRequests)
-	if totalRequests >= rm.config.RebuildMinRequestsForErrorRate {
-		totalErrors := atomic.LoadInt64(&conn.totalErrors)
-		if totalRequests > 0 { // 防止除零错误
-			// 使用浮点数计算确保精度
-			errorRate := float64(totalErrors) / float64(totalRequests)
-			if errorRate >= rm.config.RebuildMaxErrorRate {
-				// 使用原子操作确保只有一个goroutine能将连接标记为重建
-				reason := fmt.Sprintf("error_rate_exceeded: requests=%d, errors=%d, rate=%.2f, max=%.2f",
-					totalRequests, totalErrors, errorRate, rm.config.RebuildMaxErrorRate)
-				if conn.markForRebuildWithReason(reason) {
-					ylog.Debugf("rebuild_manager", "evaluateAnyStrategy: 连接需要重建: id=%s, 错误率达到%.2f >= %.2f (已标记), reason=%s",
-						conn.id, errorRate, rm.config.RebuildMaxErrorRate, reason)
-					return true
-				} else {
-					ylog.Debugf("rebuild_manager", "evaluateAnyStrategy: 连接需要重建: id=%s, 错误率达到%.2f >= %.2f (已被其他goroutine标记)",
-						conn.id, errorRate, rm.config.RebuildMaxErrorRate)
-					return false
-				}
-			}
-		}
-	}
-
-	ylog.Debugf("rebuild_manager", "evaluateAnyStrategy: 连接不需要重建: id=%s", conn.id)
-	return false
-}
-
 // GetRebuildReason 获取重建原因
 func (rm *RebuildManager) GetRebuildReason(conn *EnhancedPooledConnection) string {
 	now := time.Now()
@@ -433,5 +407,55 @@ func (rm *RebuildManager) sendEvent(eventType PoolEventType, protocol Protocol, 
 	default:
 		// 事件通道已满，丢弃事件
 		ylog.Debugf("rebuild_manager", "event channel full, dropping event: %d", eventType)
+	}
+}
+
+// sendRebuildMarkedEvent 发送重建标记事件并收集指标
+func (rm *RebuildManager) sendRebuildMarkedEvent(conn *EnhancedPooledConnection, reason string) {
+	// 发送事件
+	rm.sendEvent(EventRebuildMarked, conn.protocol, map[string]interface{}{
+		"connection_id": conn.id,
+		"reason":        reason,
+	})
+
+	// 收集指标
+	if rm.collector != nil {
+		rm.collector.IncrementRebuildMarked(conn.protocol, reason)
+		rm.collector.IncrementConnectionsNeedingRebuild(conn.protocol)
+	}
+}
+
+// sendRebuildStartedEvent 发送重建开始事件并收集指标
+func (rm *RebuildManager) sendRebuildStartedEvent(conn *EnhancedPooledConnection) {
+	// 发送事件
+	rm.sendEvent(EventRebuildStarted, conn.protocol, map[string]interface{}{
+		"connection_id": conn.id,
+	})
+
+	// 收集指标
+	if rm.collector != nil {
+		rm.collector.IncrementRebuildStarted(conn.protocol)
+		rm.collector.IncrementRebuildingConnections(conn.protocol)
+	}
+}
+
+// sendRebuildCompletedEvent 发送重建完成事件并收集指标
+func (rm *RebuildManager) sendRebuildCompletedEvent(conn *EnhancedPooledConnection, duration time.Duration, success bool) {
+	// 发送事件
+	rm.sendEvent(EventRebuildCompleted, conn.protocol, map[string]interface{}{
+		"connection_id": conn.id,
+		"duration":      duration,
+		"success":       success,
+	})
+
+	// 收集指标
+	if rm.collector != nil {
+		rm.collector.RecordRebuildDuration(conn.protocol, duration)
+		rm.collector.DecrementRebuildingConnections(conn.protocol)
+		if success {
+			rm.collector.IncrementRebuildCompleted(conn.protocol)
+		} else {
+			rm.collector.IncrementRebuildFailed(conn.protocol)
+		}
 	}
 }
