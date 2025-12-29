@@ -200,38 +200,41 @@ func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error)
 		}
 	}
 
-	// 关键修复：无论成功还是失败，都确保状态恢复为Idle
-	// 特别处理健康检查超时的情况
+	// 状态恢复：确保健康检查后连接状态正确
+	// 注意：正常情况下健康检查期间连接应该是 StateChecking 状态
+	// 但由于各种原因（如异常、竞态），状态可能不是预期的
 	if conn.state == StateChecking {
-		ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 尝试状态转换: Checking→Idle, id=%s", conn.id)
+		// 正常情况：健康检查完成，应该从 Checking 转回 Idle
 		if !conn.transitionStateLocked(StateIdle) {
-			// 如果转换失败，记录详细错误并强制恢复
+			// 转换失败：状态可能在检查过程中被改变（竞态）
+			// 记录详细错误，但不强制设置状态，保持状态机一致性
+			state, _ := conn.getStatus()
 			ylog.Errorf("EnhancedPooledConnection",
-				"recordHealthCheck: 状态转换失败，强制恢复: id=%s, from=%s, health=%s, success=%v",
-				conn.id, conn.state, conn.healthStatus, success)
+				"recordHealthCheck: Checking→Idle 转换失败（状态已改变或异常）: id=%s, current_state=%s, health=%s, success=%v",
+				conn.id, state, conn.healthStatus, success)
 
-			// 强制恢复为Idle状态
-			// 注意：这可能会违反状态机规则，但为了避免连接卡住，这是必要的
-			conn.state = StateIdle
-			ylog.Warnf("EnhancedPooledConnection", "recordHealthCheck: 强制状态恢复完成: id=%s, state=Idle", conn.id)
+			// 不强制设置，让连接自然恢复或由其他机制处理
+			// 如果连接状态异常，会在后续的健康检查或重建中被处理
+		} else {
+			ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 健康检查完成，状态恢复为Idle: id=%s", conn.id)
 		}
 	} else if conn.state != StateIdle {
-		// 如果不在Checking状态，记录警告并尝试恢复
+		// 异常情况：健康检查完成后，连接不在 Checking 也不是 Idle
+		// 可能的原因：
+		// 1. 连接被获取使用了（StateAcquired/Executing）
+		// 2. 连接正在被关闭（StateClosing/Closed）
+		// 3. 状态在健康检查过程中被其他操作改变
+		state, _ := conn.getStatus()
 		ylog.Warnf("EnhancedPooledConnection",
-			"recordHealthCheck: 连接不在Checking状态: id=%s, state=%s, health=%s, success=%v",
-			conn.id, conn.state, conn.healthStatus, success)
+			"recordHealthCheck: 连接不在预期状态: id=%s, expected=Checking, actual=%s, health=%s, success=%v",
+			conn.id, state, conn.healthStatus, success)
 
-		// 尝试转换为Idle状态（如果允许）
-		if conn.canTransitionTo(StateIdle) {
-			if conn.transitionStateLocked(StateIdle) {
-				ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 成功转换到Idle状态: id=%s", conn.id)
-			}
-		} else {
-			// 如果不允许转换到Idle，记录更详细的调试信息
-			ylog.Warnf("EnhancedPooledConnection",
-				"recordHealthCheck: 无法转换到Idle状态: id=%s, current=%s, validTransitions=%v",
-				conn.id, conn.state, GetValidTransitions(conn.state))
-		}
+		// 不尝试转换状态，避免违反状态机规则
+		// 如果连接状态异常，会在后续的健康检查或重建中被处理
+		// 例如：
+		// - StateAcquired/Executing：Release() 会转换回 Idle
+		// - StateClosing/Closed：连接正在关闭，无需操作
+		// - StateIdle：已经是空闲状态，无需操作
 	}
 }
 
