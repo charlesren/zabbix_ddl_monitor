@@ -542,18 +542,18 @@ func (conn *EnhancedPooledConnection) completeClose() bool {
 	return true
 }
 
-// isAvailable 检查连接是否可用
+// isAvailable 检查连接是否可用（空闲且健康）
 func (conn *EnhancedPooledConnection) isAvailable() bool {
 	conn.mu.RLock()
 	defer conn.mu.RUnlock()
 	return conn.state == StateIdle && conn.healthStatus != HealthStatusUnhealthy
 }
 
-// isInUse 检查连接是否在使用中
-func (conn *EnhancedPooledConnection) isInUse() bool {
+// isIdle 检查连接是否空闲（仅状态检查）
+func (conn *EnhancedPooledConnection) isIdle() bool {
 	conn.mu.RLock()
 	defer conn.mu.RUnlock()
-	return conn.state == StateAcquired
+	return conn.state == StateIdle
 }
 
 // isHealthy 检查连接是否健康
