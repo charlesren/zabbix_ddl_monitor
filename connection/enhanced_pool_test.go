@@ -674,9 +674,10 @@ func TestHealthChecker(t *testing.T) {
 			id:           "test-conn",
 			state:        StateIdle,
 			healthStatus: HealthStatusUnknown,
+			config:       &pool.config,
 		}
 
-		pool.checkConnectionHealth("test", conn)
+		conn.recordHealthCheck(true, nil)
 
 		assert.Equal(t, HealthStatusHealthy, conn.healthStatus)
 		assert.Equal(t, 0, conn.consecutiveFailures)
@@ -695,9 +696,10 @@ func TestHealthChecker(t *testing.T) {
 			state:               StateIdle,
 			healthStatus:        HealthStatusUnknown,
 			consecutiveFailures: 2, // Already has some failures
+			config:              &pool.config,
 		}
 
-		pool.checkConnectionHealth("test", conn)
+		conn.recordHealthCheck(false, assert.AnError)
 
 		assert.Equal(t, HealthStatusUnhealthy, conn.healthStatus)
 		assert.Equal(t, 3, conn.consecutiveFailures)
