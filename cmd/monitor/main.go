@@ -48,15 +48,15 @@ func initConfig() {
 func initLog() {
 	logLevel := UserConfig.GetInt("server.log.applog.loglevel")
 
-	// 支持通过环境变量覆盖日志级别 LOG_LEVEL=-1/0/1/2/3
-	// -1=Trace, 0=Debug, 1=Info, 2=Warn, 3=Error
+	// 支持通过环境变量覆盖日志级别 LOG_LEVEL=-1/0/1/2/3/4/5
+	// -1=Debug, 0=Info, 1=Warn, 2=Error, 3=DPanic, 4=Panic, 5=Fatal
 	if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" {
 		if level, err := strconv.Atoi(envLevel); err == nil {
-			if level >= -1 && level <= 3 {
+			if level >= -1 && level <= 5 {
 				logLevel = level
 				fmt.Printf("从环境变量设置日志级别: %d\n", logLevel)
 			} else {
-				fmt.Printf("环境变量LOG_LEVEL值[%d]超出范围[-1,3]，使用配置文件值: %d\n", level, logLevel)
+				fmt.Printf("环境变量LOG_LEVEL值[%d]超出范围[-1,5]，使用配置文件值: %d\n", level, logLevel)
 			}
 		}
 	}
