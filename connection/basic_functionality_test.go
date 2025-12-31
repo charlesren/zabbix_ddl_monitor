@@ -177,9 +177,13 @@ func TestConfigValidation(t *testing.T) {
 		TaskMaxRetries:          1,
 		TaskRetryInterval:       500 * time.Millisecond,
 		TaskBackoffFactor:       1.5,
-		Extensions:              make(map[string]interface{}),
-		Labels:                  make(map[string]string),
-		Metadata:                make(map[string]interface{}),
+		// 重建执行配置（必需字段）
+		RebuildCheckInterval: 5 * time.Minute,
+		RebuildBatchSize:     5,
+		RebuildConcurrency:   3,
+		Extensions:           make(map[string]interface{}),
+		Labels:               make(map[string]string),
+		Metadata:             make(map[string]interface{}),
 	}
 
 	err := validConfig.Validate()

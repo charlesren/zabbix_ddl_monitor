@@ -259,8 +259,10 @@ func TestRecordHealthCheck_StateRecovery(t *testing.T) {
 	// 健康检查成功
 	conn.recordHealthCheck(true, nil)
 
-	// 验证状态恢复
-	assert.Equal(t, StateIdle, conn.state, "连接状态应该恢复为Idle")
+	// 验证状态转换：Checking -> Acquired（新的设计）
+	// recordHealthCheck 会在成功后将状态从 Checking 转换到 Acquired
+	// 然后由上层调用者决定何时通过 Release() 转回 Idle
+	assert.Equal(t, StateAcquired, conn.state, "连接状态应该转换为Acquired")
 	assert.Equal(t, HealthStatusHealthy, conn.healthStatus, "健康状态应该是Healthy")
 }
 

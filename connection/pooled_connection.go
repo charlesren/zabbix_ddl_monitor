@@ -52,38 +52,52 @@ type EnhancedPooledConnection struct {
 	metadata map[string]interface{}
 }
 
-// tryAcquire 尝试获取连接（非阻塞）
-func (conn *EnhancedPooledConnection) tryAcquire() bool {
+// tryAcquireForTask 尝试获取连接用于执行任务（非阻塞）
+//
+// 这个方法用于任务执行时获取连接，会检查：
+// 1. 使用计数为0（没有被其他任务使用）
+// 2. 连接状态为 StateIdle（空闲）
+// 3. 健康状态不为 HealthStatusUnhealthy（非不健康）
+// 4. 不在重建中（rebuilding == false）
+//
+// 只有满足所有条件的连接才会被标记为 StateAcquired 并返回 true
+func (conn *EnhancedPooledConnection) tryAcquireForTask() bool {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
 	// 第一层检查：使用计数 > 0 的连接不应该被获取（用于清理）
 	if conn.getUseCount() > 0 {
-		ylog.Infof("EnhancedPooledConnection", "tryAcquire: 连接正在使用中: id=%s, useCount=%d", conn.id, conn.getUseCount())
+		ylog.Infof("EnhancedPooledConnection", "tryAcquireForTask: 连接正在使用中: id=%s, useCount=%d", conn.id, conn.getUseCount())
 		return false
 	}
 
-	// 检查连接是否可用
+	// 检查连接是否可用（必须是空闲状态）
 	if conn.state != StateIdle {
-		ylog.Debugf("EnhancedPooledConnection", "tryAcquire: 连接不可用: id=%s, state=%s", conn.id, conn.state)
+		ylog.Debugf("EnhancedPooledConnection", "tryAcquireForTask: 连接不可用: id=%s, state=%s", conn.id, conn.state)
 		return false
 	}
 
-	// 检查健康状态
+	// 检查健康状态（不健康的连接不能用于任务执行）
 	if conn.healthStatus == HealthStatusUnhealthy {
-		ylog.Debugf("EnhancedPooledConnection", "tryAcquire: 连接不健康: id=%s, health=%s", conn.id, conn.healthStatus)
+		ylog.Debugf("EnhancedPooledConnection", "tryAcquireForTask: 连接不健康: id=%s, health=%s", conn.id, conn.healthStatus)
+		return false
+	}
+
+	// 检查是否正在重建（重建中的连接不能用于任务执行）
+	if conn.rebuilding {
+		ylog.Infof("EnhancedPooledConnection", "tryAcquireForTask: 连接正在重建中: id=%s", conn.id)
 		return false
 	}
 
 	// 转换为使用中状态
 	if !conn.transitionStateLocked(StateAcquired) {
-		ylog.Debugf("EnhancedPooledConnection", "tryAcquire: 状态转换失败: id=%s, from=%s, to=%s", conn.id, conn.state, StateAcquired)
+		ylog.Debugf("EnhancedPooledConnection", "tryAcquireForTask: 状态转换失败: id=%s, from=%s, to=%s", conn.id, conn.state, StateAcquired)
 		return false
 	}
 
 	conn.lastUsed = time.Now()
 	atomic.AddInt64(&conn.usageCount, 1)
-	ylog.Debugf("EnhancedPooledConnection", "tryAcquire: 成功获取连接: id=%s", conn.id)
+	ylog.Debugf("EnhancedPooledConnection", "tryAcquireForTask: 成功获取连接用于任务执行: id=%s", conn.id)
 	return true
 }
 
@@ -205,20 +219,18 @@ func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error)
 	if conn.state == StateChecking {
 		// 正常情况：健康检查完成，转换到 Acquired
 		if !conn.transitionStateLocked(StateAcquired) {
-			// 转换失败
-			state, _ := conn.getStatus()
+			// 转换失败（已持有锁，直接访问 conn.state）
 			ylog.Errorf("EnhancedPooledConnection",
 				"recordHealthCheck: Checking→Acquired 转换失败: id=%s, current_state=%s",
-				conn.id, state)
+				conn.id, conn.state)
 		} else {
 			ylog.Debugf("EnhancedPooledConnection", "recordHealthCheck: 健康检查完成，状态转为Acquired: id=%s", conn.id)
 		}
 	} else if conn.state != StateAcquired {
-		// 异常情况：不在 Checking 也不在 Acquired
-		state, _ := conn.getStatus()
+		// 异常情况：不在 Checking 也不在 Acquired（已持有锁，直接访问 conn.state）
 		ylog.Warnf("EnhancedPooledConnection",
 			"recordHealthCheck: 连接不在预期状态: id=%s, expected=Checking, actual=%s",
-			conn.id, state)
+			conn.id, conn.state)
 	}
 }
 
@@ -593,4 +605,41 @@ func (conn *EnhancedPooledConnection) safeClose() error {
 
 	// 执行关闭
 	return conn.driver.Close()
+}
+
+// forceClose 强制关闭连接（用于清理任务）
+//
+// 特点：
+// - 不管连接是否正在使用（usingCount>0），直接关闭底层连接
+// - 不等待使用计数归零
+// - 适用于清理僵尸连接（卡住的状态）
+//
+// 返回值：
+// - 如果关闭成功，返回 nil
+// - 如果关闭失败，返回 error（不panic）
+func (conn *EnhancedPooledConnection) forceClose() error {
+	state, _ := conn.getStatus()
+	usingCount := conn.getUseCount()
+
+	ylog.Warnf("EnhancedPooledConnection",
+		"forceClose: 强制关闭连接: id=%s, state=%s, usingCount=%d",
+		conn.id, state, usingCount)
+
+	// 保护：防止 panic
+	defer func() {
+		if r := recover(); r != nil {
+			ylog.Errorf("EnhancedPooledConnection", "forceClose: 关闭连接时发生panic: id=%s, error=%v", conn.id, r)
+		}
+	}()
+
+	// 直接关闭底层驱动
+	// 注意：如果连接正在使用，正在进行的操作会失败并返回错误
+	// 这是预期行为：清理任务优先级高于任务执行
+	if err := conn.driver.Close(); err != nil {
+		ylog.Errorf("EnhancedPooledConnection", "forceClose: 关闭底层驱动失败: id=%s, error=%v", conn.id, err)
+		return err
+	}
+
+	ylog.Infof("EnhancedPooledConnection", "forceClose: 成功强制关闭连接: id=%s", conn.id)
+	return nil
 }

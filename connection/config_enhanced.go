@@ -86,6 +86,14 @@ type EnhancedConnectionConfig struct {
 	RebuildCheckInterval time.Duration `json:"rebuild_check_interval" yaml:"rebuild_check_interval"` // 默认5分钟
 	RebuildBatchSize     int           `json:"rebuild_batch_size" yaml:"rebuild_batch_size"`         // 默认5
 	RebuildConcurrency   int           `json:"rebuild_concurrency" yaml:"rebuild_concurrency"`       // 默认3
+
+	// 僵尸连接超时配置（用于清理任务的状态超时检测）
+	StuckTimeoutClosing     time.Duration `json:"stuck_timeout_closing" yaml:"stuck_timeout_closing"`           // Closing状态超时，默认1分钟
+	StuckTimeoutConnecting  time.Duration `json:"stuck_timeout_connecting" yaml:"stuck_timeout_connecting"`     // Connecting状态超时，默认30秒
+	StuckTimeoutAcquired    time.Duration `json:"stuck_timeout_acquired" yaml:"stuck_timeout_acquired"`         // Acquired状态超时，默认5分钟
+	StuckTimeoutExecuting   time.Duration `json:"stuck_timeout_executing" yaml:"stuck_timeout_executing"`       // Executing状态超时，默认5分钟
+	StuckTimeoutChecking    time.Duration `json:"stuck_timeout_checking" yaml:"stuck_timeout_checking"`         // Checking状态超时，默认2分钟
+	StuckTimeoutRebuildIdle time.Duration `json:"stuck_timeout_rebuild_idle" yaml:"stuck_timeout_rebuild_idle"` // Idle+rebuilding状态超时，默认10秒
 }
 
 // SSH特定配置

@@ -492,8 +492,8 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(ctx context.Context, pool
 
 		ylog.Debugf("EnhancedConnectionPool", "getConnectionFromPool: 尝试 %d/%d", attempt+1, maxAttempts)
 
-		// 尝试获取空闲连接
-		conn, err := p.tryGetIdleConnection(ctx, pool)
+		// 尝试获取可用连接
+		conn, err := p.tryGetAvailableConnection(ctx, pool)
 		if conn != nil {
 			return conn, nil
 		}
@@ -524,8 +524,16 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(ctx context.Context, pool
 	return nil, fmt.Errorf("failed to get connection after %d attempts", maxAttempts)
 }
 
-// tryGetIdleConnection 尝试获取空闲连接（优化版：职责单一，只负责获取连接）
-func (p *EnhancedConnectionPool) tryGetIdleConnection(ctx context.Context, pool *EnhancedDriverPool) (*EnhancedPooledConnection, error) {
+// tryGetAvailableConnection 尝试获取可用连接（优化版：职责单一，只负责获取连接）
+//
+// "可用连接"定义为满足以下所有条件的连接：
+// 1. 状态为 StateIdle（空闲）
+// 2. 健康状态不为 HealthStatusUnhealthy（非不健康）
+// 3. 不在重建中（rebuilding == false）
+// 4. 使用计数为0（没有被其他任务使用）
+//
+// 这个方法会遍历连接池中的所有连接，尝试找到第一个可用的连接并获取它
+func (p *EnhancedConnectionPool) tryGetAvailableConnection(ctx context.Context, pool *EnhancedDriverPool) (*EnhancedPooledConnection, error) {
 	// 第一阶段：快速收集候选连接ID（只读，最小化锁持有时间）
 	pool.mu.RLock()
 	connectionIDs := make([]string, 0, len(pool.connections))
@@ -534,10 +542,10 @@ func (p *EnhancedConnectionPool) tryGetIdleConnection(ctx context.Context, pool 
 	}
 	pool.mu.RUnlock()
 
-	ylog.Infof("EnhancedConnectionPool", "tryGetIdleConnection: 连接池中有 %d 个连接", len(connectionIDs))
+	ylog.Infof("EnhancedConnectionPool", "tryGetAvailableConnection: 连接池中有 %d 个连接", len(connectionIDs))
 
 	if len(connectionIDs) == 0 {
-		ylog.Infof("EnhancedConnectionPool", "tryGetIdleConnection: 连接池为空")
+		ylog.Infof("EnhancedConnectionPool", "tryGetAvailableConnection: 连接池为空")
 		return nil, nil
 	}
 
@@ -558,8 +566,9 @@ func (p *EnhancedConnectionPool) tryGetIdleConnection(ctx context.Context, pool 
 			continue
 		}
 
-		// 尝试获取连接（不持有池锁）
-		if conn.tryAcquire() {
+		// 尝试获取连接用于任务执行（不持有池锁）
+		// 这个方法会检查：空闲、非不健康、非重建中、使用计数为0
+		if conn.tryAcquireForTask() {
 			// 更新池统计（需要池写锁，但操作简单快速）
 			pool.mu.Lock()
 			pool.stats.ActiveConnections++
@@ -567,14 +576,14 @@ func (p *EnhancedConnectionPool) tryGetIdleConnection(ctx context.Context, pool 
 			pool.mu.Unlock()
 
 			state, health := conn.getStatus()
-			ylog.Infof("EnhancedConnectionPool", "tryGetIdleConnection: 获取连接成功: id=%s, usage=%d, state=%s, health=%s",
+			ylog.Infof("EnhancedConnectionPool", "tryGetAvailableConnection: 获取连接成功: id=%s, usage=%d, state=%s, health=%s",
 				conn.id, conn.getUsageCount(), state, health)
 			p.collector.IncrementConnectionsReused(pool.protocol)
 			return conn, nil
 		}
 	}
 
-	ylog.Infof("EnhancedConnectionPool", "tryGetIdleConnection: 未找到可用空闲连接")
+	ylog.Infof("EnhancedConnectionPool", "tryGetAvailableConnection: 未找到可用连接")
 	return nil, nil
 }
 
@@ -629,8 +638,8 @@ func (p *EnhancedConnectionPool) tryCreateNewConnection(ctx context.Context, poo
 	atomic.AddInt64(&pool.stats.IdleConnections, 1)
 	p.collector.IncrementConnectionsCreated(pool.protocol)
 
-	// 尝试获取新连接
-	if newConn.tryAcquire() {
+	// 尝试获取新连接用于任务执行
+	if newConn.tryAcquireForTask() {
 		pool.stats.ActiveConnections++
 		pool.stats.IdleConnections--
 		ylog.Infof("EnhancedConnectionPool", "tryCreateNewConnection: 创建并获取新连接: id=%s", newConn.id)
@@ -1418,37 +1427,52 @@ func (p *EnhancedConnectionPool) cleanupConnections() {
 
 			// 检查是否需要清理（不持有池锁）
 			if p.shouldCleanupConnection(conn, now) {
-				// 尝试获取连接
-				if conn.tryAcquire() {
-					// 获取池写锁进行删除（时间短）
-					pool.mu.Lock()
-					// 再次检查连接是否还在
-					if _, stillExists := pool.connections[id]; stillExists {
-						delete(pool.connections, id)
-						pool.mu.Unlock()
+				// 获取连接状态（用于更新统计）
+				connState, _ := conn.getStatus()
 
-						// 异步关闭连接
-						go func(c *EnhancedPooledConnection) {
-							defer func() {
-								if r := recover(); r != nil {
-									ylog.Errorf("connection_pool", "清理连接时发生panic: %v", r)
-								}
-							}()
+				// 获取池写锁进行删除（时间短）
+				pool.mu.Lock()
+				// 再次检查连接是否还在
+				if _, stillExists := pool.connections[id]; stillExists {
+					delete(pool.connections, id)
 
-							if err := c.safeClose(); err != nil {
-								ylog.Warnf("connection_pool", "安全关闭连接失败: id=%s, error=%v", c.id, err)
-							}
-							atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
-							p.collector.IncrementConnectionsDestroyed(proto)
-							p.sendEvent(EventConnectionDestroyed, proto, c)
-							ylog.Debugf("connection_pool", "连接清理完成: id=%s, protocol=%s", c.id, proto)
-						}(conn)
-						removedCount++
-					} else {
-						pool.mu.Unlock()
-						// 连接已被删除，释放获取的连接
-						conn.release()
+					// 更新连接池统计（保持一致性）
+					switch connState {
+					case StateIdle:
+						if pool.stats.IdleConnections > 0 {
+							pool.stats.IdleConnections--
+						}
+					default:
+						// StateAcquired, StateExecuting, StateConnecting, StateChecking, StateClosing 等
+						if pool.stats.ActiveConnections > 0 {
+							pool.stats.ActiveConnections--
+						}
 					}
+
+					pool.mu.Unlock()
+
+					// 异步强制关闭连接
+					go func(c *EnhancedPooledConnection) {
+						defer func() {
+							if r := recover(); r != nil {
+								ylog.Errorf("connection_pool", "清理连接时发生panic: %v", r)
+							}
+						}()
+
+						// 使用 forceClose 强制关闭，不管连接是否正在使用
+						if err := c.forceClose(); err != nil {
+							ylog.Warnf("connection_pool", "强制关闭连接失败: id=%s, error=%v", c.id, err)
+						}
+
+						// 更新指标和事件
+						atomic.AddInt64(&pool.stats.DestroyedConnections, 1)
+						p.collector.IncrementConnectionsDestroyed(proto)
+						p.sendEvent(EventConnectionDestroyed, proto, c)
+						ylog.Debugf("connection_pool", "连接清理完成: id=%s, protocol=%s, state=%s", c.id, proto, connState)
+					}(conn)
+					removedCount++
+				} else {
+					pool.mu.Unlock()
 				}
 			}
 		}
@@ -1460,72 +1484,129 @@ func (p *EnhancedConnectionPool) cleanupConnections() {
 }
 
 // shouldCleanupConnection 判断是否应该清理连接
+//
+// 清理任务只负责三种清理：
+// 1. 不健康连接 - 立即清理
+// 2. 僵尸连接 - 超时清理（所有非Idle状态的超时检测）
+// 3. 空闲超时 - 定期清理（只删除，不创建）
+//
+// 注意：生命周期超时、使用次数超限由重建任务负责（会创建新连接替换）
 func (p *EnhancedConnectionPool) shouldCleanupConnection(conn *EnhancedPooledConnection, now time.Time) bool {
-	// 第一层检查：使用计数 > 0 的连接不应该清理
+	// 前置检查：使用计数 > 0 的连接不应该清理
 	if conn.getUseCount() > 0 {
-		ylog.Infof("connection_pool", "跳过清理：连接 %s 使用计数=%d", conn.id, conn.getUseCount())
 		return false
 	}
 
-	// 获取连接状态和健康状态
 	state, health := conn.getStatus()
+	lastUsed := conn.getLastUsed()
 
-	// 特殊处理：不健康的连接应该被清理，无论状态如何
-	// 这是为了避免连接卡在Checking状态
+	// ========== 【第一优先级】不健康连接 - 立即清理 ==========
 	if health == HealthStatusUnhealthy {
-		ylog.Infof("connection_pool", "连接不健康需要清理：%s 状态=%s 健康=%s", conn.id, state, health)
-		return true
+		ylog.Infof("connection_pool",
+			"清理不健康连接: id=%s, state=%s, rebuilding=%v",
+			conn.id, state, conn.rebuilding)
+		return true // 即使 rebuilding=true，也立即清理
 	}
 
-	// 第二层检查：以下状态的连接不应该被清理（健康的）
-	nonCleanableStates := []ConnectionState{
-		StateConnecting, // 连接中
-		StateAcquired,   // 已获取
-		StateExecuting,  // 执行中
-		StateChecking,   // 检查中（健康的）
-		StateClosing,    // 关闭中
+	// ========== 【第二优先级】僵尸连接 - 状态超时检测 ==========
+	// 检查所有非Idle状态（包括 rebuilding 的连接）
+	if state != StateIdle {
+		idleTime := now.Sub(lastUsed)
+
+		// 根据状态设置不同超时
+		var timeout time.Duration
+		var reason string
+
+		switch state {
+		case StateClosing:
+			timeout = p.config.StuckTimeoutClosing
+			if timeout == 0 {
+				timeout = 1 * time.Minute // 默认1分钟
+			}
+			reason = "关闭超时"
+
+		case StateConnecting:
+			timeout = p.config.StuckTimeoutConnecting
+			if timeout == 0 {
+				timeout = 30 * time.Second // 默认30秒
+			}
+			reason = "连接超时"
+
+		case StateAcquired:
+			timeout = p.config.StuckTimeoutAcquired
+			if timeout == 0 {
+				timeout = 10 * time.Minute // 默认10分钟
+			}
+			reason = "获取超时"
+
+		case StateExecuting:
+			timeout = p.config.StuckTimeoutExecuting
+			if timeout == 0 {
+				timeout = 10 * time.Minute // 默认10分钟
+			}
+			reason = "执行超时"
+
+		case StateChecking:
+			timeout = p.config.StuckTimeoutChecking
+			if timeout == 0 {
+				timeout = 2 * time.Minute // 默认2分钟
+			}
+			reason = "检查超时"
+
+		case StateClosed:
+			// 终态，立即清理
+			ylog.Infof("connection_pool", "清理已关闭连接: id=%s", conn.id)
+			return true
+
+		default:
+			timeout = 6 * time.Minute
+			reason = "状态异常"
+		}
+
+		// 超时检测：即使 rebuilding=true，超时也强制清理
+		if idleTime > timeout {
+			ylog.Warnf("connection_pool",
+				"清理%s连接: id=%s, state=%s, rebuilding=%v, idle=%v",
+				reason, conn.id, state, conn.rebuilding, idleTime)
+			return true // 强制清理，中断可能的重建
+		}
+
+		// 未超时的非Idle状态，不清理
+		return false
 	}
 
-	for _, s := range nonCleanableStates {
-		if state == s {
-			ylog.Infof("connection_pool", "跳过清理：连接 %s 状态=%s", conn.id, state)
-			return false
+	// ========== 【第三优先级】Idle + rebuilding 异常 ==========
+	// Idle 状态但在 rebuilding，且长时间未转换状态
+	if state == StateIdle && conn.rebuilding {
+		rebuildWaitTime := now.Sub(lastUsed)
+		timeout := p.config.StuckTimeoutRebuildIdle
+		if timeout == 0 {
+			timeout = 2 * time.Minute // 默认2分钟
+		}
+		if rebuildWaitTime > timeout {
+			ylog.Warnf("connection_pool",
+				"清理重建异常的Idle连接: id=%s, rebuilding=%v, wait=%v",
+				conn.id, conn.rebuilding, rebuildWaitTime)
+			return true
+		}
+		// 正在重建，等待状态转换
+		return false
+	}
+
+	// ========== 【第四优先级】空闲超时 - 只清理，不重建 ==========
+	if state == StateIdle {
+		// 只检查空闲超时（清理任务只删除，不创建）
+		// 生命周期超时、使用次数超限由重建任务负责（会创建新连接）
+		if now.Sub(lastUsed) > p.idleTimeout {
+			ylog.Infof("connection_pool",
+				"清理空闲超时连接: id=%s, idle=%v, timeout=%v",
+				conn.id, now.Sub(lastUsed), p.idleTimeout)
+			return true // 只删除，任务执行时自动创建新连接
 		}
 	}
 
-	// 只有 StateIdle 状态的连接可以被清理
-	// 检查连接有效性（StateClosed 状态也应该被清理）
-	valid := state != StateClosed && state != StateClosing
-	if !valid {
-		ylog.Infof("connection_pool", "连接无效需要清理：%s 状态=%s", conn.id, state)
-		return true
-	}
-
-	// 检查空闲时间
-	lastUsed := conn.getLastUsed()
-	createdAt := conn.getCreatedAt()
-	usageCount := conn.getUsageCount()
-
-	if now.Sub(lastUsed) > p.idleTimeout {
-		ylog.Infof("connection_pool", "连接空闲超时需要清理：%s 最后使用=%v 空闲超时=%v",
-			conn.id, lastUsed, p.idleTimeout)
-		return true
-	}
-
-	// 检查连接生命周期
-	lifecycle := p.pools[conn.protocol].connectionLifecycle
-	if now.Sub(createdAt) > lifecycle.maxLifetime {
-		ylog.Infof("connection_pool", "连接生命周期超时需要清理：%s 创建时间=%v 最大生命周期=%v",
-			conn.id, createdAt, lifecycle.maxLifetime)
-		return true
-	}
-
-	// 检查使用次数
-	if usageCount > lifecycle.maxUsageCount {
-		ylog.Infof("connection_pool", "连接使用次数超限需要清理：%s 使用次数=%d 最大使用次数=%d",
-			conn.id, usageCount, lifecycle.maxUsageCount)
-		return true
-	}
+	// ========== 不再处理：生命周期超时、使用次数超限 ==========
+	// 这些条件由重建任务负责，会创建新连接替换
 
 	return false
 }
@@ -2614,7 +2695,7 @@ func (md *MonitoredDriver) Execute(ctx context.Context, req *ProtocolRequest) (*
 	case StateIdle:
 		// 连接空闲，需要先获取并建立连接
 		ylog.Debugf("MonitoredDriver", "连接空闲，需要建立连接: state=%s", currentState)
-		// 注意：这里不转换状态，因为tryAcquire()已经转换到StateAcquired
+		// 注意：这里不转换状态，因为 tryAcquireForTask() 已经转换到StateAcquired
 		// 实际连接建立会在ScrapliDriver.Execute()中触发
 
 	case StateAcquired:
@@ -2721,10 +2802,11 @@ func (md *MonitoredDriver) Close() error {
 }
 
 // activateConnection 统一激活连接并返回监控包装器
-// 注意：连接已经在getConnectionFromPool中通过tryAcquire()获取
+// 注意：连接已经在 getConnectionFromPool 中通过 tryAcquireForTask() 获取
+//
+// 重要：连接已经在 tryAcquireForTask() 中标记为 inUse=true 并更新了 lastUsed 和 usageCount
+// 这里只需要更新池统计和创建监控包装器
 func (p *EnhancedConnectionPool) activateConnection(conn *EnhancedPooledConnection) ProtocolDriver {
-	// 连接已经在tryAcquire()中标记为inUse=true并更新了lastUsed和usageCount
-	// 这里只需要更新池统计和创建监控包装器
 
 	pool := p.getDriverPool(conn.protocol)
 	if pool != nil {
