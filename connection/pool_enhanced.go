@@ -2292,22 +2292,27 @@ func (p *EnhancedConnectionPool) RebuildConnectionByProto(ctx context.Context, p
 
 				result := &RebuildResult{
 					Protocol:  string(proto),
-					Success:   err == nil,
 					OldConnID: conn.id,
-					NewConnID: rebuildResult.NewConnID,
 					Duration:  connDuration,
 					Reason:    conn.getRebuildReason(),
 					Timestamp: time.Now(),
 				}
 
 				if err != nil {
+					result.Success = false
 					result.Error = err.Error()
 					ylog.Warnf("pool", "重建连接失败: id=%s, error=%v", conn.id, err)
 				} else if rebuildResult != nil {
-					// 使用 rebuildResult 中的原因（优先级更高）
+					result.Success = rebuildResult.Success
+					result.NewConnID = rebuildResult.NewConnID
 					if rebuildResult.Reason != "" {
 						result.Reason = rebuildResult.Reason
 					}
+				} else {
+					// 理论上不应到达这里，作为防御性编程
+					result.Success = false
+					result.Error = "internal error: nil result without error"
+					ylog.Errorf("pool", "异常状态: err=nil but rebuildResult=nil, conn_id=%s", conn.id)
 				}
 
 				resultChan <- result
