@@ -29,7 +29,11 @@ type Executor struct {
 
 // task/executor.go
 func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx TaskContext) (Result, error) {
-	ylog.Infof(logModule, "开始执行任务 %s on %s (%s) with params: %+v", ctx.TaskType, ctx.Platform, ctx.Protocol, ctx.Params)
+	targetIP := "unknown"
+	if ip, ok := ctx.Params["target_ip"].(string); ok {
+		targetIP = ip
+	}
+	ylog.Debugf(logModule, "开始执行任务 %s on %s (%s) target_ip=%s", ctx.TaskType, ctx.Platform, ctx.Protocol, targetIP)
 	start := time.Now()
 	if conn == nil {
 		ylog.Errorf(logModule, "连接驱动为空，任务 %s on %s 无法执行", ctx.TaskType, ctx.Platform)
@@ -156,10 +160,10 @@ func (e *Executor) coreExecute(task Task, conn connection.ProtocolDriver, ctx Ta
 		}
 		if _, hasStatus := result.Data["status"]; !hasStatus {
 			result.Data["status"] = StatusExecutionError
-			ylog.Infof(logModule, "设置默认状态为ExecutionError: task=%s, platform=%s", ctx.TaskType, ctx.Platform)
+			ylog.Debugf(logModule, "设置默认状态为ExecutionError: task=%s, platform=%s", ctx.TaskType, ctx.Platform)
 		}
 	} else {
-		ylog.Infof(logModule, "任务 %s on %s 执行成功 in %v", ctx.TaskType, ctx.Platform, duration)
+		ylog.Debugf(logModule, "任务 %s on %s 执行成功 in %v", ctx.TaskType, ctx.Platform, duration)
 		// 确保成功的结果也有status字段
 		if result.Data == nil {
 			result.Data = make(map[string]interface{})

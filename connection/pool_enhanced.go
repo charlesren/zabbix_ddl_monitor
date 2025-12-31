@@ -450,7 +450,7 @@ func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Proto
 		if err != nil {
 			ylog.Warnf("EnhancedConnectionPool", "连接获取失败: protocol=%s, error=%v", proto, err)
 		} else {
-			ylog.Infof("EnhancedConnectionPool", "连接获取成功（内部）: protocol=%s, connection_id=%s", proto, conn.id)
+			ylog.Debugf("EnhancedConnectionPool", "连接获取成功（内部）: protocol=%s, connection_id=%s", proto, conn.id)
 		}
 		return err
 	})
@@ -461,7 +461,7 @@ func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Proto
 		return nil, err
 	}
 
-	ylog.Infof("EnhancedConnectionPool", "连接获取成功: protocol=%s, connection_id=%s", proto, conn.id)
+	ylog.Debugf("EnhancedConnectionPool", "连接获取成功: protocol=%s, connection_id=%s", proto, conn.id)
 	return p.activateConnection(conn), nil
 }
 

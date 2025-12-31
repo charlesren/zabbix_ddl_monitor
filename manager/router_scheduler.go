@@ -225,7 +225,7 @@ func (s *RouterScheduler) Start() {
 					ylog.Infof("scheduler", "队列worker收到停止信号: router=%s, interval=%v", s.router.IP, intervalCopy)
 					return
 				case <-qCopy.ExecNotify(): // 监听执行信号
-					ylog.Infof("scheduler", "执行任务: router=%s, interval=%v", s.router.IP, intervalCopy)
+					ylog.Debugf("scheduler", "执行任务: router=%s, interval=%v", s.router.IP, intervalCopy)
 					s.executeTasksAsync(qCopy)
 				}
 			}
@@ -237,7 +237,7 @@ func (s *RouterScheduler) Start() {
 func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	// 获取任务快照
 	lines := q.GetTasksSnapshot()
-	ylog.Infof("scheduler", "开始执行任务: 路由器=%s, 间隔=%v, 专线数量=%d",
+	ylog.Debugf("scheduler", "开始执行任务: 路由器=%s, 间隔=%v, 专线数量=%d",
 		s.router.IP, q.interval, len(lines))
 
 	if len(lines) == 0 {
@@ -250,7 +250,7 @@ func (s *RouterScheduler) executeTasksAsync(q *IntervalTaskQueue) {
 	for _, line := range lines {
 		ips = append(ips, line.IP)
 	}
-	ylog.Infof("scheduler", "执行ping任务: 路由器=%s, 间隔=%v, 专线IP列表: %v",
+	ylog.Debugf("scheduler", "执行ping任务: 路由器=%s, 间隔=%v, 专线IP列表: %v",
 		s.router.IP, q.interval, ips)
 
 	// 获取预加载的能力信息（带降级逻辑）

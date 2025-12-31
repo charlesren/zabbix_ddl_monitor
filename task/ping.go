@@ -256,7 +256,7 @@ func (PingTask) ValidateParams(params map[string]interface{}) error {
 		ylog.Debugf("PingTask", "enable_password 参数已提供并验证成功, target_ip=%s", targetIPStr)
 	}
 
-	ylog.Infof("PingTask", "参数验证全部通过, target_ip=%s", targetIPStr)
+	ylog.Debugf("PingTask", "参数验证全部通过, target_ip=%s", targetIPStr)
 	return nil
 }
 
@@ -316,7 +316,7 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 		}
 	}
 
-	ylog.Infof("PingTask", "构建ping命令完成: 目标IP=%s, 重复次数=%d, 超时时间=%v", targetIP, repeat, timeout)
+	ylog.Debugf("PingTask", "构建ping命令完成: 目标IP=%s, 重复次数=%d, 超时时间=%v", targetIP, repeat, timeout)
 
 	// 根据命令类型构建不同的命令
 	switch ctx.CommandType {
@@ -339,7 +339,7 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 			return Command{}, fmt.Errorf("unsupported platform for commands: %s", ctx.Platform)
 		}
 
-		ylog.Infof("PingTask", "构建非交互式命令完成, 命令数量: %d, target_ip=%s, platform=%s", len(commands), targetIP, ctx.Platform)
+		ylog.Debugf("PingTask", "构建非交互式命令完成, 命令数量: %d, target_ip=%s, platform=%s", len(commands), targetIP, ctx.Platform)
 		return Command{
 			Type:    connection.CommandTypeCommands,
 			Payload: commands,
@@ -364,7 +364,7 @@ func (PingTask) BuildCommand(ctx TaskContext) (Command, error) {
 			return Command{}, fmt.Errorf("unsupported platform: %s", ctx.Platform)
 		}
 
-		ylog.Infof("PingTask", "构建交互式事件完成, 事件数量: %d, target_ip=%s, platform=%s", len(events), targetIP, ctx.Platform)
+		ylog.Debugf("PingTask", "构建交互式事件完成, 事件数量: %d, target_ip=%s, platform=%s", len(events), targetIP, ctx.Platform)
 		return Command{
 			Type:    connection.CommandTypeInteractiveEvent,
 			Payload: events,
@@ -398,7 +398,7 @@ func (PingTask) buildCiscoEvent(targetIP string, repeat int, timeout time.Durati
 		HideInput:       false,
 	})
 
-	ylog.Infof("PingTask", "Cisco交互式事件构建完成, 事件总数: %d, 命令: %s", len(events), pingCommand)
+	ylog.Debugf("PingTask", "Cisco交互式事件构建完成, 事件总数: %d, 命令: %s", len(events), pingCommand)
 	return events
 }
 
@@ -419,7 +419,7 @@ func (PingTask) buildHuaweiEvent(targetIP string, repeat int, timeout time.Durat
 		HideInput:       false,
 	})
 
-	ylog.Infof("PingTask", "华为交互式事件构建完成, 事件总数: %d, 命令: %s", len(events), pingCommand)
+	ylog.Debugf("PingTask", "华为交互式事件构建完成, 事件总数: %d, 命令: %s", len(events), pingCommand)
 	return events
 }
 
@@ -440,7 +440,7 @@ func (PingTask) buildCiscoCommand(targetIP string, repeat int, timeout time.Dura
 	ylog.Debugf("PingTask", "添加Cisco ping命令: %s", command)
 	commands = append(commands, command)
 
-	ylog.Infof("PingTask", "Cisco非交互式命令构建完成, 命令总数: %d, ping命令: %s", len(commands), command)
+	ylog.Debugf("PingTask", "Cisco非交互式命令构建完成, 命令总数: %d, ping命令: %s", len(commands), command)
 	return commands
 }
 
@@ -455,7 +455,7 @@ func (PingTask) buildHuaweiCommand(targetIP string, repeat int, timeout time.Dur
 	ylog.Debugf("PingTask", "添加华为ping命令: %s", command)
 	commands = append(commands, command)
 
-	ylog.Infof("PingTask", "华为非交互式命令构建完成, 命令总数: %d, ping命令: %s", len(commands), command)
+	ylog.Debugf("PingTask", "华为非交互式命令构建完成, 命令总数: %d, ping命令: %s", len(commands), command)
 	return commands
 }
 
@@ -469,7 +469,7 @@ func (PingTask) buildH3CCommand(targetIP string, repeat int, timeout time.Durati
 	ylog.Debugf("PingTask", "添加H3C ping命令: %s", command)
 	commands = append(commands, command)
 
-	ylog.Infof("PingTask", "H3C非交互式命令构建完成, 命令总数: %d, ping命令: %s", len(commands), command)
+	ylog.Debugf("PingTask", "H3C非交互式命令构建完成, 命令总数: %d, ping命令: %s", len(commands), command)
 	return commands
 }
 
@@ -488,7 +488,7 @@ func (PingTask) buildH3CEvent(targetIP string, repeat int, timeout time.Duration
 		HideInput:       false,
 	})
 
-	ylog.Infof("PingTask", "H3C交互式事件构建完成, 事件总数: %d, 命令: %s", len(events), pingCommand)
+	ylog.Debugf("PingTask", "H3C交互式事件构建完成, 事件总数: %d, 命令: %s", len(events), pingCommand)
 	return events
 }
 
@@ -643,13 +643,13 @@ func (PingTask) ParseOutput(ctx TaskContext, raw interface{}) (Result, error) {
 		// 记录详细的解析结果
 		packetLoss, _ := result.Data["packet_loss"].(int)
 		successRate, _ := result.Data["success_rate"].(int)
-		ylog.Infof("PingTask", "ping解析成功, 目标IP: %s, 丢包率: %d%%, 成功率: %d%%", targetIP, packetLoss, successRate)
+		ylog.Debugf("PingTask", "ping解析成功, 目标IP: %s, 丢包率: %d%%, 成功率: %d%%", targetIP, packetLoss, successRate)
 	} else {
 		status, _ := result.Data["status"].(string)
 		ylog.Warnf("PingTask", "ping解析失败, 目标IP: %s, 状态: %s, 错误: %s, platform: %s", targetIP, status, result.Error, ctx.Platform)
 	}
 
-	ylog.Infof("PingTask", "输出解析完成, 最终结果: %+v, target_ip: %s, platform: %s", result, targetIP, ctx.Platform)
+	ylog.Debugf("PingTask", "输出解析完成, 最终结果: %+v, target_ip: %s, platform: %s", result, targetIP, ctx.Platform)
 	return result, nil
 }
 
@@ -674,7 +674,7 @@ func (PingTask) parseCiscoOutput(output string, result *Result) bool {
 				result.Data["success_rate"] = 100
 				result.Data["packet_loss"] = 0
 				result.Data["status"] = StatusCheckFinished
-				ylog.Infof("PingTask", "Cisco ping解析成功: 目标IP=%s, 成功率=100%%, 丢包率=0%%", targetIP)
+				ylog.Debugf("PingTask", "Cisco ping解析成功: 目标IP=%s, 成功率=100%%, 丢包率=0%%", targetIP)
 				return true
 			} else if strings.Contains(line, "0 percent") {
 				result.Data["success_rate"] = 0
@@ -738,7 +738,7 @@ func (PingTask) parseCiscoNxosOutput(output string, result *Result) bool {
 				result.Data["packet_loss"] = 0
 				result.Data["success_rate"] = 100
 				result.Data["status"] = StatusCheckFinished
-				ylog.Infof("PingTask", "Cisco NXOS ping解析成功: 目标IP=%s, 丢包率=0%%, 成功率=100%%", targetIP)
+				ylog.Debugf("PingTask", "Cisco NXOS ping解析成功: 目标IP=%s, 丢包率=0%%, 成功率=100%%", targetIP)
 				return true
 			} else if strings.Contains(line, "100.00% packet loss") {
 				result.Data["packet_loss"] = 100
@@ -826,7 +826,7 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 				result.Data["packet_loss"] = 0
 				result.Data["success_rate"] = 100
 				result.Data["status"] = StatusCheckFinished
-				ylog.Infof("PingTask", "华为ping解析成功: 目标IP=%s, 丢包率=0%%, 成功率=100%%", targetIP)
+				ylog.Debugf("PingTask", "华为ping解析成功: 目标IP=%s, 丢包率=0%%, 成功率=100%%", targetIP)
 				return true
 			} else {
 				// 提取丢包率
@@ -934,7 +934,7 @@ func (PingTask) parseH3COutput(output string, result *Result) bool {
 					result.Data["success_rate"] = 100 - packetLoss
 					result.Data["status"] = StatusCheckFinished
 					if packetLoss == 0 {
-						ylog.Infof("PingTask", "H3C ping解析成功: 目标IP=%s, 丢包率=0%%, 成功率=100%%", targetIP)
+						ylog.Debugf("PingTask", "H3C ping解析成功: 目标IP=%s, 丢包率=0%%, 成功率=100%%", targetIP)
 					} else if packetLoss == 100 {
 						ylog.Debugf("PingTask", "H3C ping解析完成: 目标IP=%s, 丢包率=100%%, 成功率=0%%", targetIP)
 					} else {

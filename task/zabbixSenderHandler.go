@@ -263,7 +263,7 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 		return nil
 	}
 
-	ylog.Infof("zabbix_sender", "processing %d events for zabbix submission", len(events))
+	ylog.Debugf("zabbix_sender", "processing %d events for zabbix submission", len(events))
 
 	metrics := make([]*sender.Metric, 0, len(events))
 	processedEvents := 0
@@ -374,7 +374,7 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	}
 
 	// 详细记录所有即将发送的metrics内容
-	ylog.Infof("zabbix_sender", "即将发送的metrics详细信息 (共%d个):", len(metrics))
+	ylog.Debugf("zabbix_sender", "即将发送的metrics详细信息 (共%d个):", len(metrics))
 
 	// 统计active和trapper metrics的数量
 	activeCount := 0
@@ -584,14 +584,14 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 			postActive, postIdle, postTotal)
 	}
 
-	ylog.Infof("zabbix_sender", "successfully sent %d metrics to zabbix in %v", len(metrics), duration)
+	ylog.Debugf("zabbix_sender", "successfully sent %d metrics to zabbix in %v", len(metrics), duration)
 
 	// 记录成功的Zabbix响应信息
 	ylog.Debugf("zabbix_sender", "Zabbix成功响应: active_response='%s', active_info='%s', trapper_response='%s', trapper_info='%s'",
 		resActive.Response, resActive.Info, resTrapper.Response, resTrapper.Info)
 
 	// 记录metrics分类信息
-	ylog.Infof("zabbix_sender", "成功发送metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
+	ylog.Debugf("zabbix_sender", "成功发送metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
 
 	// 记录发送后的连接池状态
 	ylog.Debugf("zabbix_sender", "connection pool stats after send: active=%d, idle=%d, total=%d",

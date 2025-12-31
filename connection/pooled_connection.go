@@ -160,7 +160,7 @@ func (conn *EnhancedPooledConnection) recordHealthCheck(success bool, err error)
 	if success {
 		conn.consecutiveFailures = 0
 		conn.setHealthLocked(HealthStatusHealthy, true)
-		ylog.Infof("EnhancedPooledConnection", "recordHealthCheck: 健康检查成功: id=%s", conn.id)
+		ylog.Debugf("EnhancedPooledConnection", "recordHealthCheck: 健康检查成功: id=%s", conn.id)
 	} else {
 		conn.consecutiveFailures++
 
@@ -411,7 +411,7 @@ func (conn *EnhancedPooledConnection) beginHealthCheck() bool {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	ylog.Infof("EnhancedPooledConnection", "beginHealthCheck: 尝试开始健康检查, id=%s, state=%s", conn.id, conn.state)
+	ylog.Debugf("EnhancedPooledConnection", "beginHealthCheck: 尝试开始健康检查, id=%s, state=%s", conn.id, conn.state)
 
 	// 直接尝试转换到 StateChecking，由状态机决定是否允许
 	if !conn.transitionStateLocked(StateChecking) {
@@ -419,7 +419,7 @@ func (conn *EnhancedPooledConnection) beginHealthCheck() bool {
 		return false
 	}
 
-	ylog.Infof("EnhancedPooledConnection", "beginHealthCheck: 成功开始健康检查, id=%s", conn.id)
+	ylog.Debugf("EnhancedPooledConnection", "beginHealthCheck: 成功开始健康检查, id=%s", conn.id)
 	return true
 }
 
