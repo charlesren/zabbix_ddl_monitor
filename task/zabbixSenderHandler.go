@@ -364,7 +364,7 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 	}
 
 	ylog.Infof("zabbix_sender", "数据统计: 总事件=%d, 已处理事件=%d", len(events), processedEvents)
-	ylog.Infof("zabbix_sender", "监控项分类: ping指标=%d, 错误详情=%d", pingMetrics, errorMetrics)
+	ylog.Debugf("zabbix_sender", "事件分类：dedicatedLinePing为%d个, dedicatedLineErrorDetail为%d个", pingMetrics, errorMetrics)
 	ylog.Debugf("zabbix_sender", "准备发送 %d 个metrics到Zabbix", len(metrics))
 
 	// 检查是否有有效的metrics可以发送
@@ -386,7 +386,7 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 			trapperCount++
 		}
 	}
-	ylog.Infof("zabbix_sender", "Metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
+	ylog.Debugf("zabbix_sender", "Metrics分类: active=%d, trapper=%d", activeCount, trapperCount)
 
 	// 按监控项类型记录详细信息
 	for i, metric := range metrics {
@@ -399,7 +399,7 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 			metricType = "未知类型"
 		}
 
-		ylog.Infof("zabbix_sender", "  [%d] %s: host=%s, key=%s, value=%s, type=%s",
+		ylog.Debugf("zabbix_sender", "  [%d] %s: host=%s, key=%s, value=%s, type=%s",
 			i+1, metricType, metric.Host, metric.Key, metric.Value, metricType)
 	}
 
@@ -414,7 +414,7 @@ func (h *ZabbixSenderHandler) HandleResult(events []ResultEvent) error {
 			valueType = "string"
 		}
 
-		ylog.Infof("zabbix_sender", "  metric[%d]: host=%s, key=%s, value=%s (实际类型: %s), clock=%d, active=%v",
+		ylog.Infof("zabbix_sender", "  metric[%d]: host=%s, key=%s, value=%s (实际类型: %s) , clock=%d, active=%v",
 			i, metric.Host, metric.Key, metric.Value, valueType, metric.Clock, metric.Active)
 
 		// 额外验证value是否为有效整数

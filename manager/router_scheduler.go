@@ -625,6 +625,8 @@ func (s *RouterScheduler) listenToPoolEvents() {
 				ylog.Infof("scheduler", "连接池事件 router=%s: 连接创建成功", s.router.IP)
 			case connection.EventConnectionDestroyed:
 				ylog.Infof("scheduler", "连接池事件 router=%s: 连接销毁", s.router.IP)
+			case connection.EventConnectionReused:
+				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接复用", s.router.IP)
 			case connection.EventConnectionFailed:
 				ylog.Warnf("scheduler", "连接池事件 router=%s: 连接失败，将使用配置的重试策略自动重试", s.router.IP)
 			case connection.EventHealthCheckFailed:
@@ -633,8 +635,20 @@ func (s *RouterScheduler) listenToPoolEvents() {
 				ylog.Infof("scheduler", "连接池事件 router=%s: 连接池预热开始", s.router.IP)
 			case connection.EventPoolWarmupCompleted:
 				ylog.Infof("scheduler", "连接池事件 router=%s: 连接池预热完成", s.router.IP)
+			case connection.EventPoolShutdown:
+				ylog.Infof("scheduler", "连接池事件 router=%s: 连接池关闭", s.router.IP)
 			case connection.EventConnectionRebuilt:
 				ylog.Infof("scheduler", "连接池事件 router=%s: 连接重建 (后台自动重试)", s.router.IP)
+			case connection.EventRebuildFailed:
+				ylog.Warnf("scheduler", "连接池事件 router=%s: 连接重建失败", s.router.IP)
+			case connection.EventRebuildMarked:
+				ylog.Debugf("scheduler", "连接池事件 router=%s: 连接已标记为需要重建", s.router.IP)
+			case connection.EventRebuildStarted:
+				ylog.Infof("scheduler", "连接池事件 router=%s: 连接重建开始", s.router.IP)
+			case connection.EventRebuildCompleted:
+				ylog.Infof("scheduler", "连接池事件 router=%s: 连接重建完成", s.router.IP)
+			case connection.EventConnectionsNeedRebuild:
+				ylog.Debugf("scheduler", "连接池事件 router=%s: 存在连接需要重建", s.router.IP)
 			default:
 				ylog.Warnf("scheduler", "连接池事件 router=%s: 未知事件类型 %d", s.router.IP, event.Type)
 			}

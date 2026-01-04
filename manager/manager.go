@@ -65,8 +65,8 @@ func (m *Manager) runWithContext(name string, fn func()) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		ylog.Infof("manager", "启动goroutine: %s", name)
-		defer ylog.Infof("manager", "退出goroutine: %s", name)
+		ylog.Debugf("manager", "启动goroutine: %s", name)
+		defer ylog.Debugf("manager", "退出goroutine: %s", name)
 
 		fn()
 	}()
@@ -669,7 +669,7 @@ func (m *Manager) processLineEvent(event syncer.LineChangeEvent) {
 // 确保调度器存在
 func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 	if _, exists := m.schedulers[routerIP]; !exists {
-		ylog.Infof("manager", "开始创建调度器: router=%s, lines=%d", routerIP, len(lines))
+		ylog.Debugf("manager", "开始创建调度器: router=%s, lines=%d", routerIP, len(lines))
 		scheduler := m.createScheduler(&lines[0].Router, lines)
 		if scheduler == nil {
 			ylog.Errorf("manager", "scheduler creation failed for %s", routerIP)
@@ -679,9 +679,9 @@ func (m *Manager) ensureScheduler(routerIP string, lines []syncer.Line) {
 		m.schedulers[routerIP] = scheduler
 		ylog.Infof("manager", "调度器已添加到map: router=%s", routerIP)
 		go func() {
-			ylog.Infof("manager", "启动调度器goroutine开始: router=%s", routerIP)
+			ylog.Debugf("manager", "启动调度器goroutine开始: router=%s", routerIP)
 			m.safeExecute("scheduler.Start", scheduler.Start)
-			ylog.Infof("manager", "调度器goroutine结束: router=%s", routerIP)
+			ylog.Debugf("manager", "调度器goroutine结束: router=%s", routerIP)
 		}()
 
 		// 记录调度器创建
@@ -696,7 +696,7 @@ func (m *Manager) createScheduler(router *syncer.Router, lines []syncer.Line) Sc
 	var scheduler Scheduler
 	var err error
 
-	ylog.Infof("manager", "开始创建调度器: router=%s, lines=%d", router.IP, len(lines))
+	ylog.Debugf("manager", "开始创建调度器: router=%s, lines=%d", router.IP, len(lines))
 
 	// 使用安全执行创建调度器
 	func() {

@@ -187,7 +187,7 @@ func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 		ylog.Debugf(asyncExecutorModule, "工作线程 %d 任务失败结果: data=%+v",
 			workerID, result.Data)
 	} else {
-		ylog.Infof(asyncExecutorModule, "工作线程 %d 任务 %s for %s 执行成功 in %v",
+		ylog.Debugf(asyncExecutorModule, "工作线程 %d 任务 %s for %s 执行成功 in %v",
 			workerID, req.Context.TaskType, req.Context.Platform, duration)
 		ylog.Debugf(asyncExecutorModule, "工作线程 %d 任务成功结果: data=%+v",
 			workerID, result.Data)

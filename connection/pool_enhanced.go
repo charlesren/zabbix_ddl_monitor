@@ -433,11 +433,11 @@ func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Proto
 	defer func() {
 		duration := time.Since(start)
 		p.collector.RecordOperationDuration(proto, "get_connection", duration)
-		ylog.Infof("EnhancedConnectionPool", "连接获取完成: protocol=%s, duration=%v", proto, duration)
+		ylog.Debugf("EnhancedConnectionPool", "连接获取完成: protocol=%s, duration=%v", proto, duration)
 	}()
 
 	// 记录连接获取开始
-	ylog.Infof("EnhancedConnectionPool", "开始获取连接: protocol=%s", proto)
+	ylog.Debugf("EnhancedConnectionPool", "开始获取连接: protocol=%s", proto)
 
 	// 使用弹性执行器获取连接（保留重试，移除断路器）
 	var conn *EnhancedPooledConnection
@@ -445,7 +445,7 @@ func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Proto
 
 	ylog.Infof("EnhancedConnectionPool", "开始执行弹性执行器: protocol=%s", proto)
 	err = p.resilientExecutor.Execute(mergedCtx, func() error {
-		ylog.Infof("EnhancedConnectionPool", "弹性执行器开始执行操作: protocol=%s", proto)
+		ylog.Debugf("EnhancedConnectionPool", "弹性执行器开始执行操作: protocol=%s", proto)
 		conn, err = p.getConnectionFromPool(mergedCtx, pool)
 		if err != nil {
 			ylog.Warnf("EnhancedConnectionPool", "连接获取失败: protocol=%s, error=%v", proto, err)
@@ -479,7 +479,7 @@ func (p *EnhancedConnectionPool) getConnectionFromPool(ctx context.Context, pool
 	default:
 	}
 
-	ylog.Infof("EnhancedConnectionPool", "getConnectionFromPool: 开始获取连接: protocol=%s", pool.protocol)
+	ylog.Debugf("EnhancedConnectionPool", "getConnectionFromPool: 开始获取连接: protocol=%s", pool.protocol)
 
 	// 使用乐观锁策略，最多尝试3次
 	maxAttempts := 3
@@ -542,10 +542,10 @@ func (p *EnhancedConnectionPool) tryGetAvailableConnection(ctx context.Context, 
 	}
 	pool.mu.RUnlock()
 
-	ylog.Infof("EnhancedConnectionPool", "tryGetAvailableConnection: 连接池中有 %d 个连接", len(connectionIDs))
+	ylog.Debugf("EnhancedConnectionPool", "tryGetAvailableConnection: 连接池中有 %d 个连接", len(connectionIDs))
 
 	if len(connectionIDs) == 0 {
-		ylog.Infof("EnhancedConnectionPool", "tryGetAvailableConnection: 连接池为空")
+		ylog.Debugf("EnhancedConnectionPool", "tryGetAvailableConnection: 连接池为空")
 		return nil, nil
 	}
 
@@ -1004,11 +1004,11 @@ func (p *EnhancedConnectionPool) WarmUp(proto Protocol, targetCount int) error {
 
 				ylog.Debugf("EnhancedConnectionPool", "warmup attempt %d failed for connection %d: %v", attempt+1, index+1, err)
 			}
-			if err != nil {
-				atomic.AddInt64(&warmup.Failed, 1)
-				ylog.Warnf("EnhancedConnectionPool", "warmup failed for connection %d after retries: %v", index+1, err)
-			}
+			// 发送错误到通道
 			errChan <- err
+			// 记录失败（err 一定不为 nil，因为如果成功会在循环内 break）
+			atomic.AddInt64(&warmup.Failed, 1)
+			ylog.Warnf("EnhancedConnectionPool", "warmup failed for connection %d after retries: %v", index+1, err)
 		}(i)
 	}
 
@@ -2332,7 +2332,8 @@ func (p *EnhancedConnectionPool) RebuildConnectionByProto(ctx context.Context, p
 			select {
 			case taskChan <- conn:
 			case <-ctx.Done():
-				break
+				// 如果上下文被取消，跳出外层循环
+				goto done
 			}
 		}
 
@@ -2341,10 +2342,12 @@ func (p *EnhancedConnectionPool) RebuildConnectionByProto(ctx context.Context, p
 			select {
 			case <-time.After(100 * time.Millisecond):
 			case <-ctx.Done():
-				break
+				// 如果上下文被取消，跳出外层循环
+				goto done
 			}
 		}
 	}
+done:
 
 	close(taskChan)
 	wg.Wait()
