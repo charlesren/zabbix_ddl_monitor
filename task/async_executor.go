@@ -131,7 +131,7 @@ func (e *AsyncExecutor) SubmitWithTimeout(task Task, conn connection.ProtocolDri
 func (e *AsyncExecutor) worker(id int) {
 	defer e.wg.Done()
 
-	ylog.Infof(asyncExecutorModule, "工作线程 %d 已启动", id)
+	ylog.Debugf(asyncExecutorModule, "工作线程 %d 已启动", id)
 
 	for {
 		select {
@@ -157,7 +157,7 @@ func (e *AsyncExecutor) processTask(workerID int, req AsyncTaskRequest) {
 	ylog.Debugf(asyncExecutorModule, "工作线程 %d 任务上下文: platform=%s, protocol=%s, taskType=%s",
 		workerID, req.Context.Platform, req.Context.Protocol, req.Context.TaskType)
 	start := time.Now()
-	ylog.Infof(asyncExecutorModule, "工作线程 %d 正在处理 %s 任务 for %s",
+	ylog.Debugf(asyncExecutorModule, "工作线程 %d 正在处理 %s 任务 for %s",
 		workerID, req.Context.TaskType, req.Context.Platform)
 	// 为任务添加超时上下文
 	taskCtx := req.Context

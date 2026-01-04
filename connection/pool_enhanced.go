@@ -443,7 +443,7 @@ func (p *EnhancedConnectionPool) GetWithContext(ctx context.Context, proto Proto
 	var conn *EnhancedPooledConnection
 	var err error
 
-	ylog.Infof("EnhancedConnectionPool", "开始执行弹性执行器: protocol=%s", proto)
+	ylog.Debugf("EnhancedConnectionPool", "开始执行弹性执行器: protocol=%s", proto)
 	err = p.resilientExecutor.Execute(mergedCtx, func() error {
 		ylog.Debugf("EnhancedConnectionPool", "弹性执行器开始执行操作: protocol=%s", proto)
 		conn, err = p.getConnectionFromPool(mergedCtx, pool)

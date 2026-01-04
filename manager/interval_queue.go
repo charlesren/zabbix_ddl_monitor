@@ -48,7 +48,7 @@ func (q *IntervalTaskQueue) schedule() {
 			ylog.Infof("queue", "ticker触发 #%d (间隔=%v)", tickerCount, q.interval)
 			select {
 			case q.execNotify <- struct{}{}: // 非阻塞发送信号
-				ylog.Infof("queue", "发送执行信号 (间隔=%v)", q.interval)
+				ylog.Debugf("queue", "发送执行信号 (间隔=%v)", q.interval)
 			default:
 				ylog.Warnf("queue", "执行信号丢弃 - 通道阻塞 (间隔=%v)", q.interval)
 			}

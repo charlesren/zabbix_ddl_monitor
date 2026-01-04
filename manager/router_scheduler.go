@@ -305,7 +305,7 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 	select {
 	case s.connSemaphore <- struct{}{}:
 		// 成功获取信号量
-		ylog.Infof("scheduler", "获取信号量: 路由器=%s, 专线=%s", s.router.IP, line.IP)
+		ylog.Debugf("scheduler", "获取信号量: 路由器=%s, 专线=%s", s.router.IP, line.IP)
 	case <-s.routerCtx.Done():
 		ylog.Infof("scheduler", "上下文已完成: 路由器=%s", s.router.IP)
 		return
@@ -330,7 +330,7 @@ func (s *RouterScheduler) executeIndividualPing(line syncer.Line, matchedTask ta
 		<-s.connSemaphore // 释放信号量
 		return
 	}
-	ylog.Infof("scheduler", "获取连接成功: 路由器=%s, 专线=%s", s.router.IP, line.IP)
+	ylog.Debugf("scheduler", "获取连接成功: 路由器=%s, 专线=%s", s.router.IP, line.IP)
 
 	// 3. 创建任务上下文
 	taskCtx := task.TaskContext{
