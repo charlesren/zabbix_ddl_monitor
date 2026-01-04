@@ -27,9 +27,10 @@ func TestBasicConnectionPoolFunctionality(t *testing.T) {
 	pool := NewEnhancedConnectionPool(context.Background(), config)
 	defer pool.Close()
 
-	// Verify pool is created with default factories
-	assert.NotNil(t, pool.factories[ProtocolSSH])
-	assert.NotNil(t, pool.factories[ProtocolScrapli])
+	// Verify pool is created with the configured protocol factory only
+	assert.NotNil(t, pool.factories[ProtocolSSH], "SSH factory should be registered")
+	// Scrapli factory should NOT be registered since config.Protocol is SSH
+	assert.Nil(t, pool.factories[ProtocolScrapli], "Scrapli factory should not be registered when protocol is SSH")
 
 	// Test metrics collector
 	collector := GetGlobalMetricsCollector()

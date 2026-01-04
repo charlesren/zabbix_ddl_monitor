@@ -331,9 +331,19 @@ func NewEnhancedConnectionPool(parentCtx context.Context, config *EnhancedConnec
 	// 创建RebuildManager
 	pool.rebuildManager = NewRebuildManager(config, GetGlobalMetricsCollector(), pool.eventChan)
 
-	// 注册默认工厂
-	pool.RegisterFactory(ProtocolSSH, &SSHFactory{})
-	pool.RegisterFactory(ProtocolScrapli, &ScrapliFactory{})
+	// 只注册配置的协议工厂（避免多协议共存问题）
+	// 根据config.Protocol只注册需要的工厂，而非注册所有工厂
+	switch config.Protocol {
+	case ProtocolSSH:
+		pool.RegisterFactory(ProtocolSSH, &SSHFactory{})
+		ylog.Infof("pool", "注册SSH协议工厂: host=%s", config.Host)
+	case ProtocolScrapli:
+		pool.RegisterFactory(ProtocolScrapli, &ScrapliFactory{})
+		ylog.Infof("pool", "注册Scrapli协议工厂: host=%s", config.Host)
+	default:
+		// 未知协议类型，记录警告但不阻止创建（允许测试环境手动注册）
+		ylog.Warnf("pool", "未知协议类型: %s (host=%s), 未自动注册工厂", config.Protocol, config.Host)
+	}
 
 	// 启动后台任务
 	pool.startBackgroundTasks()

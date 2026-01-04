@@ -19,8 +19,9 @@ func TestFactoryRegistration(t *testing.T) {
 	defer pool.Close()
 
 	t.Run("Default factories", func(t *testing.T) {
-		assert.NotNil(t, pool.GetFactory(ProtocolSSH))
-		assert.NotNil(t, pool.GetFactory(ProtocolScrapli))
+		// 验证只注册了配置的协议工厂
+		assert.NotNil(t, pool.GetFactory(ProtocolSSH), "SSH factory should be registered")
+		assert.Nil(t, pool.GetFactory(ProtocolScrapli), "Scrapli factory should NOT be registered when protocol is SSH")
 	})
 
 	t.Run("Custom factory", func(t *testing.T) {
