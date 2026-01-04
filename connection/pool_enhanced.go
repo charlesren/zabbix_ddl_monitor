@@ -1338,26 +1338,41 @@ func classifyHealthCheckError(err error) HealthCheckErrorType {
 
 	errStr := err.Error()
 	switch {
+	// 【新增】EOF错误（SSH连接断开）优先级最高
+	case errStr == "EOF" || strings.Contains(errStr, "EOF"):
+		return HealthErrorNetwork
+
+	// 超时错误
 	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") ||
 		strings.Contains(errStr, "context deadline exceeded"):
 		return HealthErrorTimeout
+
+	// 网络错误
 	case strings.Contains(errStr, "network") || strings.Contains(errStr, "connection") ||
 		strings.Contains(errStr, "reset by peer") || strings.Contains(errStr, "broken pipe"):
 		return HealthErrorNetwork
+
+	// 认证错误
 	case strings.Contains(errStr, "authentication") || strings.Contains(errStr, "password") ||
 		strings.Contains(errStr, "login") || strings.Contains(errStr, "auth"):
 		return HealthErrorAuth
+
+	// 命令错误
 	case strings.Contains(errStr, "command") || strings.Contains(errStr, "syntax") ||
 		strings.Contains(errStr, "invalid command"):
 		return HealthErrorCommand
+
+	// 协议错误
 	case strings.Contains(errStr, "protocol") || strings.Contains(errStr, "unsupported"):
 		return HealthErrorProtocol
+
+	// 未知错误
 	default:
 		return HealthErrorUnknown
 	}
 }
 
-// defaultHealthCheck 默认健康检查
+// defaultHealthCheck 默认健康检查（简化版）
 func (p *EnhancedConnectionPool) defaultHealthCheck(driver ProtocolDriver) error {
 	// 使用配置的超时时间，默认5秒
 	timeout := p.config.HealthCheckTimeout
@@ -1368,23 +1383,55 @@ func (p *EnhancedConnectionPool) defaultHealthCheck(driver ProtocolDriver) error
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// 平台适配的健康检查命令
-	var cmd string
-	if scrapliDriver, ok := driver.(*ScrapliDriver); ok {
-		// Scrapli驱动使用GetPrompt（已有超时控制）
-		_, err := scrapliDriver.GetPromptWithContext(ctx)
-		return err
-	} else {
-		// 其他驱动使用通用命令
-		// 尝试show clock，大多数网络设备都支持
-		cmd = "show clock"
+	// 根据Protocol选择执行方式
+	switch driver.ProtocolType() {
+	case ProtocolScrapli:
+		// Scrapli使用GetPrompt（最优方式，平台无关）
+		if scrapliDriver, ok := driver.(*ScrapliDriver); ok {
+			_, err := scrapliDriver.GetPromptWithContext(ctx)
+			return err
+		}
+		return fmt.Errorf("invalid driver type for Scrapli")
+
+	case ProtocolSSH:
+		// SSH根据Platform选择命令
+		return p.healthCheckSSH(ctx, driver)
+
+	default:
+		return fmt.Errorf("unsupported protocol: %s", driver.ProtocolType())
+	}
+}
+
+// healthCheckSSH SSH协议健康检查（根据Platform选择命令）
+func (p *EnhancedConnectionPool) healthCheckSSH(ctx context.Context, driver ProtocolDriver) error {
+	// 根据Platform选择最佳命令
+	var command string
+	switch p.config.Platform {
+	case PlatformCiscoIOSXE, PlatformCiscoIOSXR, PlatformCiscoNXOS:
+		command = "show clock" // Cisco: show clock（不需要特权模式，快速）
+	case PlatformHuaweiVRP, PlatformH3CComware:
+		command = "display clock" // 华为/H3C: display clock
+	default:
+		return fmt.Errorf("unsupported platform for SSH health check: %s", p.config.Platform)
 	}
 
-	_, err := driver.Execute(ctx, &ProtocolRequest{
+	ylog.Debugf("pool", "SSH健康检查: platform=%s, command=%s", p.config.Platform, command)
+
+	// 执行命令
+	resp, err := driver.Execute(ctx, &ProtocolRequest{
 		CommandType: CommandTypeCommands,
-		Payload:     []string{cmd},
+		Payload:     []string{command},
 	})
-	return err
+
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return fmt.Errorf("health check command failed")
+	}
+
+	return nil
 }
 
 // cleanupTask 连接清理任务
