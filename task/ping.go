@@ -879,6 +879,42 @@ func (PingTask) parseHuaweiOutput(output string, result *Result) bool {
 }
 
 // parseH3COutput 解析H3C Comware设备的ping输出
+//
+// status 字段语义为"框架层状态"：只要能从汇总行解析到 packet_loss（含部分丢包），
+// 就归 CheckFinished，丢包率数值必须发送到 Zabbix（dedicatedLinePing）。
+// 业务层细分（RequestTimeout/NoRouteToHost）当前不启用，常量保留待后续需要时使用。
+//
+// 5. NYA0101_03_WR01 : h3c_comware系统（2026-09-04 实测）
+/*
+// 全通
+```shell
+<NYA0101_03_WR01>ping -c 5 -t 2 10.127.12.254
+Ping 10.127.12.254 (10.127.12.254): 56 data bytes, press CTRL_C to break
+56 bytes from 10.127.12.254: icmp_seq=0 ttl=255 time=0.261 ms
+56 bytes from 10.127.12.254: icmp_seq=1 ttl=255 time=0.237 ms
+56 bytes from 10.127.12.254: icmp_seq=2 ttl=255 time=0.205 ms
+56 bytes from 10.127.12.254: icmp_seq=3 ttl=255 time=0.224 ms
+56 bytes from 10.127.12.254: icmp_seq=4 ttl=255 time=0.198 ms
+
+--- Ping statistics for 10.127.12.254 ---
+5 packet(s) transmitted, 5 packet(s) received, 0.0% packet loss
+round-trip min/avg/max/std-dev = 0.198/0.225/0.261/0.023 ms
+```
+
+// 全超时（汇总行仍在，status=CheckFinished，packet_loss=100）
+```shell
+<NYA0101_03_WR01>ping -c 5 -t 2 1.1.1.1
+Ping 1.1.1.1 (1.1.1.1): 56 data bytes, press CTRL_C to break
+Request time out
+Request time out
+Request time out
+Request time out
+Request time out
+
+--- Ping statistics for 1.1.1.1 ---
+5 packet(s) transmitted, 0 packet(s) received, 100.0% packet loss
+```
+*/
 func (PingTask) parseH3COutput(output string, result *Result) bool {
 	targetIP := "unknown"
 	if ip, ok := result.Data["target_ip"].(string); ok {
@@ -888,77 +924,58 @@ func (PingTask) parseH3COutput(output string, result *Result) bool {
 	ylog.Debugf("PingTask", "开始解析H3C输出, 输出长度: %d 字符, target_ip: %s", len(output), targetIP)
 
 	lines := strings.Split(output, "\n")
-	targetIP = result.Data["target_ip"].(string)
 
-	// 首先检查特殊情况
+	// 第一轮：扫描汇总行，提取 packet_loss（权威数据来源）
+	var foundStats bool
+	re := regexp.MustCompile(`(\d+(?:\.\d+)?)\s*%\s*packet\s*loss`)
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		lowerLine := strings.ToLower(line)
-
-		// 检查请求超时
-		if strings.Contains(lowerLine, "request time out") {
-			result.Data["status"] = StatusRequestTimeout
-			ylog.Debugf("PingTask", "H3C ping解析完成: 目标IP=%s, 请求超时", targetIP)
-			return true
-		}
-
-		// 检查主机不可达
-		if strings.Contains(lowerLine, "destination host unreachable") ||
-			strings.Contains(lowerLine, "no route to host") {
-			result.Data["status"] = StatusNoRouteToHost
-			ylog.Debugf("PingTask", "H3C ping解析完成: 目标IP=%s, 主机不可达", targetIP)
-			return true
-		}
-	}
-
-	// 查找包含packet loss的行
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		lowerLine := strings.ToLower(line)
-
-		if strings.Contains(lowerLine, "packet loss") {
-			// 使用正则表达式匹配百分比
-			re := regexp.MustCompile(`(\d+\.?\d*)%\s*packet\s*loss`)
-			if matches := re.FindStringSubmatch(line); len(matches) > 1 {
-				// 解析带小数的百分比
-				if packetLossFloat, err := strconv.ParseFloat(matches[1], 64); err == nil {
-					// 确保值在0-100范围内
-					packetLoss := int(packetLossFloat)
-					if packetLoss < 0 {
-						packetLoss = 0
-					} else if packetLoss > 100 {
-						packetLoss = 100
-					}
-
-					result.Data["packet_loss"] = packetLoss
-					result.Data["success_rate"] = 100 - packetLoss
-					result.Data["status"] = StatusCheckFinished
-					if packetLoss == 0 {
-						ylog.Debugf("PingTask", "H3C ping解析成功: 目标IP=%s, 丢包率=0%%, 成功率=100%%", targetIP)
-					} else if packetLoss == 100 {
-						ylog.Debugf("PingTask", "H3C ping解析完成: 目标IP=%s, 丢包率=100%%, 成功率=0%%", targetIP)
-					} else {
-						ylog.Debugf("PingTask", "H3C ping解析完成: 目标IP=%s, 丢包率=%d%%, 成功率=%d%%", targetIP, packetLoss, 100-packetLoss)
-					}
-					return true
-				} else {
-					ylog.Errorf("PingTask", "H3C parsing: 无法解析百分比值: %s, target_ip: %s", matches[1], targetIP)
-					result.Data["status"] = StatusParseFailed
-					return false
+		if matches := re.FindStringSubmatch(line); len(matches) > 1 {
+			if packetLossFloat, err := strconv.ParseFloat(matches[1], 64); err == nil {
+				if packetLossFloat < 0 {
+					packetLossFloat = 0
+				} else if packetLossFloat > 100 {
+					packetLossFloat = 100
 				}
+				packetLoss := int(packetLossFloat)
+				result.Data["packet_loss"] = packetLoss
+				result.Data["success_rate"] = 100 - packetLoss
+				result.Data["status"] = StatusCheckFinished
+				foundStats = true
+
+				if packetLoss == 0 {
+					ylog.Debugf("PingTask", "H3C ping解析成功: 目标IP=%s, 丢包率=0%%, 成功率=100%%", targetIP)
+				} else if packetLoss == 100 {
+					ylog.Debugf("PingTask", "H3C ping解析完成: 目标IP=%s, 丢包率=100%%, 成功率=0%%", targetIP)
+				} else {
+					ylog.Debugf("PingTask", "H3C ping解析完成: 目标IP=%s, 丢包率=%d%%, 成功率=%d%%", targetIP, packetLoss, 100-packetLoss)
+				}
+				break
+			} else {
+				ylog.Errorf("PingTask", "H3C parsing: 无法解析百分比值: %s, target_ip: %s", matches[1], targetIP)
+				result.Data["status"] = StatusParseFailed
+				return false
 			}
 		}
-
-		// 查找RTT信息
-		if strings.Contains(line, "round-trip") && strings.Contains(line, "min/avg/max") {
-			result.Data["rtt_info"] = line
-			ylog.Debugf("PingTask", "H3C parsing: found RTT info: %s, target_ip: %s", line, targetIP)
-		}
 	}
 
-	ylog.Warnf("PingTask", "H3C ping解析未找到明确结果: 目标IP=%s", targetIP)
-	result.Data["status"] = StatusParseFailed
-	return false
+	// 第二轮：汇总行解析成功后，抓取 RTT 信息（round-trip 行位于汇总行之后）
+	if foundStats {
+		for _, line := range lines {
+			if strings.Contains(line, "round-trip") && strings.Contains(line, "min/avg/max") {
+				result.Data["rtt_info"] = strings.TrimSpace(line)
+				ylog.Debugf("PingTask", "H3C parsing: found RTT info: %s, target_ip: %s", line, targetIP)
+				break
+			}
+		}
+	} else {
+		ylog.Warnf("PingTask", "H3C ping解析未找到汇总行: 目标IP=%s", targetIP)
+		result.Data["status"] = StatusParseFailed
+		return false
+	}
+
+	// TODO: 后续如果需要业务层细分（RequestTimeout/NoRouteToHost），
+	// 在 foundStats=true 后增加关键字扫描分支。当前统一归 CheckFinished。
+	return true
 }
 
 // parseGenericOutput 通用ping输出解析
