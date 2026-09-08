@@ -1,7 +1,7 @@
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=
 github.com/andybalholm/brotli v1.2.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
-github.com/charlesren/scrapligo v0.0.0-20251217120000-bb44d98b8a95 h1:h5N3v71frioUN+njYLZRdf7tFiHayVsiBpZZQJ7xZkA=
-github.com/charlesren/scrapligo v0.0.0-20251217120000-bb44d98b8a95/go.mod h1:pOWxVyPsQRrWTrkoSSDg05tjOqtWfLffAZtAsCc0w3M=
+github.com/charlesren/scrapligo v1.4.1-h3c h1:XIwn0gsOVXCNDEdAErD8KkpgbLvRgnkTDYvc38AfNhI=
+github.com/charlesren/scrapligo v1.4.1-h3c/go.mod h1:pOWxVyPsQRrWTrkoSSDg05tjOqtWfLffAZtAsCc0w3M=
 github.com/charlesren/userconfig v0.1.0 h1:IN9g4siUJNik023IoA6hiVVBPAILZf8V+6y+AqkapWQ=
 github.com/charlesren/userconfig v0.1.0/go.mod h1:0q7exumpM7H+Ffi9NxezAUZ9CYD6oemYQIv3COYoFP0=
 github.com/charlesren/ylog v0.1.0 h1:QnkBAU4YiU/9ULTGnTHMj7KFzTEceLWSvoWYNczKV2k=
