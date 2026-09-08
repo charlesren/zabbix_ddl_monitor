@@ -342,8 +342,8 @@ func (m *Manager) Start() {
 	// 初始全量同步
 	m.safeExecute("fullSync", m.fullSync)
 
-	// 启动周期性全量同步（1小时）
-	m.runPeriodicWithContext("periodicSync", 4*time.Hour, func() {
+	// 启动周期性全量同步（6小时，与syncer的8小时拉取周期错开）
+	m.runPeriodicWithContext("periodicSync", 6*time.Hour, func() {
 		m.safeExecute("fullSync", m.fullSync)
 	})
 

@@ -134,12 +134,12 @@ func main() {
 	ylog.Infof("Main", "using proxyPort: %s", proxyPort)
 
 	// 1. 初始化配置同步器
-	syncer, err := syncer.NewConfigSyncer(zc, 4*time.Hour, proxyname)
+	syncer, err := syncer.NewConfigSyncer(zc, 8*time.Hour, proxyname)
 	if err != nil {
 		ylog.Errorf("Main", "创建配置同步器失败: %v", err)
 		return
 	}
-	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 4h)")
+	ylog.Infof("Main", "配置同步器初始化完成 (同步间隔: 8h)")
 	// 使用安全启动，防止syncer中的panic导致程序崩溃
 	go safeStart(syncer.Start, "syncer.Start")
 	defer syncer.Stop()
