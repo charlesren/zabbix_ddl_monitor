@@ -409,8 +409,8 @@ func (PingTask) buildHuaweiEvent(targetIP string, repeat int, timeout time.Durat
 
 	var events []*channel.SendInteractiveEvent
 
-	// 创建ping命令，华为VRP使用-t参数表示超时时间（秒）
-	pingCommand := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Seconds()), targetIP)
+	// 创建ping命令，华为VRP使用-t参数表示每个报文的等待超时（毫秒）
+	pingCommand := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Milliseconds()), targetIP)
 	ylog.Debugf("PingTask", "添加华为ping命令: %s", pingCommand)
 
 	events = append(events, &channel.SendInteractiveEvent{
@@ -450,8 +450,8 @@ func (PingTask) buildHuaweiCommand(targetIP string, repeat int, timeout time.Dur
 
 	var commands []string
 
-	// 创建ping命令，华为VRP使用-t参数表示超时时间（秒）
-	command := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Seconds()), targetIP)
+	// 创建ping命令，华为VRP使用-t参数表示每个报文的等待超时（毫秒）
+	command := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Milliseconds()), targetIP)
 	ylog.Debugf("PingTask", "添加华为ping命令: %s", command)
 	commands = append(commands, command)
 
@@ -464,8 +464,8 @@ func (PingTask) buildH3CCommand(targetIP string, repeat int, timeout time.Durati
 	ylog.Debugf("PingTask", "构建H3C非交互式命令, 目标IP: %s, 重复次数: %d, 超时时间: %v", targetIP, repeat, timeout)
 
 	var commands []string
-	// H3C Comware使用-t参数表示超时时间（秒）
-	command := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Seconds()), targetIP)
+	// H3C Comware使用-t参数表示每个 ICMP 报文的等待超时（毫秒）
+	command := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Milliseconds()), targetIP)
 	ylog.Debugf("PingTask", "添加H3C ping命令: %s", command)
 	commands = append(commands, command)
 
@@ -478,8 +478,8 @@ func (PingTask) buildH3CEvent(targetIP string, repeat int, timeout time.Duration
 	ylog.Debugf("PingTask", "构建H3C交互式事件, 目标IP: %s, 重复次数: %d, 超时时间: %v", targetIP, repeat, timeout)
 
 	var events []*channel.SendInteractiveEvent
-	// H3C Comware使用-t参数表示超时时间（秒）
-	pingCommand := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Seconds()), targetIP)
+	// H3C Comware使用-t参数表示每个 ICMP 报文的等待超时（毫秒）
+	pingCommand := fmt.Sprintf("ping -c %d -t %d %s", repeat, int(timeout.Milliseconds()), targetIP)
 	ylog.Debugf("PingTask", "添加H3C ping命令: %s", pingCommand)
 
 	events = append(events, &channel.SendInteractiveEvent{

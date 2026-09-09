@@ -281,7 +281,7 @@ func TestPingTask_BuildCommand_SingleIP(t *testing.T) {
 				if len(events) != 1 {
 					t.Errorf("Expected 1 event, got %d", len(events))
 				}
-				expectedCmd := "ping -c 4 -t 3 10.1.1.1"
+				expectedCmd := "ping -c 4 -t 3000 10.1.1.1"
 				if events[0].ChannelInput != expectedCmd {
 					t.Errorf("Expected '%s', got '%s'", expectedCmd, events[0].ChannelInput)
 				}
@@ -609,7 +609,7 @@ func TestPingTask_buildHuaweiEvent(t *testing.T) {
 			timeout:       3 * time.Second,
 			expectedCount: 1,
 			checkFunc: func(t *testing.T, events []*channel.SendInteractiveEvent) {
-				expected := "ping -c 4 -W 3 10.1.1.1"
+				expected := "ping -c 4 -t 3000 10.1.1.1"
 				if events[0].ChannelInput != expected {
 					t.Errorf("Expected '%s', got '%s'", expected, events[0].ChannelInput)
 				}
@@ -774,7 +774,7 @@ func TestPingTask_H3CComware(t *testing.T) {
 		commands, ok := cmd.Payload.([]string)
 		assert.True(t, ok)
 		assert.Len(t, commands, 1)
-		assert.Contains(t, commands[0], "ping -c 3 -t 2 8.8.8.8")
+		assert.Contains(t, commands[0], "ping -c 3 -t 2000 8.8.8.8")
 	})
 
 	// 测试命令构建 - 交互式事件
@@ -796,7 +796,7 @@ func TestPingTask_H3CComware(t *testing.T) {
 		events, ok := cmd.Payload.([]*channel.SendInteractiveEvent)
 		assert.True(t, ok)
 		assert.Len(t, events, 1)
-		assert.Contains(t, events[0].ChannelInput, "ping -c 5 -t 3 192.168.1.1")
+		assert.Contains(t, events[0].ChannelInput, "ping -c 5 -t 3000 192.168.1.1")
 		assert.Equal(t, ">", events[0].ChannelResponse)
 	})
 
@@ -809,7 +809,7 @@ func TestPingTask_H3CComware(t *testing.T) {
 			},
 		}
 
-		successOutput := `ping -c 3 -t 2 8.8.8.8
+		successOutput := `ping -c 3 -t 2000 8.8.8.8
 PING 8.8.8.8 (8.8.8.8): 56 data bytes
 64 bytes from 8.8.8.8: icmp_seq=0 ttl=117 time=25.367 ms
 64 bytes from 8.8.8.8: icmp_seq=1 ttl=117 time=25.213 ms
@@ -836,7 +836,7 @@ round-trip min/avg/max/std-dev = 25.213/25.292/25.367/0.014 ms`
 			},
 		}
 
-		failOutput := `ping -c 3 -t 2 192.0.2.1
+		failOutput := `ping -c 3 -t 2000 192.0.2.1
 PING 192.0.2.1 (192.0.2.1): 56 data bytes
 
 --- Ping statistics for 192.0.2.1 ---
@@ -859,7 +859,7 @@ PING 192.0.2.1 (192.0.2.1): 56 data bytes
 			},
 		}
 
-		partialOutput := `ping -c 5 -t 2 10.0.0.1
+		partialOutput := `ping -c 5 -t 2000 10.0.0.1
 PING 10.0.0.1 (10.0.0.1): 56 data bytes
 64 bytes from 10.0.0.1: icmp_seq=0 ttl=64 time=1.234 ms
 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=1.345 ms
@@ -886,7 +886,7 @@ round-trip min/avg/max/std-dev = 1.234/1.345/1.456/0.014 ms`
 			},
 		}
 
-		timeoutOutput := `ping -c 3 -t 2 203.0.113.1
+		timeoutOutput := `ping -c 3 -t 2000 203.0.113.1
 PING 203.0.113.1 (203.0.113.1): 56 data bytes
 Request time out
 Request time out
@@ -912,7 +912,7 @@ Request time out
 			},
 		}
 
-		unreachableOutput := `ping -c 3 -t 2 192.168.99.99
+		unreachableOutput := `ping -c 3 -t 2000 192.168.99.99
 PING 192.168.99.99 (192.168.99.99): 56 data bytes
 From 192.168.1.1 icmp_seq=0 Destination Host Unreachable
 From 192.168.1.1 icmp_seq=1 Destination Host Unreachable
